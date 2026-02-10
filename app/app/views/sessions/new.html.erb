@@ -1,0 +1,49 @@
+<main class="auth-shell">
+  <section class="auth-card">
+    <header>
+      <p class="auth-eyebrow">Portal de Operações</p>
+      <h1>Entrar na Medilend</h1>
+      <p class="auth-subtitle">Acompanhe antecipações, documentos assinados e liquidações em um único fluxo.</p>
+    </header>
+
+    <%= form_with url: session_path, class: "auth-form" do |form| %>
+      <div class="field">
+        <%= form.label :email_address, "E-mail" %>
+        <%= form.email_field :email_address, required: true, autofocus: true, autocomplete: "username", placeholder: "voce@empresa.com.br", value: params[:email_address] %>
+      </div>
+
+      <div class="field">
+        <%= form.label :password, "Senha" %>
+        <%= form.password_field :password, required: true, autocomplete: "current-password", placeholder: "Digite sua senha", maxlength: 72 %>
+      </div>
+
+      <%= form.submit "Entrar no portal", class: "button button-primary" %>
+    <% end %>
+
+    <p class="auth-secondary-link"><%= link_to "Esqueceu sua senha?", new_password_path %></p>
+  </section>
+
+  <aside class="demo-card">
+    <h2>Acessos de demonstração</h2>
+    <p>Use os perfis abaixo para revisar o fluxo ponta a ponta.</p>
+    <ul class="demo-credentials">
+      <li>
+        <h3>Hospital</h3>
+        <p><code>hospital_admin@demo.medilend.br</code></p>
+      </li>
+      <li>
+        <h3>Fornecedor</h3>
+        <p><code>supplier_user@demo.medilend.br</code></p>
+      </li>
+      <li>
+        <h3>Médico</h3>
+        <p><code>physician_user@demo.medilend.br</code></p>
+      </li>
+      <li>
+        <h3>FDIC</h3>
+        <p><code>fdic_user@demo.medilend.br</code></p>
+      </li>
+    </ul>
+    <p class="demo-password">Senha padrão: <code>Medilend@2026</code></p>
+  </aside>
+</main>

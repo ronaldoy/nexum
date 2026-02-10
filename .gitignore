@@ -1,0 +1,19 @@
+# Local tooling/runtime artifacts
+.bundle-home/
+.cache/
+.claude/
+
+# Environment files
+.env
+
+# Rails runtime/build artifacts under app/
+app/log/*
+app/tmp/*
+app/storage/*
+app/vendor/bundle/
+app/.bundle/
+
+# Keep placeholder files if present
+!app/log/.keep
+!app/tmp/.keep
+!app/storage/.keep

@@ -1,0 +1,19 @@
+<main class="auth-shell auth-shell-single">
+  <section class="auth-card">
+    <header>
+      <p class="auth-eyebrow">Recuperação de acesso</p>
+      <h1>Esqueceu sua senha?</h1>
+      <p class="auth-subtitle">Informe o e-mail cadastrado e enviaremos as instruções de redefinição.</p>
+    </header>
+
+    <%= form_with url: passwords_path, class: "auth-form" do |form| %>
+      <div class="field">
+        <%= form.label :email_address, "E-mail" %>
+        <%= form.email_field :email_address, required: true, autofocus: true, autocomplete: "username", placeholder: "voce@empresa.com.br", value: params[:email_address] %>
+      </div>
+      <%= form.submit "Enviar instruções por e-mail", class: "button button-primary" %>
+    <% end %>
+
+    <p class="auth-secondary-link"><%= link_to "Voltar para login", new_session_path %></p>
+  </section>
+</main>

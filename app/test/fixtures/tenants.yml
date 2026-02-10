@@ -1,0 +1,11 @@
+default:
+  slug: default
+  name: Tenant Padrao
+  active: true
+  metadata: {}
+
+secondary:
+  slug: secondary
+  name: Tenant Secundario
+  active: true
+  metadata: {}

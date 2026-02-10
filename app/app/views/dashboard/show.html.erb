@@ -1,0 +1,234 @@
+<main class="dashboard-shell">
+  <section class="hero-panel">
+    <div>
+      <p class="hero-kicker">Simulação operacional ponta a ponta</p>
+      <h2><%= persona_title %></h2>
+      <p class="hero-subtitle">
+        Fluxo completo de recebíveis performados, antecipações, assinatura documental, confirmação e liquidação em BRL.
+      </p>
+    </div>
+    <div class="hero-meta">
+      <p><strong>Usuário:</strong> <%= Current.user&.email_address %></p>
+      <p><strong>Perfil:</strong> <%= role_label(Current.user&.role) %></p>
+      <p><strong>Fuso horário:</strong> América/São_Paulo</p>
+    </div>
+  </section>
+
+  <section class="metric-grid">
+    <% @headline_cards.each do |card| %>
+      <article class="metric-card">
+        <p class="metric-label"><%= card[:label] %></p>
+        <p class="metric-value">
+          <% case card[:kind] %>
+          <% when :money %>
+            <%= format_brl(card[:value]) %>
+          <% when :percentage %>
+            <%= format_percentage(card[:value]) %>
+          <% when :integer %>
+            <%= number_with_delimiter(card[:value].to_i, delimiter: ".") %>
+          <% else %>
+            <%= card[:value] %>
+          <% end %>
+        </p>
+        <p class="metric-footnote"><%= card[:footnote] %></p>
+      </article>
+    <% end %>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Estágios documentados da operação</h3>
+      <p>Progresso por etapa considerando a carteira visível ao seu perfil.</p>
+    </header>
+
+    <div class="stage-progress-grid">
+      <% stage_definitions.each do |stage| %>
+        <% completion = @stage_completion.fetch(stage[:key]) %>
+        <article class="stage-progress-card">
+          <p class="stage-name"><%= stage[:label] %></p>
+          <p class="stage-ratio"><%= completion[:completed] %>/<%= completion[:total] %></p>
+          <div class="stage-bar">
+            <span style="width: <%= completion[:percentage] %>%"></span>
+          </div>
+        </article>
+      <% end %>
+    </div>
+
+    <div class="table-wrapper">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Referência</th>
+            <th>Tipo</th>
+            <th>Valor bruto</th>
+            <th>Status atual</th>
+            <% stage_definitions.each do |stage| %>
+              <th><%= stage[:label] %></th>
+            <% end %>
+            <th>Última atualização</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @stage_rows.each do |row| %>
+            <% receivable = row[:receivable] %>
+            <tr>
+              <td><%= receivable.external_reference || receivable.id.first(8) %></td>
+              <td><%= receivable.receivable_kind&.name %></td>
+              <td><%= format_brl(receivable.gross_amount) %></td>
+              <td><span class="status-pill"><%= status_label(receivable.status) %></span></td>
+              <% stage_definitions.each do |stage| %>
+                <% done = row[:stages][stage[:key]] %>
+                <td><span class="stage-dot <%= done ? "stage-done" : "stage-pending" %>"><%= done ? "Concluído" : "Pendente" %></span></td>
+              <% end %>
+              <td><%= l(row[:last_update_at], format: :short) if row[:last_update_at].present? %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Jornada detalhada por recebível</h3>
+      <p>Selecione um recebível para acompanhar a linha do tempo completa.</p>
+    </header>
+
+    <%= form_with url: root_path, method: :get, class: "receivable-selector", local: true do |form| %>
+      <div class="field">
+        <%= form.label :receivable_id, "Recebível" %>
+        <%= form.select :receivable_id,
+          options_for_select(
+            @receivables.map { |receivable| ["#{receivable.external_reference || receivable.id.first(8)} · #{format_brl(receivable.gross_amount)}", receivable.id] },
+            @selected_receivable&.id
+          ),
+          { include_blank: "Selecione" } %>
+      </div>
+      <%= form.submit "Atualizar jornada", class: "button button-primary" %>
+    <% end %>
+
+    <% if @selected_receivable.present? %>
+      <article class="receivable-highlight">
+        <h4><%= @selected_receivable.external_reference || @selected_receivable.id %></h4>
+        <p>
+          <strong>Devedor:</strong> <%= @selected_receivable.debtor_party.legal_name %> ·
+          <strong>Credor:</strong> <%= @selected_receivable.creditor_party.legal_name %> ·
+          <strong>Vencimento:</strong> <%= l(@selected_receivable.due_at.to_date, format: :short) %>
+        </p>
+      </article>
+
+      <ol class="timeline">
+        <% @timeline_entries.each do |entry| %>
+          <li class="timeline-item">
+            <p class="timeline-meta">
+              <span><%= l(entry[:happened_at], format: :short) if entry[:happened_at].present? %></span>
+              <span><%= entry[:category] %></span>
+            </p>
+            <h5><%= entry[:title] %></h5>
+            <p><%= entry[:details] %></p>
+          </li>
+        <% end %>
+      </ol>
+    <% else %>
+      <p class="empty-state">Nenhum recebível disponível para o perfil selecionado.</p>
+    <% end %>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3><%= fdic_persona? ? "Performance por antecipação (FDIC)" : "Solicitações de antecipação" %></h3>
+      <p>Visão de execução, exposição e retorno por contrato de antecipação.</p>
+    </header>
+
+    <div class="table-wrapper">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Recebível</th>
+            <th>Solicitante</th>
+            <th>Status</th>
+            <th>Solicitado</th>
+            <th>Desconto</th>
+            <th>Líquido</th>
+            <% if fdic_persona? %>
+              <th>Exposição FDIC</th>
+              <th>Prazo útil</th>
+              <th>Retorno</th>
+            <% end %>
+          </tr>
+        </thead>
+        <tbody>
+          <% if fdic_persona? %>
+            <% @fdic_anticipation_rows.each do |row| %>
+              <% anticipation = row[:anticipation] %>
+              <tr>
+                <td><%= anticipation.id.first(8) %></td>
+                <td><%= row[:receivable]&.external_reference || anticipation.receivable_id.first(8) %></td>
+                <td><%= row[:requester]&.legal_name %></td>
+                <td><span class="status-pill"><%= status_label(anticipation.status) %></span></td>
+                <td><%= format_brl(anticipation.requested_amount) %></td>
+                <td><%= format_brl(anticipation.discount_amount) %></td>
+                <td><%= format_brl(anticipation.net_amount) %></td>
+                <td><%= format_brl(row[:exposure]) %></td>
+                <td><%= row[:term_days] %> dias úteis</td>
+                <td><%= format_percentage(row[:yield_rate]) %></td>
+              </tr>
+            <% end %>
+          <% else %>
+            <% @anticipation_requests.each do |anticipation| %>
+              <tr>
+                <td><%= anticipation.id.first(8) %></td>
+                <td><%= anticipation.receivable&.external_reference || anticipation.receivable_id.first(8) %></td>
+                <td><%= anticipation.requester_party&.legal_name %></td>
+                <td><span class="status-pill"><%= status_label(anticipation.status) %></span></td>
+                <td><%= format_brl(anticipation.requested_amount) %></td>
+                <td><%= format_brl(anticipation.discount_amount) %></td>
+                <td><%= format_brl(anticipation.net_amount) %></td>
+              </tr>
+            <% end %>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <% if fdic_persona? %>
+    <section class="panel">
+      <header class="panel-header">
+        <h3>Série diária consolidada</h3>
+        <p>Resumo de carteira, antecipações e liquidações por dia.</p>
+      </header>
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Data</th>
+              <th>Tipo</th>
+              <th>Recebíveis</th>
+              <th>Bruto</th>
+              <th>Antecipações</th>
+              <th>Valor antecipado</th>
+              <th>Liquidações</th>
+              <th>Valor liquidado</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% @daily_statistics.each do |entry| %>
+              <tr>
+                <td><%= l(entry.stat_date, format: :short) %></td>
+                <td><%= entry.receivable_kind&.name %></td>
+                <td><%= number_with_delimiter(entry.receivable_count, delimiter: ".") %></td>
+                <td><%= format_brl(entry.gross_amount) %></td>
+                <td><%= number_with_delimiter(entry.anticipated_count, delimiter: ".") %></td>
+                <td><%= format_brl(entry.anticipated_amount) %></td>
+                <td><%= number_with_delimiter(entry.settled_count, delimiter: ".") %></td>
+                <td><%= format_brl(entry.settled_amount) %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  <% end %>
+</main>

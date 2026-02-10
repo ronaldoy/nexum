@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title><%= content_for(:title) || "Medilend" %></title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="application-name" content="Medilend">
+    <meta name="mobile-web-app-capable" content="yes">
+    <%= csrf_meta_tags %>
+    <%= csp_meta_tag %>
+
+    <%= yield :head %>
+
+    <%# Enable PWA manifest for installable apps (make sure to enable in config/routes.rb too!) %>
+    <%#= tag.link rel: "manifest", href: pwa_manifest_path(format: :json) %>
+
+    <link rel="icon" href="/icon.png" type="image/png">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/icon.png">
+
+    <%# Includes all stylesheet files in app/assets/stylesheets %>
+    <%= stylesheet_link_tag :app, "data-turbo-track": "reload" %>
+    <%= javascript_importmap_tags %>
+  </head>
+
+  <body class="<%= authenticated? ? "app-authenticated" : "app-public" %>">
+    <% if authenticated? %>
+      <header class="topbar">
+        <div class="topbar-brand">
+          <p class="topbar-kicker">Plataforma de Recebíveis</p>
+          <h1>Medilend</h1>
+        </div>
+        <div class="topbar-user">
+          <p class="topbar-user-role"><%= role_label(Current.user&.role) %></p>
+          <p class="topbar-user-email"><%= Current.user&.email_address %></p>
+        </div>
+        <%= button_to "Sair", session_path, method: :delete, class: "button button-outline topbar-logout" %>
+      </header>
+    <% end %>
+
+    <main class="layout-main">
+      <%= render "layouts/flash" %>
+      <%= yield %>
+    </main>
+  </body>
+</html>

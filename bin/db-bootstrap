@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+POSTGRES_USER="${POSTGRES_USER:-medilend}"
+
+databases=(
+  "${POSTGRES_DB:-medilend_development}"
+  "${POSTGRES_STAGING_DB:-medilend_staging}"
+  "${POSTGRES_TEST_DB:-medilend_test}"
+)
+
+for db_name in "${databases[@]}"; do
+  exists="$(
+    docker compose exec -T postgres psql \
+      -U "$POSTGRES_USER" \
+      -d postgres \
+      -tAc "SELECT 1 FROM pg_database WHERE datname = '${db_name}'"
+  )"
+
+  if [[ "$exists" != "1" ]]; then
+    echo "Creating database: ${db_name}"
+    docker compose exec -T postgres psql \
+      -U "$POSTGRES_USER" \
+      -d postgres \
+      -c "CREATE DATABASE \"${db_name}\";"
+  else
+    echo "Database already exists: ${db_name}"
+  fi
+done

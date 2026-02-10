@@ -1,0 +1,14 @@
+<% require "argon2" %>
+<% password_digest = Argon2::Password.create("password") %>
+
+one:
+  tenant: default
+  role: supplier_user
+  email_address: one@example.com
+  password_digest: <%= password_digest %>
+
+two:
+  tenant: secondary
+  role: supplier_user
+  email_address: two@example.com
+  password_digest: <%= password_digest %>

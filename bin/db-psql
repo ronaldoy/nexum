@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+docker compose exec postgres psql \
+  -U "${POSTGRES_USER:-medilend}" \
+  -d "${POSTGRES_DB:-medilend_development}" \
+  "$@"
