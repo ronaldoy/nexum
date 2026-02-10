@@ -7,6 +7,10 @@ class Party < ApplicationRecord
 
   belongs_to :tenant
 
+  encrypts :document_number, deterministic: true
+  encrypts :legal_name
+  encrypts :display_name
+
   has_many :debtor_receivables, class_name: "Receivable", foreign_key: :debtor_party_id, inverse_of: :debtor_party, dependent: :restrict_with_exception
   has_many :creditor_receivables, class_name: "Receivable", foreign_key: :creditor_party_id, inverse_of: :creditor_party, dependent: :restrict_with_exception
   has_many :beneficiary_receivables, class_name: "Receivable", foreign_key: :beneficiary_party_id, inverse_of: :beneficiary_party, dependent: :restrict_with_exception

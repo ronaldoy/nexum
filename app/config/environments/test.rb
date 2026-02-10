@@ -39,6 +39,9 @@ Rails.application.configure do
   # Set host to be used by links generated in mailer templates.
   config.action_mailer.default_url_options = { host: "example.com" }
 
+  # Keep fixture data consistent with encrypted attributes.
+  config.active_record.encryption.encrypt_fixtures = true
+
   # Print deprecation notices to the stderr.
   config.active_support.deprecation = :stderr
 

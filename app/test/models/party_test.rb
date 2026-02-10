@@ -81,4 +81,24 @@ class PartyTest < ActiveSupport::TestCase
     assert_not party.valid?
     assert_includes party.errors[:document_type], "must be CPF for kind PHYSICIAN_PF"
   end
+
+  test "encrypts legal_name and document_number at rest" do
+    cnpj_digits = valid_cnpj_from_seed("supplier-encrypted")
+    party = Party.create!(
+      tenant: @tenant,
+      kind: "SUPPLIER",
+      legal_name: "Fornecedor Sigiloso",
+      document_number: cnpj_digits
+    )
+
+    raw_document = Party.connection.select_value(
+      "SELECT document_number FROM parties WHERE id = #{Party.connection.quote(party.id)}"
+    )
+    raw_legal_name = Party.connection.select_value(
+      "SELECT legal_name FROM parties WHERE id = #{Party.connection.quote(party.id)}"
+    )
+
+    refute_equal cnpj_digits, raw_document
+    refute_equal "Fornecedor Sigiloso", raw_legal_name
+  end
 end

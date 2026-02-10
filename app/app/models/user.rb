@@ -4,6 +4,8 @@ class User < ApplicationRecord
   belongs_to :tenant
   belongs_to :party, optional: true
 
+  encrypts :email_address, deterministic: true
+
   has_secure_password algorithm: :argon2
   has_many :sessions, dependent: :destroy
   has_many :api_access_tokens, dependent: :destroy

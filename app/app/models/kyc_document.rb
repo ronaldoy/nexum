@@ -8,6 +8,8 @@ class KycDocument < ApplicationRecord
   belongs_to :kyc_profile
   belongs_to :party
 
+  encrypts :document_number
+
   before_validation :normalize_attributes
 
   validates :document_type, presence: true, inclusion: { in: DOCUMENT_TYPES }

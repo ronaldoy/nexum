@@ -2,6 +2,10 @@ class Physician < ApplicationRecord
   belongs_to :tenant
   belongs_to :party
 
+  encrypts :full_name
+  encrypts :email, deterministic: true
+  encrypts :phone
+
   before_validation :normalize_crm
 
   validates :full_name, presence: true

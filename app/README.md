@@ -52,3 +52,15 @@ Rails application for receivables anticipation platform.
 - IP logging for security-relevant actions.
 - Signature action inside platform with confirmation code flow.
 - 7-year retention for financial/audit/security records.
+
+## PII Encryption (Rails Native)
+- PII fields are encrypted at rest via Active Record Encryption (AES-256-GCM).
+- Encryption keys must come from Rails credentials (`Rails.app.creds`):
+  - `active_record_encryption.primary_key`
+  - `active_record_encryption.deterministic_key`
+  - `active_record_encryption.key_derivation_salt`
+- Generate candidate keys:
+  - `cd app && rv ruby run -- -S bundle exec rails db:encryption:init`
+- Store keys in credentials:
+  - `cd app && rv ruby run -- -S bundle exec rails credentials:edit`
+- In production, app boot fails if encryption keys are missing.

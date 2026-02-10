@@ -273,7 +273,7 @@ CREATE TABLE public.kyc_documents (
     kyc_profile_id uuid NOT NULL,
     party_id uuid NOT NULL,
     document_type character varying NOT NULL,
-    document_number character varying,
+    document_number text,
     issuing_country character varying DEFAULT 'BR'::character varying NOT NULL,
     issuing_state character varying(2),
     issued_on date,
@@ -376,9 +376,9 @@ CREATE TABLE public.parties (
     tenant_id uuid NOT NULL,
     kind character varying NOT NULL,
     external_ref character varying,
-    document_number public.citext,
-    legal_name character varying NOT NULL,
-    display_name character varying,
+    document_number text,
+    legal_name text NOT NULL,
+    display_name text,
     active boolean DEFAULT true NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
@@ -472,9 +472,9 @@ CREATE TABLE public.physicians (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     tenant_id uuid NOT NULL,
     party_id uuid NOT NULL,
-    full_name character varying NOT NULL,
-    email public.citext,
-    phone character varying,
+    full_name text NOT NULL,
+    email text,
+    phone text,
     active boolean DEFAULT true NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
@@ -713,7 +713,7 @@ CREATE TABLE public.tenants (
 
 CREATE TABLE public.users (
     id bigint NOT NULL,
-    email_address character varying NOT NULL,
+    email_address text NOT NULL,
     password_digest character varying NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
@@ -2576,6 +2576,7 @@ CREATE POLICY receivables_tenant_policy ON public.receivables USING ((tenant_id 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260210213000'),
 ('20260210200500'),
 ('20260210195500'),
 ('20260210193000'),
