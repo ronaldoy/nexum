@@ -119,6 +119,16 @@ module Receivables
           settled_at: paid_time
         )
 
+        post_ledger_entries!(
+          settlement: settlement,
+          receivable: receivable,
+          allocation: allocation,
+          cnpj_amount: cnpj_amount,
+          fdic_amount: fdic_amount,
+          beneficiary_amount: beneficiary_amount,
+          paid_at: paid_time
+        )
+
         update_statuses_after_payment!(receivable:, allocation:)
 
         create_receivable_event!(
@@ -275,6 +285,18 @@ module Receivables
       end
 
       entries
+    end
+
+    def post_ledger_entries!(settlement:, receivable:, allocation:, cnpj_amount:, fdic_amount:, beneficiary_amount:, paid_at:)
+      Ledger::PostSettlement.new(tenant_id: @tenant_id, request_id: @request_id).call(
+        settlement: settlement,
+        receivable: receivable,
+        allocation: allocation,
+        cnpj_amount: cnpj_amount,
+        fdic_amount: fdic_amount,
+        beneficiary_amount: beneficiary_amount,
+        paid_at: paid_at
+      )
     end
 
     def update_statuses_after_payment!(receivable:, allocation:)

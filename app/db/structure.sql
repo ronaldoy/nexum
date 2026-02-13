@@ -62,6 +62,34 @@ END;
 $$;
 
 
+--
+-- Name: ledger_entries_check_balance(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.ledger_entries_check_balance() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  debit_total  numeric(18,2);
+  credit_total numeric(18,2);
+BEGIN
+  SELECT
+    COALESCE(SUM(CASE WHEN entry_side = 'DEBIT'  THEN amount ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN entry_side = 'CREDIT' THEN amount ELSE 0 END), 0)
+  INTO debit_total, credit_total
+  FROM ledger_entries
+  WHERE txn_id = NEW.txn_id;
+
+  IF debit_total <> credit_total THEN
+    RAISE EXCEPTION 'unbalanced ledger transaction %: debits=% credits=%',
+      NEW.txn_id, debit_total, credit_total;
+  END IF;
+
+  RETURN NULL;
+END;
+$$;
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -341,6 +369,34 @@ CREATE TABLE public.kyc_profiles (
 );
 
 ALTER TABLE ONLY public.kyc_profiles FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: ledger_entries; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.ledger_entries (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    txn_id uuid NOT NULL,
+    receivable_id uuid,
+    account_code character varying NOT NULL,
+    entry_side character varying NOT NULL,
+    amount numeric(18,2) NOT NULL,
+    currency character varying(3) DEFAULT 'BRL'::character varying NOT NULL,
+    party_id uuid,
+    source_type character varying NOT NULL,
+    source_id uuid NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    posted_at timestamp(6) without time zone NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT ledger_entries_amount_positive_check CHECK ((amount > (0)::numeric)),
+    CONSTRAINT ledger_entries_currency_brl_check CHECK (((currency)::text = 'BRL'::text)),
+    CONSTRAINT ledger_entries_entry_side_check CHECK (((entry_side)::text = ANY ((ARRAY['DEBIT'::character varying, 'CREDIT'::character varying])::text[])))
+);
+
+ALTER TABLE ONLY public.ledger_entries FORCE ROW LEVEL SECURITY;
 
 
 --
@@ -845,6 +901,14 @@ ALTER TABLE ONLY public.kyc_profiles
 
 
 --
+-- Name: ledger_entries ledger_entries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ledger_entries
+    ADD CONSTRAINT ledger_entries_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: outbox_events outbox_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1012,6 +1076,34 @@ CREATE INDEX idx_kyc_events_tenant_party_time ON public.kyc_events USING btree (
 --
 
 CREATE INDEX idx_kyc_events_tenant_profile_time ON public.kyc_events USING btree (tenant_id, kyc_profile_id, occurred_at);
+
+
+--
+-- Name: idx_ledger_entries_tenant_account_posted; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ledger_entries_tenant_account_posted ON public.ledger_entries USING btree (tenant_id, account_code, posted_at);
+
+
+--
+-- Name: idx_ledger_entries_tenant_receivable_posted; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ledger_entries_tenant_receivable_posted ON public.ledger_entries USING btree (tenant_id, receivable_id, posted_at) WHERE (receivable_id IS NOT NULL);
+
+
+--
+-- Name: idx_ledger_entries_tenant_source; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ledger_entries_tenant_source ON public.ledger_entries USING btree (tenant_id, source_type, source_id);
+
+
+--
+-- Name: idx_ledger_entries_tenant_txn; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ledger_entries_tenant_txn ON public.ledger_entries USING btree (tenant_id, txn_id);
 
 
 --
@@ -1369,6 +1461,27 @@ CREATE INDEX index_kyc_profiles_on_tenant_id ON public.kyc_profiles USING btree 
 --
 
 CREATE UNIQUE INDEX index_kyc_profiles_on_tenant_party ON public.kyc_profiles USING btree (tenant_id, party_id);
+
+
+--
+-- Name: index_ledger_entries_on_party_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_ledger_entries_on_party_id ON public.ledger_entries USING btree (party_id);
+
+
+--
+-- Name: index_ledger_entries_on_receivable_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_ledger_entries_on_receivable_id ON public.ledger_entries USING btree (receivable_id);
+
+
+--
+-- Name: index_ledger_entries_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_ledger_entries_on_tenant_id ON public.ledger_entries USING btree (tenant_id);
 
 
 --
@@ -1743,6 +1856,20 @@ CREATE TRIGGER kyc_events_no_update_delete BEFORE DELETE OR UPDATE ON public.kyc
 
 
 --
+-- Name: ledger_entries ledger_entries_balance_check; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE CONSTRAINT TRIGGER ledger_entries_balance_check AFTER INSERT ON public.ledger_entries DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.ledger_entries_check_balance();
+
+
+--
+-- Name: ledger_entries ledger_entries_no_update_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER ledger_entries_no_update_delete BEFORE DELETE OR UPDATE ON public.ledger_entries FOR EACH ROW EXECUTE FUNCTION public.app_forbid_mutation();
+
+
+--
 -- Name: outbox_events outbox_events_no_update_delete; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -1849,6 +1976,14 @@ ALTER TABLE ONLY public.physician_cnpj_split_policies
 
 ALTER TABLE ONLY public.receivable_allocations
     ADD CONSTRAINT fk_rails_1b6f950b57 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
+-- Name: ledger_entries fk_rails_1d714c27a0; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ledger_entries
+    ADD CONSTRAINT fk_rails_1d714c27a0 FOREIGN KEY (receivable_id) REFERENCES public.receivables(id);
 
 
 --
@@ -1969,6 +2104,22 @@ ALTER TABLE ONLY public.kyc_profiles
 
 ALTER TABLE ONLY public.sessions
     ADD CONSTRAINT fk_rails_758836b4f0 FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- Name: ledger_entries fk_rails_771b3174f2; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ledger_entries
+    ADD CONSTRAINT fk_rails_771b3174f2 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
+-- Name: ledger_entries fk_rails_787e0031ca; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ledger_entries
+    ADD CONSTRAINT fk_rails_787e0031ca FOREIGN KEY (party_id) REFERENCES public.parties(id);
 
 
 --
@@ -2414,6 +2565,19 @@ CREATE POLICY kyc_profiles_tenant_policy ON public.kyc_profiles USING ((tenant_i
 
 
 --
+-- Name: ledger_entries; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.ledger_entries ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: ledger_entries ledger_entries_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY ledger_entries_tenant_policy ON public.ledger_entries USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
 -- Name: outbox_events; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -2576,6 +2740,7 @@ CREATE POLICY receivables_tenant_policy ON public.receivables USING ((tenant_id 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260213100000'),
 ('20260210213000'),
 ('20260210200500'),
 ('20260210195500'),
