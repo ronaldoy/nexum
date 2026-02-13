@@ -1,4 +1,4 @@
-# Medilend App
+# Nexum Capital App
 
 Rails application for receivables anticipation platform.
 

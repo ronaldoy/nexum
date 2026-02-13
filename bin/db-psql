@@ -2,6 +2,6 @@
 set -euo pipefail
 
 docker compose exec postgres psql \
-  -U "${POSTGRES_USER:-medilend}" \
-  -d "${POSTGRES_DB:-medilend_development}" \
+  -U "${POSTGRES_USER:-nexum}" \
+  -d "${POSTGRES_DB:-nexum_development}" \
   "$@"

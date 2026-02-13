@@ -1,4 +1,4 @@
-# MediLend - Database Schema
+# Nexum Capital - Database Schema
 
 ## Entity-Relationship Diagram
 

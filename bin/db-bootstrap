@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-POSTGRES_USER="${POSTGRES_USER:-medilend}"
+POSTGRES_USER="${POSTGRES_USER:-nexum}"
 
 databases=(
-  "${POSTGRES_DB:-medilend_development}"
-  "${POSTGRES_STAGING_DB:-medilend_staging}"
-  "${POSTGRES_TEST_DB:-medilend_test}"
+  "${POSTGRES_DB:-nexum_development}"
+  "${POSTGRES_STAGING_DB:-nexum_staging}"
+  "${POSTGRES_TEST_DB:-nexum_test}"
 )
 
 for db_name in "${databases[@]}"; do

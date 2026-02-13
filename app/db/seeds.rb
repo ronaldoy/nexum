@@ -5,13 +5,13 @@ require "digest"
 module DemoSeeds
   module_function
 
-  PASSWORD = "Medilend@2026"
+  PASSWORD = "Nexum@2026"
 
   def run!
-    puts "== Medilend demo seed =="
+    puts "== Nexum Capital demo seed =="
 
     tenant = Tenant.find_or_create_by!(slug: "demo-br") do |record|
-      record.name = "Medilend Demo Brasil"
+      record.name = "Nexum Capital Demo Brasil"
       record.active = true
     end
     secondary_tenant = Tenant.find_or_create_by!(slug: "demo-isolado") do |record|
@@ -23,10 +23,10 @@ module DemoSeeds
     seed_secondary_tenant!(secondary_tenant)
 
     puts "Dados de demonstração prontos."
-    puts "Login Hospital: hospital_admin@demo.medilend.br"
-    puts "Login Fornecedor: supplier_user@demo.medilend.br"
-    puts "Login Médico: physician_user@demo.medilend.br"
-    puts "Login FDIC: fdic_user@demo.medilend.br"
+    puts "Login Hospital: hospital_admin@demo.nexum.capital"
+    puts "Login Fornecedor: supplier_user@demo.nexum.capital"
+    puts "Login Médico: physician_user@demo.nexum.capital"
+    puts "Login FDIC: fdic_user@demo.nexum.capital"
     puts "Senha para todos: #{PASSWORD}"
   end
 
@@ -64,7 +64,7 @@ module DemoSeeds
         record.source_family = "SUPPLIER"
       end
 
-      user = User.find_or_initialize_by(email_address: "isolated_user@demo.medilend.br")
+      user = User.find_or_initialize_by(email_address: "isolated_user@demo.nexum.capital")
       user.tenant = tenant
       user.party = supplier
       user.role = "supplier_user"
@@ -155,15 +155,15 @@ module DemoSeeds
       fdic: upsert_party!(
         tenant: tenant,
         kind: "FIDC",
-        legal_name: "FDIC Medilend Recebíveis I",
-        display_name: "FDIC Medilend",
+        legal_name: "FDIC Nexum Capital Recebíveis I",
+        display_name: "FDIC Nexum Capital",
         seed_key: "fdic-main"
       ),
       platform: upsert_party!(
         tenant: tenant,
         kind: "PLATFORM",
-        legal_name: "Medilend Plataforma de Recebíveis S.A.",
-        display_name: "Medilend",
+        legal_name: "Nexum Capital S.A.",
+        display_name: "Nexum Capital",
         seed_key: "platform-main"
       )
     }
@@ -186,8 +186,8 @@ module DemoSeeds
 
   def seed_physicians!(tenant, parties)
     [
-      [ parties.fetch(:physician_ana), "Dra. Ana Carolina Mendes", "ana.mendes@demo.medilend.br", "11987650001", "12345", "SP" ],
-      [ parties.fetch(:physician_rafael), "Dr. Rafael Sousa Lima", "rafael.lima@demo.medilend.br", "11987650002", "54321", "RJ" ]
+      [ parties.fetch(:physician_ana), "Dra. Ana Carolina Mendes", "ana.mendes@demo.nexum.capital", "11987650001", "12345", "SP" ],
+      [ parties.fetch(:physician_rafael), "Dr. Rafael Sousa Lima", "rafael.lima@demo.nexum.capital", "11987650002", "54321", "RJ" ]
     ].each do |party, full_name, email, phone, crm_number, crm_state|
       physician = Physician.find_or_initialize_by(tenant: tenant, party: party)
       physician.assign_attributes(
@@ -241,10 +241,10 @@ module DemoSeeds
 
   def seed_users!(tenant, parties)
     [
-      [ "hospital_admin@demo.medilend.br", "hospital_admin", parties.fetch(:hospital) ],
-      [ "supplier_user@demo.medilend.br", "supplier_user", parties.fetch(:supplier_alpha) ],
-      [ "physician_user@demo.medilend.br", "physician_pf_user", parties.fetch(:physician_ana) ],
-      [ "fdic_user@demo.medilend.br", "ops_admin", parties.fetch(:fdic) ]
+      [ "hospital_admin@demo.nexum.capital", "hospital_admin", parties.fetch(:hospital) ],
+      [ "supplier_user@demo.nexum.capital", "supplier_user", parties.fetch(:supplier_alpha) ],
+      [ "physician_user@demo.nexum.capital", "physician_pf_user", parties.fetch(:physician_ana) ],
+      [ "fdic_user@demo.nexum.capital", "ops_admin", parties.fetch(:fdic) ]
     ].each do |email, role, party|
       user = User.find_or_initialize_by(email_address: email)
       user.tenant = tenant
@@ -420,7 +420,7 @@ module DemoSeeds
         actor_party: anticipation.requester_party,
         purpose: "ANTICIPATION_CONFIRMATION",
         delivery_channel: channel,
-        destination_masked: channel == "EMAIL" ? "d***@demo.medilend.br" : "+55*******123",
+        destination_masked: channel == "EMAIL" ? "d***@demo.nexum.capital" : "+55*******123",
         code_digest: Digest::SHA256.hexdigest("#{anticipation.id}-#{channel}-seed-code"),
         status: status,
         attempts: 0,
