@@ -46,7 +46,7 @@ module KycProfiles
     def call(kyc_profile_id:, raw_payload:)
       payload = raw_payload.to_h.deep_symbolize_keys
       normalized_payload = normalize_payload(payload)
-      payload_hash = build_payload_hash(kyc_profile_id: kyc_profile_id, payload: normalized_payload)
+      payload_hash = build_payload_hash(kyc_profile_id: kyc_profile_id, payload: normalized_payload.except(:blob))
 
       kyc_document = nil
       result = nil
@@ -82,6 +82,7 @@ module KycProfiles
           sha256: normalized_payload[:sha256],
           metadata: normalized_payload[:metadata]
         )
+        attach_blob!(record: kyc_document, blob: normalized_payload[:blob])
 
         create_kyc_event!(
           kyc_profile: kyc_profile,
@@ -146,6 +147,14 @@ module KycProfiles
         raise_validation_error!("invalid_metadata", "metadata must be a JSON object.")
       end
 
+      blob = resolve_blob(raw_signed_id: payload[:blob_signed_id])
+      storage_key = payload[:storage_key].to_s.strip
+      storage_key = blob.key if storage_key.blank? && blob.present?
+
+      if blob.present? && payload[:storage_key].to_s.strip.present? && payload[:storage_key].to_s.strip != blob.key
+        raise_validation_error!("storage_key_blob_mismatch", "storage_key does not match blob key.")
+      end
+
       {
         party_id: payload[:party_id].presence&.to_s,
         document_type: payload[:document_type].to_s.upcase,
@@ -155,7 +164,8 @@ module KycProfiles
         issued_on: parse_date(payload[:issued_on], field: "issued_on"),
         expires_on: parse_date(payload[:expires_on], field: "expires_on"),
         is_key_document: parse_boolean(payload.fetch(:is_key_document, false)),
-        storage_key: payload[:storage_key].to_s,
+        storage_key: storage_key,
+        blob: blob,
         sha256: payload[:sha256].to_s,
         metadata: metadata
       }
@@ -167,6 +177,21 @@ module KycProfiles
       Date.iso8601(raw_date.to_s)
     rescue ArgumentError
       raise_validation_error!("invalid_#{field}", "#{field} is invalid.")
+    end
+
+    def resolve_blob(raw_signed_id:)
+      signed_id = raw_signed_id.to_s.strip
+      return nil if signed_id.blank?
+
+      ActiveStorage::Blob.find_signed!(signed_id)
+    rescue ActiveSupport::MessageVerifier::InvalidSignature, ActiveRecord::RecordNotFound
+      raise_validation_error!("invalid_blob_signed_id", "blob_signed_id is invalid.")
+    end
+
+    def attach_blob!(record:, blob:)
+      return if blob.blank?
+
+      record.file.attach(blob)
     end
 
     def parse_boolean(raw_value)

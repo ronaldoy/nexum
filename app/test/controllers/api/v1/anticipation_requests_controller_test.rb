@@ -17,6 +17,10 @@ module Api
         @secondary_bundle = nil
 
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          @user.update!(role: "ops_admin")
+        end
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
           _, @write_token = ApiAccessToken.issue!(
             tenant: @tenant,
             user: @user,
@@ -278,6 +282,38 @@ module Api
 
         assert_response :conflict
         assert_equal "idempotency_key_reused_with_different_payload", response.parsed_body.dig("error", "code")
+      end
+
+      test "rejects challenge issuance with invalid destination and logs failure" do
+        anticipation_request = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          anticipation_request = create_direct_anticipation_request!(
+            tenant_bundle: @tenant_bundle,
+            idempotency_key: "idem-internal-issue-invalid-001"
+          )
+        end
+
+        post issue_challenges_api_v1_anticipation_request_path(anticipation_request.id),
+          headers: authorization_headers(@challenge_token, idempotency_key: "idem-issue-invalid-001"),
+          params: {
+            challenge_issue: {
+              email_destination: "invalid-email",
+              whatsapp_destination: "+55 (11) 91234-5678"
+            }
+          },
+          as: :json
+
+        assert_response :unprocessable_entity
+        assert_equal "invalid_email_destination", response.parsed_body.dig("error", "code")
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          assert_equal 1, ActionIpLog.where(
+            tenant_id: @tenant.id,
+            action_type: "ANTICIPATION_CHALLENGES_ISSUE_FAILED",
+            target_id: anticipation_request.id
+          ).count
+        end
       end
 
       test "requires challenge scope for issue challenges endpoint" do

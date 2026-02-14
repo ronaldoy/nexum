@@ -17,6 +17,11 @@
         <%= form.password_field :password, required: true, autocomplete: "current-password", placeholder: "Digite sua senha", maxlength: 72 %>
       </div>
 
+      <div class="field">
+        <%= form.label :otp_code, "Código MFA (perfis privilegiados)" %>
+        <%= form.text_field :otp_code, autocomplete: "one-time-code", inputmode: "numeric", placeholder: "000000" %>
+      </div>
+
       <%= form.submit "Entrar no portal", class: "button button-primary" %>
     <% end %>
 

@@ -1,26 +1,30 @@
 module RequestContext
   extend ActiveSupport::Concern
 
+  class ContextError < StandardError; end
+
   included do
     around_action :with_request_connection
     before_action :populate_request_context
     before_action :apply_database_request_context
-    after_action :clear_database_request_context
   end
 
   private
 
   def with_request_connection
     ActiveRecord::Base.connection_pool.with_connection do
-      yield
+      ActiveRecord::Base.transaction(requires_new: true) do
+        yield
+      end
     end
+  ensure
+    Current.reset
   end
 
   def populate_request_context
     Current.request_id = request.request_id
     Current.tenant_id = resolved_tenant_id
     Current.actor_id = resolved_actor_id
-    Current.role = resolved_role
   end
 
   def resolved_tenant_id
@@ -36,25 +40,34 @@ module RequestContext
   end
 
   def apply_database_request_context
-    set_database_context("app.tenant_id", Current.tenant_id)
-    set_database_context("app.actor_id", Current.actor_id)
-    set_database_context("app.role", Current.role)
+    set_database_context!("app.tenant_id", Current.tenant_id)
+    set_database_context!("app.actor_id", Current.actor_id)
+    Current.role = resolved_role
+    set_database_context!("app.role", Current.role)
   end
 
-  def clear_database_request_context
-    set_database_context("app.tenant_id", nil)
-    set_database_context("app.actor_id", nil)
-    set_database_context("app.role", nil)
-  ensure
-    Current.reset
+  def set_database_context!(key, value)
+    self.class.set_database_context!(key, value)
   end
 
-  def set_database_context(key, value)
-    connection = ActiveRecord::Base.connection
-    connection.execute(
-      "SELECT set_config(#{connection.quote(key)}, #{connection.quote(value.to_s)}, false)"
-    )
-  rescue ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid
-    nil
+  class_methods do
+    def set_database_context!(key, value)
+      ActiveRecord::Base.connection.raw_connection.exec_params(
+        "SELECT set_config($1, $2, true)",
+        [key.to_s, value.to_s]
+      )
+    rescue ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid => error
+      raise ContextError, "failed to apply request context #{key}: #{error.message}"
+    end
+  end
+
+  def bootstrap_database_tenant_context!(tenant_id)
+    return if tenant_id.blank?
+
+    self.class.set_database_context!("app.tenant_id", tenant_id)
+  end
+
+  def clear_bootstrap_database_tenant_context!
+    self.class.set_database_context!("app.tenant_id", "")
   end
 end

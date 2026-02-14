@@ -8,6 +8,8 @@ class KycDocument < ApplicationRecord
   belongs_to :kyc_profile
   belongs_to :party
 
+  has_one_attached :file
+
   encrypts :document_number
 
   before_validation :normalize_attributes

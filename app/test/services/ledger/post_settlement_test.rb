@@ -121,6 +121,7 @@ module Ledger
 
         assert result.all? { |e| e.source_type == "ReceivablePaymentSettlement" }
         assert result.all? { |e| e.source_id == settlement.id }
+        assert result.all? { |e| e.payment_reference == settlement.payment_reference }
       end
     end
 
@@ -210,6 +211,7 @@ module Ledger
         fdic_balance_after: "0.00",
         paid_at: Time.current,
         payment_reference: "ledger-test-#{SecureRandom.hex(4)}",
+        idempotency_key: "ledger-idem-#{SecureRandom.hex(8)}",
         request_id: @request_id,
         metadata: {}
       )

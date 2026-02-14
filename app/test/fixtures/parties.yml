@@ -1,0 +1,17 @@
+default_supplier_party:
+  tenant: default
+  kind: SUPPLIER
+  document_type: CNPJ
+  document_number: "04252011000110"
+  legal_name: "Fornecedor Padrão LTDA"
+  display_name: "Fornecedor Padrão"
+  active: true
+
+secondary_supplier_party:
+  tenant: secondary
+  kind: SUPPLIER
+  document_type: CNPJ
+  document_number: "11222333000181"
+  legal_name: "Fornecedor Secundário LTDA"
+  display_name: "Fornecedor Secundário"
+  active: true

@@ -12,6 +12,8 @@ class ReceivablePaymentSettlement < ApplicationRecord
   validates :fdic_balance_before, presence: true, numericality: { greater_than_or_equal_to: 0 }
   validates :fdic_balance_after, presence: true, numericality: { greater_than_or_equal_to: 0 }
   validates :paid_at, presence: true
+  validates :payment_reference, presence: true
+  validates :idempotency_key, presence: true, uniqueness: { scope: :tenant_id }
 
   validate :split_must_match_paid_amount
   validate :fdic_balance_flow_must_be_valid

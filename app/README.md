@@ -36,10 +36,28 @@ Rails application for receivables anticipation platform.
   - first-party bearer tokens for integration APIs
 
 ## API Bootstrap
+- `GET /health` liveness check.
 - `GET /ready` readiness check (database connectivity).
 - `GET /api/v1/receivables` list receivables scoped by tenant context.
 - `GET /api/v1/receivables/:id` fetch single receivable.
 - `GET /api/v1/receivables/:id/history` full append-only timeline (events + document events).
+- `GET /docs/openapi/v1` serves OpenAPI v1 contract.
+- OpenAPI source file: `../docs/openapi/v1.yaml`.
+
+## Document Storage (ActiveStorage + GCS)
+- Document evidence uses ActiveStorage attachments on `Document` and `KycDocument`.
+- ActiveStorage direct upload endpoint:
+  - `POST /rails/active_storage/direct_uploads`
+- Receivable/KYC document APIs accept `blob_signed_id` (from direct upload) and persist the blob key as `storage_key`.
+- Production storage service defaults to `google` (Google Cloud Storage) and can be overridden with:
+  - `ACTIVE_STORAGE_SERVICE`
+
+### GCS Configuration
+- Configure under Rails credentials (`Rails.app.creds`) or environment variables:
+  - `gcs.project` or `GCS_PROJECT`
+  - `gcs.bucket` or `GCS_BUCKET`
+  - `gcs.credentials_path` or `GCS_CREDENTIALS_PATH`
+- Service definitions live in `config/storage.yml`.
 
 ## Composable Receivables Model
 - Shared core table: `receivables`.
@@ -52,6 +70,17 @@ Rails application for receivables anticipation platform.
 - IP logging for security-relevant actions.
 - Signature action inside platform with confirmation code flow.
 - 7-year retention for financial/audit/security records.
+
+## Security Baseline (Financial)
+- CSRF verification strategy uses `Sec-Fetch-Site` (`:header_only`) with `protect_from_forgery` exception mode.
+- Production enforces HTTPS (`force_ssl`) with HSTS and strict same-site cookie protection.
+- Web session cookie (`session_id`) is encrypted, `HttpOnly`, `SameSite=Strict`, and time-limited (`SESSION_TTL_HOURS`, default 12h).
+- Session records are rejected server-side after TTL expiration.
+- Host header allowlist can be configured via:
+  - `security.allowed_hosts` or `APP_ALLOWED_HOSTS`
+- CSP is enabled globally; optional allowlist extensions are configurable via:
+  - `security.csp_connect_src` or `CSP_CONNECT_SRC`
+  - `security.csp_img_src` or `CSP_IMG_SRC`
 
 ## PII Encryption (Rails Native)
 - PII fields are encrypted at rest via Active Record Encryption (AES-256-GCM).

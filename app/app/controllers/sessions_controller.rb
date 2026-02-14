@@ -7,6 +7,11 @@ class SessionsController < ApplicationController
 
   def create
     if user = User.authenticate_by(params.permit(:email_address, :password))
+      unless mfa_verified_for?(user)
+        redirect_to new_session_path, alert: mfa_error_message_for(user)
+        return
+      end
+
       start_new_session_for user
       redirect_to after_authentication_url
     else
@@ -17,5 +22,19 @@ class SessionsController < ApplicationController
   def destroy
     terminate_session
     redirect_to new_session_path, status: :see_other
+  end
+
+  private
+
+  def mfa_verified_for?(user)
+    return true unless user.mfa_required_for_role?
+
+    user.valid_mfa_code?(params[:otp_code])
+  end
+
+  def mfa_error_message_for(user)
+    return "MFA obrigatório para este perfil. Contate o suporte para habilitar." unless user.mfa_enabled?
+
+    "Código MFA inválido."
   end
 end

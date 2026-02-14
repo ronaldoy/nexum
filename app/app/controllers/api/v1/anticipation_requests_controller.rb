@@ -1,20 +1,20 @@
 module Api
   module V1
     class AnticipationRequestsController < Api::BaseController
-      before_action only: :create do
-        require_api_scope!("anticipation_requests:write")
-      end
-      before_action only: :issue_challenges do
-        require_api_scope!("anticipation_requests:challenge")
-      end
-      before_action only: :confirm do
-        require_api_scope!("anticipation_requests:confirm")
-      end
+      require_api_scopes(
+        create: "anticipation_requests:write",
+        issue_challenges: "anticipation_requests:challenge",
+        confirm: "anticipation_requests:confirm"
+      )
 
       def create
+        authorize_party_access!(create_params[:requester_party_id]) if create_params[:requester_party_id].present?
+        return unless enforce_string_payload_type!(create_params, :requested_amount)
+        return unless enforce_string_payload_type!(create_params, :discount_rate)
+
         result = anticipation_creation_service.call(
           create_params.to_h,
-          default_requester_party_id: Current.user&.party_id
+          default_requester_party_id: current_actor_party_id
         )
 
         render json: {
@@ -27,8 +27,11 @@ module Api
       end
 
       def issue_challenges
+        anticipation_request = tenant_anticipation_requests.find(params[:id])
+        authorize_party_access!(anticipation_request.requester_party_id)
+
         result = challenge_issue_service.call(
-          anticipation_request_id: params[:id],
+          anticipation_request_id: anticipation_request.id,
           email_destination: challenge_issue_params[:email_destination],
           whatsapp_destination: challenge_issue_params[:whatsapp_destination]
         )
@@ -55,8 +58,11 @@ module Api
       end
 
       def confirm
+        anticipation_request = tenant_anticipation_requests.find(params[:id])
+        authorize_party_access!(anticipation_request.requester_party_id)
+
         result = anticipation_confirmation_service.call(
-          anticipation_request_id: params[:id],
+          anticipation_request_id: anticipation_request.id,
           email_code: confirmation_params[:email_code],
           whatsapp_code: confirmation_params[:whatsapp_code]
         )
@@ -162,6 +168,21 @@ module Api
 
       def decimal_as_string(value)
         value.to_d.to_s("F")
+      end
+
+      def tenant_anticipation_requests
+        AnticipationRequest.where(tenant_id: Current.tenant_id)
+      end
+
+      def enforce_string_payload_type!(payload, key)
+        return true if payload[key].is_a?(String)
+
+        render_api_error(
+          code: "invalid_#{key}_type",
+          message: "#{key} must be provided as a string.",
+          status: :unprocessable_entity
+        )
+        false
       end
     end
   end

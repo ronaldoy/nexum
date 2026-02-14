@@ -1,15 +1,13 @@
 module Api
   module V1
     class ReceivablesController < Api::BaseController
-      before_action only: %i[index show] do
-        require_api_scope!("receivables:read")
-      end
-      before_action only: :history do
-        require_api_scope!("receivables:history")
-      end
-      before_action only: :settle_payment do
-        require_api_scope!("receivables:settle")
-      end
+      require_api_scopes(
+        index: "receivables:read",
+        show: "receivables:read",
+        history: "receivables:history",
+        settle_payment: "receivables:settle",
+        attach_document: "receivables:documents:write"
+      )
 
       def index
         limit = params.fetch(:limit, 50).to_i.clamp(1, 200)
@@ -47,8 +45,11 @@ module Api
       end
 
       def settle_payment
+        return unless enforce_string_payload_type!(settlement_params, :paid_amount)
+
+        receivable = tenant_receivables.find(params[:id])
         result = receivable_settlement_service.call(
-          receivable_id: params[:id],
+          receivable_id: receivable.id,
           receivable_allocation_id: settlement_params[:receivable_allocation_id],
           paid_amount: settlement_params[:paid_amount],
           paid_at: settlement_params[:paid_at].presence || Time.current,
@@ -65,6 +66,27 @@ module Api
       rescue Receivables::SettlePayment::IdempotencyConflict => error
         render_api_error(code: error.code, message: error.message, status: :conflict)
       rescue Receivables::SettlePayment::ValidationError => error
+        render_api_error(code: error.code, message: error.message, status: :unprocessable_entity)
+      end
+
+      def attach_document
+        receivable = tenant_receivables.find(params[:id])
+        requested_actor_party_id = attach_document_params[:actor_party_id]
+        enforce_actor_party_binding!(requested_actor_party_id) if requested_actor_party_id.present?
+
+        result = receivable_document_service.call(
+          receivable_id: receivable.id,
+          raw_payload: attach_document_params.to_h,
+          default_actor_party_id: current_actor_party_id,
+          privileged_actor: privileged_actor?
+        )
+
+        render json: {
+          data: document_payload(result.document).merge(replayed: result.replayed?)
+        }, status: (result.replayed? ? :ok : :created)
+      rescue Receivables::AttachSignedDocument::IdempotencyConflict => error
+        render_api_error(code: error.code, message: error.message, status: :conflict)
+      rescue Receivables::AttachSignedDocument::ValidationError => error
         render_api_error(code: error.code, message: error.message, status: :unprocessable_entity)
       end
 
@@ -135,12 +157,15 @@ module Api
       def document_payload(document)
         {
           id: document.id,
+          receivable_id: document.receivable_id,
+          actor_party_id: document.actor_party_id,
           document_type: document.document_type,
           signature_method: document.signature_method,
           status: document.status,
           sha256: document.sha256,
           storage_key: document.storage_key,
           signed_at: document.signed_at&.iso8601,
+          metadata: document.metadata || {},
           events: document.document_events.order(occurred_at: :asc).map do |event|
             {
               id: event.id,
@@ -169,11 +194,43 @@ module Api
         )
       end
 
+      def attach_document_params
+        payload = params[:document].presence || params
+        payload.permit(
+          :actor_party_id,
+          :document_type,
+          :signature_method,
+          :sha256,
+          :storage_key,
+          :blob_signed_id,
+          :signed_at,
+          :provider_envelope_id,
+          :email_challenge_id,
+          :whatsapp_challenge_id,
+          metadata: {}
+        )
+      end
+
       def receivable_settlement_service
         Receivables::SettlePayment.new(
           tenant_id: Current.tenant_id,
+          actor_party_id: current_actor_party_id,
           actor_role: Current.role,
           request_id: Current.request_id,
+          idempotency_key: Current.idempotency_key,
+          request_ip: request.remote_ip,
+          user_agent: request.user_agent,
+          endpoint_path: request.fullpath,
+          http_method: request.method
+        )
+      end
+
+      def receivable_document_service
+        Receivables::AttachSignedDocument.new(
+          tenant_id: Current.tenant_id,
+          actor_role: Current.role,
+          request_id: Current.request_id,
+          idempotency_key: Current.idempotency_key,
           request_ip: request.remote_ip,
           user_agent: request.user_agent,
           endpoint_path: request.fullpath,
@@ -182,7 +239,40 @@ module Api
       end
 
       def tenant_receivables
-        Receivable.where(tenant_id: Current.tenant_id)
+        scope = Receivable.where(tenant_id: Current.tenant_id)
+        return scope if privileged_actor?
+
+        actor_party_id = current_actor_party_id
+        raise AuthorizationError, "actor_party_required" if actor_party_id.blank?
+
+        visibility_sql = <<~SQL.squish
+          receivables.debtor_party_id = :actor_party_id
+          OR receivables.creditor_party_id = :actor_party_id
+          OR receivables.beneficiary_party_id = :actor_party_id
+          OR EXISTS (
+            SELECT 1
+            FROM receivable_allocations
+            WHERE receivable_allocations.tenant_id = receivables.tenant_id
+              AND receivable_allocations.receivable_id = receivables.id
+              AND (
+                receivable_allocations.allocated_party_id = :actor_party_id
+                OR receivable_allocations.physician_party_id = :actor_party_id
+              )
+          )
+        SQL
+
+        scope.where(visibility_sql, actor_party_id: actor_party_id)
+      end
+
+      def enforce_string_payload_type!(payload, key)
+        return true if payload[key].is_a?(String)
+
+        render_api_error(
+          code: "invalid_#{key}_type",
+          message: "#{key} must be provided as a string.",
+          status: :unprocessable_entity
+        )
+        false
       end
     end
   end

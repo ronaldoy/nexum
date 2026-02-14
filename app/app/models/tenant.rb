@@ -10,7 +10,10 @@ class Tenant < ApplicationRecord
   has_many :receivable_payment_settlements, dependent: :restrict_with_exception
   has_many :anticipation_settlement_entries, dependent: :restrict_with_exception
   has_many :users, dependent: :restrict_with_exception
+  has_many :roles, dependent: :restrict_with_exception
+  has_many :user_roles, dependent: :restrict_with_exception
   has_many :api_access_tokens, dependent: :restrict_with_exception
+  has_many :assignment_contracts, dependent: :restrict_with_exception
 
   validates :slug, presence: true, uniqueness: true
   validates :name, presence: true

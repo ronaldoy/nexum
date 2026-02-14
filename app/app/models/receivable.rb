@@ -15,6 +15,7 @@ class Receivable < ApplicationRecord
   has_many :receivable_events, dependent: :restrict_with_exception
   has_many :documents, dependent: :restrict_with_exception
   has_many :receivable_payment_settlements, dependent: :restrict_with_exception
+  has_many :assignment_contracts, dependent: :restrict_with_exception
 
   before_validation :normalize_currency
 

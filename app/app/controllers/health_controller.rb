@@ -1,4 +1,12 @@
 class HealthController < ActionController::API
+  def health
+    render json: {
+      status: "ok",
+      checks: {},
+      timestamp: Time.current.iso8601
+    }
+  end
+
   def ready
     ActiveRecord::Base.connection.execute("SELECT 1")
 

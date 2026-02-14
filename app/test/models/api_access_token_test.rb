@@ -42,4 +42,20 @@ class ApiAccessTokenTest < ActiveSupport::TestCase
 
     assert_nil authenticated
   end
+
+  test "rejects token when tenant prefix is tampered" do
+    raw_token = nil
+
+    with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+      _, raw_token = ApiAccessToken.issue!(tenant: @tenant, user: @user, name: "Tamper Test")
+    end
+
+    tampered_token = raw_token.sub(@tenant.id.to_s, tenants(:secondary).id.to_s)
+
+    authenticated = with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+      ApiAccessToken.authenticate(tampered_token)
+    end
+
+    assert_nil authenticated
+  end
 end

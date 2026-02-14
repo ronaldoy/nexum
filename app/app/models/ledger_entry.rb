@@ -7,6 +7,8 @@ class LedgerEntry < ApplicationRecord
   belongs_to :party, optional: true
 
   validates :txn_id, presence: true
+  validates :entry_position, presence: true, numericality: { only_integer: true, greater_than: 0 }
+  validates :txn_entry_count, presence: true, numericality: { only_integer: true, greater_than: 0 }
   validates :account_code, presence: true
   validates :entry_side, presence: true, inclusion: { in: ENTRY_SIDES }
   validates :amount, presence: true, numericality: { greater_than: 0 }

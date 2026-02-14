@@ -4,9 +4,37 @@ module Api
     include IdempotencyEnforcement
     include RequestContext
 
+    PRIVILEGED_ROLES = %w[hospital_admin ops_admin integration_api].freeze
+
+    class AuthorizationError < StandardError
+      attr_reader :code
+
+      def initialize(code: "forbidden", message: "Access denied.")
+        @code = code
+        super(message)
+      end
+    end
+    class ScopeDeclarationError < StandardError; end
+
+    class_attribute :api_scope_requirements, instance_writer: false, default: {}
+
+    before_action :require_declared_api_scopes!
+
     rescue_from ActiveRecord::RecordNotFound, with: :render_not_found
+    rescue_from AuthorizationError, with: :render_forbidden
+    rescue_from RequestContext::ContextError, with: :render_request_context_error
 
     private
+
+    class << self
+      def require_api_scopes(mapping)
+        normalized = mapping.to_h.each_with_object({}) do |(action_name, scopes), output|
+          output[action_name.to_s] = Array(scopes).map(&:to_s)
+        end
+
+        self.api_scope_requirements = api_scope_requirements.merge(normalized)
+      end
+    end
 
     def resolved_tenant_id
       Current.api_access_token&.tenant_id || Current.user&.tenant_id
@@ -24,6 +52,18 @@ module Api
       render_api_error(code: "not_found", message: "Resource not found.", status: :not_found)
     end
 
+    def render_forbidden(error)
+      render_api_error(code: error.code, message: error.message, status: :forbidden)
+    end
+
+    def render_request_context_error
+      render_api_error(
+        code: "request_context_unavailable",
+        message: "Request context could not be established.",
+        status: :service_unavailable
+      )
+    end
+
     def render_api_error(code:, message:, status:)
       render json: {
         error: {
@@ -35,14 +75,49 @@ module Api
     end
 
     def require_api_scope!(scope)
+      ensure_api_scope!(scope.to_s)
+    end
+
+    def require_declared_api_scopes!
+      scopes = self.class.api_scope_requirements[action_name]
+      if scopes.blank?
+        raise ScopeDeclarationError, "#{self.class.name}##{action_name} must declare required API scopes."
+      end
+
+      scopes.each { |scope| ensure_api_scope!(scope) }
+    end
+
+    def ensure_api_scope!(scope)
       token_scopes = Array(Current.api_access_token&.scopes)
       return if token_scopes.include?(scope)
 
-      render_api_error(
-        code: "insufficient_scope",
-        message: "Missing required scope: #{scope}.",
-        status: :forbidden
-      )
+      raise AuthorizationError.new(code: "insufficient_scope", message: "Access denied.")
+    end
+
+    def privileged_actor?
+      PRIVILEGED_ROLES.include?(Current.role.to_s)
+    end
+
+    def current_actor_party_id
+      Current.user&.party_id
+    end
+
+    def authorize_party_access!(party_id)
+      return if privileged_actor?
+
+      actor_party_id = current_actor_party_id
+      if actor_party_id.blank? || party_id.to_s != actor_party_id.to_s
+        raise AuthorizationError.new(code: "forbidden", message: "Access denied.")
+      end
+    end
+
+    def enforce_actor_party_binding!(party_id)
+      return if privileged_actor?
+
+      actor_party_id = current_actor_party_id
+      if actor_party_id.blank? || party_id.to_s != actor_party_id.to_s
+        raise AuthorizationError.new(code: "forbidden", message: "Access denied.")
+      end
     end
   end
 end

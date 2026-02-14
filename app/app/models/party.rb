@@ -19,6 +19,8 @@ class Party < ApplicationRecord
   has_many :kyc_documents, dependent: :restrict_with_exception
   has_many :kyc_events, dependent: :restrict_with_exception
   has_many :users, dependent: :restrict_with_exception
+  has_many :assignment_contracts_as_assignor, class_name: "AssignmentContract", foreign_key: :assignor_party_id, dependent: :restrict_with_exception
+  has_many :assignment_contracts_as_assignee, class_name: "AssignmentContract", foreign_key: :assignee_party_id, dependent: :restrict_with_exception
 
   before_validation :normalize_document_number
   before_validation :normalize_document_type

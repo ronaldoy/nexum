@@ -1,3 +1,12 @@
+--
+-- PostgreSQL database dump
+--
+
+\restrict wPFdXVkfYy4isnmKgj32KoHduZvZOGwuzIJfVfRnRUrzgcWLSz4ABFdA0emjT35
+
+-- Dumped from database version 18.1 (Debian 18.1-1.pgdg13+2)
+-- Dumped by pg_dump version 18.1 (Debian 18.1-1.pgdg13+2)
+
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
@@ -70,20 +79,101 @@ CREATE FUNCTION public.ledger_entries_check_balance() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
-  debit_total  numeric(18,2);
+  txn_record record;
+  debit_total numeric(18,2);
   credit_total numeric(18,2);
+  row_count integer;
+  min_entry_count integer;
+  max_entry_count integer;
+  distinct_source_type_count integer;
+  distinct_source_id_count integer;
+  distinct_payment_reference_count integer;
+  entry_source_type text;
+  entry_source_id_text text;
+  entry_payment_reference text;
+  header_source_type text;
+  header_source_id_text text;
+  header_payment_reference text;
+  header_entry_count integer;
 BEGIN
-  SELECT
-    COALESCE(SUM(CASE WHEN entry_side = 'DEBIT'  THEN amount ELSE 0 END), 0),
-    COALESCE(SUM(CASE WHEN entry_side = 'CREDIT' THEN amount ELSE 0 END), 0)
-  INTO debit_total, credit_total
-  FROM ledger_entries
-  WHERE txn_id = NEW.txn_id;
+  FOR txn_record IN
+    SELECT DISTINCT tenant_id, txn_id
+    FROM new_rows
+  LOOP
+    SELECT
+      COALESCE(SUM(CASE WHEN le.entry_side = 'DEBIT'  THEN le.amount ELSE 0 END), 0),
+      COALESCE(SUM(CASE WHEN le.entry_side = 'CREDIT' THEN le.amount ELSE 0 END), 0),
+      COUNT(*),
+      MIN(le.txn_entry_count),
+      MAX(le.txn_entry_count),
+      COUNT(DISTINCT le.source_type),
+      COUNT(DISTINCT le.source_id),
+      COUNT(DISTINCT COALESCE(le.payment_reference, '')),
+      MIN(le.source_type),
+      MIN(le.source_id::text),
+      MIN(le.payment_reference),
+      lt.source_type,
+      lt.source_id::text,
+      lt.payment_reference,
+      lt.entry_count
+    INTO
+      debit_total,
+      credit_total,
+      row_count,
+      min_entry_count,
+      max_entry_count,
+      distinct_source_type_count,
+      distinct_source_id_count,
+      distinct_payment_reference_count,
+      entry_source_type,
+      entry_source_id_text,
+      entry_payment_reference,
+      header_source_type,
+      header_source_id_text,
+      header_payment_reference,
+      header_entry_count
+    FROM ledger_entries le
+    INNER JOIN ledger_transactions lt
+      ON lt.tenant_id = le.tenant_id
+     AND lt.txn_id = le.txn_id
+    WHERE le.tenant_id = txn_record.tenant_id
+      AND le.txn_id = txn_record.txn_id
+    GROUP BY lt.source_type, lt.source_id, lt.payment_reference, lt.entry_count;
 
-  IF debit_total <> credit_total THEN
-    RAISE EXCEPTION 'unbalanced ledger transaction %: debits=% credits=%',
-      NEW.txn_id, debit_total, credit_total;
-  END IF;
+    IF row_count <> header_entry_count THEN
+      RAISE EXCEPTION 'incomplete ledger transaction %: entries=% expected=%',
+        txn_record.txn_id, row_count, header_entry_count;
+    END IF;
+
+    IF min_entry_count IS DISTINCT FROM max_entry_count OR max_entry_count IS DISTINCT FROM header_entry_count THEN
+      RAISE EXCEPTION 'inconsistent txn_entry_count for ledger transaction %', txn_record.txn_id;
+    END IF;
+
+    IF distinct_source_type_count <> 1 OR distinct_source_id_count <> 1 THEN
+      RAISE EXCEPTION 'inconsistent source linkage for ledger transaction %', txn_record.txn_id;
+    END IF;
+
+    IF distinct_payment_reference_count <> 1 THEN
+      RAISE EXCEPTION 'inconsistent payment_reference for ledger transaction %', txn_record.txn_id;
+    END IF;
+
+    IF entry_source_type IS DISTINCT FROM header_source_type OR entry_source_id_text IS DISTINCT FROM header_source_id_text THEN
+      RAISE EXCEPTION 'ledger transaction source mismatch %', txn_record.txn_id;
+    END IF;
+
+    IF COALESCE(entry_payment_reference, '') <> COALESCE(header_payment_reference, '') THEN
+      RAISE EXCEPTION 'ledger transaction payment_reference mismatch %', txn_record.txn_id;
+    END IF;
+
+    IF header_source_type = 'ReceivablePaymentSettlement' AND (header_payment_reference IS NULL OR btrim(header_payment_reference) = '') THEN
+      RAISE EXCEPTION 'payment_reference is required for settlement ledger transaction %', txn_record.txn_id;
+    END IF;
+
+    IF debit_total <> credit_total THEN
+      RAISE EXCEPTION 'unbalanced ledger transaction %: debits=% credits=%',
+        txn_record.txn_id, debit_total, credit_total;
+    END IF;
+  END LOOP;
 
   RETURN NULL;
 END;
@@ -116,10 +206,109 @@ CREATE TABLE public.action_ip_logs (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT action_ip_logs_channel_check CHECK (((channel)::text = ANY ((ARRAY['API'::character varying, 'PORTAL'::character varying, 'WORKER'::character varying, 'WEBHOOK'::character varying, 'ADMIN'::character varying])::text[])))
+    CONSTRAINT action_ip_logs_channel_check CHECK (((channel)::text = ANY (ARRAY[('API'::character varying)::text, ('PORTAL'::character varying)::text, ('WORKER'::character varying)::text, ('WEBHOOK'::character varying)::text, ('ADMIN'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.action_ip_logs FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: active_storage_attachments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.active_storage_attachments (
+    id bigint NOT NULL,
+    name character varying NOT NULL,
+    record_type character varying NOT NULL,
+    record_id text NOT NULL,
+    blob_id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL
+);
+
+
+--
+-- Name: active_storage_attachments_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.active_storage_attachments_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: active_storage_attachments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.active_storage_attachments_id_seq OWNED BY public.active_storage_attachments.id;
+
+
+--
+-- Name: active_storage_blobs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.active_storage_blobs (
+    id bigint NOT NULL,
+    key character varying NOT NULL,
+    filename character varying NOT NULL,
+    content_type character varying,
+    metadata text,
+    service_name character varying NOT NULL,
+    byte_size bigint NOT NULL,
+    checksum character varying,
+    created_at timestamp(6) without time zone NOT NULL
+);
+
+
+--
+-- Name: active_storage_blobs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.active_storage_blobs_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: active_storage_blobs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.active_storage_blobs_id_seq OWNED BY public.active_storage_blobs.id;
+
+
+--
+-- Name: active_storage_variant_records; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.active_storage_variant_records (
+    id bigint NOT NULL,
+    blob_id bigint NOT NULL,
+    variation_digest character varying NOT NULL
+);
+
+
+--
+-- Name: active_storage_variant_records_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.active_storage_variant_records_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: active_storage_variant_records_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.active_storage_variant_records_id_seq OWNED BY public.active_storage_variant_records.id;
 
 
 --
@@ -146,12 +335,12 @@ CREATE TABLE public.anticipation_requests (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT anticipation_requests_channel_check CHECK (((channel)::text = ANY ((ARRAY['API'::character varying, 'PORTAL'::character varying, 'WEBHOOK'::character varying, 'INTERNAL'::character varying])::text[]))),
+    CONSTRAINT anticipation_requests_channel_check CHECK (((channel)::text = ANY (ARRAY[('API'::character varying)::text, ('PORTAL'::character varying)::text, ('WEBHOOK'::character varying)::text, ('INTERNAL'::character varying)::text]))),
     CONSTRAINT anticipation_requests_discount_amount_check CHECK ((discount_amount >= (0)::numeric)),
     CONSTRAINT anticipation_requests_discount_rate_check CHECK ((discount_rate >= (0)::numeric)),
     CONSTRAINT anticipation_requests_net_amount_positive_check CHECK ((net_amount > (0)::numeric)),
     CONSTRAINT anticipation_requests_requested_amount_positive_check CHECK ((requested_amount > (0)::numeric)),
-    CONSTRAINT anticipation_requests_status_check CHECK (((status)::text = ANY ((ARRAY['REQUESTED'::character varying, 'APPROVED'::character varying, 'FUNDED'::character varying, 'SETTLED'::character varying, 'CANCELLED'::character varying, 'REJECTED'::character varying])::text[])))
+    CONSTRAINT anticipation_requests_status_check CHECK (((status)::text = ANY (ARRAY[('REQUESTED'::character varying)::text, ('APPROVED'::character varying)::text, ('FUNDED'::character varying)::text, ('SETTLED'::character varying)::text, ('CANCELLED'::character varying)::text, ('REJECTED'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.anticipation_requests FORCE ROW LEVEL SECURITY;
@@ -215,6 +404,40 @@ CREATE TABLE public.ar_internal_metadata (
 
 
 --
+-- Name: assignment_contracts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.assignment_contracts (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    receivable_id uuid NOT NULL,
+    anticipation_request_id uuid,
+    assignor_party_id uuid NOT NULL,
+    assignee_party_id uuid NOT NULL,
+    contract_number character varying NOT NULL,
+    status character varying DEFAULT 'DRAFT'::character varying NOT NULL,
+    currency character varying(3) DEFAULT 'BRL'::character varying NOT NULL,
+    assigned_amount numeric(18,2) NOT NULL,
+    idempotency_key character varying NOT NULL,
+    signed_at timestamp(6) without time zone,
+    effective_at timestamp(6) without time zone,
+    cancelled_at timestamp(6) without time zone,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT assignment_contracts_assigned_amount_positive_check CHECK ((assigned_amount > (0)::numeric)),
+    CONSTRAINT assignment_contracts_cancelled_at_required_check CHECK ((((status)::text <> 'CANCELLED'::text) OR (cancelled_at IS NOT NULL))),
+    CONSTRAINT assignment_contracts_cancelled_at_state_check CHECK (((cancelled_at IS NULL) OR ((status)::text = 'CANCELLED'::text))),
+    CONSTRAINT assignment_contracts_currency_brl_check CHECK (((currency)::text = 'BRL'::text)),
+    CONSTRAINT assignment_contracts_idempotency_key_present_check CHECK ((btrim((idempotency_key)::text) <> ''::text)),
+    CONSTRAINT assignment_contracts_signed_at_required_check CHECK ((((status)::text = ANY (ARRAY[('DRAFT'::character varying)::text, ('CANCELLED'::character varying)::text])) OR (signed_at IS NOT NULL))),
+    CONSTRAINT assignment_contracts_status_check CHECK (((status)::text = ANY (ARRAY[('DRAFT'::character varying)::text, ('SIGNED'::character varying)::text, ('ACTIVE'::character varying)::text, ('SETTLED'::character varying)::text, ('CANCELLED'::character varying)::text])))
+);
+
+ALTER TABLE ONLY public.assignment_contracts FORCE ROW LEVEL SECURITY;
+
+
+--
 -- Name: auth_challenges; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -238,9 +461,9 @@ CREATE TABLE public.auth_challenges (
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
     CONSTRAINT auth_challenges_attempts_check CHECK ((attempts >= 0)),
-    CONSTRAINT auth_challenges_delivery_channel_check CHECK (((delivery_channel)::text = ANY ((ARRAY['EMAIL'::character varying, 'WHATSAPP'::character varying])::text[]))),
+    CONSTRAINT auth_challenges_delivery_channel_check CHECK (((delivery_channel)::text = ANY (ARRAY[('EMAIL'::character varying)::text, ('WHATSAPP'::character varying)::text]))),
     CONSTRAINT auth_challenges_max_attempts_check CHECK ((max_attempts > 0)),
-    CONSTRAINT auth_challenges_status_check CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'VERIFIED'::character varying, 'EXPIRED'::character varying, 'CANCELLED'::character varying])::text[])))
+    CONSTRAINT auth_challenges_status_check CHECK (((status)::text = ANY (ARRAY[('PENDING'::character varying)::text, ('VERIFIED'::character varying)::text, ('EXPIRED'::character varying)::text, ('CANCELLED'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.auth_challenges FORCE ROW LEVEL SECURITY;
@@ -285,7 +508,7 @@ CREATE TABLE public.documents (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT documents_status_check CHECK (((status)::text = ANY ((ARRAY['SIGNED'::character varying, 'REVOKED'::character varying, 'SUPERSEDED'::character varying])::text[])))
+    CONSTRAINT documents_status_check CHECK (((status)::text = ANY (ARRAY[('SIGNED'::character varying)::text, ('REVOKED'::character varying)::text, ('SUPERSEDED'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.documents FORCE ROW LEVEL SECURITY;
@@ -315,12 +538,12 @@ CREATE TABLE public.kyc_documents (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT kyc_documents_document_type_check CHECK (((document_type)::text = ANY ((ARRAY['CPF'::character varying, 'CNPJ'::character varying, 'RG'::character varying, 'CNH'::character varying, 'PASSPORT'::character varying, 'PROOF_OF_ADDRESS'::character varying, 'SELFIE'::character varying, 'CONTRACT'::character varying, 'OTHER'::character varying])::text[]))),
-    CONSTRAINT kyc_documents_issuing_state_check CHECK (((issuing_state IS NULL) OR ((issuing_state)::text = ANY ((ARRAY['AC'::character varying, 'AL'::character varying, 'AP'::character varying, 'AM'::character varying, 'BA'::character varying, 'CE'::character varying, 'DF'::character varying, 'ES'::character varying, 'GO'::character varying, 'MA'::character varying, 'MT'::character varying, 'MS'::character varying, 'MG'::character varying, 'PA'::character varying, 'PB'::character varying, 'PR'::character varying, 'PE'::character varying, 'PI'::character varying, 'RJ'::character varying, 'RN'::character varying, 'RS'::character varying, 'RO'::character varying, 'RR'::character varying, 'SC'::character varying, 'SP'::character varying, 'SE'::character varying, 'TO'::character varying])::text[])))),
-    CONSTRAINT kyc_documents_key_document_type_check CHECK (((NOT is_key_document) OR ((document_type)::text = ANY ((ARRAY['CPF'::character varying, 'CNPJ'::character varying])::text[])))),
-    CONSTRAINT kyc_documents_non_key_identity_docs_check CHECK ((((document_type)::text <> ALL ((ARRAY['RG'::character varying, 'CNH'::character varying, 'PASSPORT'::character varying])::text[])) OR (is_key_document = false))),
+    CONSTRAINT kyc_documents_document_type_check CHECK (((document_type)::text = ANY (ARRAY[('CPF'::character varying)::text, ('CNPJ'::character varying)::text, ('RG'::character varying)::text, ('CNH'::character varying)::text, ('PASSPORT'::character varying)::text, ('PROOF_OF_ADDRESS'::character varying)::text, ('SELFIE'::character varying)::text, ('CONTRACT'::character varying)::text, ('OTHER'::character varying)::text]))),
+    CONSTRAINT kyc_documents_issuing_state_check CHECK (((issuing_state IS NULL) OR ((issuing_state)::text = ANY (ARRAY[('AC'::character varying)::text, ('AL'::character varying)::text, ('AP'::character varying)::text, ('AM'::character varying)::text, ('BA'::character varying)::text, ('CE'::character varying)::text, ('DF'::character varying)::text, ('ES'::character varying)::text, ('GO'::character varying)::text, ('MA'::character varying)::text, ('MT'::character varying)::text, ('MS'::character varying)::text, ('MG'::character varying)::text, ('PA'::character varying)::text, ('PB'::character varying)::text, ('PR'::character varying)::text, ('PE'::character varying)::text, ('PI'::character varying)::text, ('RJ'::character varying)::text, ('RN'::character varying)::text, ('RS'::character varying)::text, ('RO'::character varying)::text, ('RR'::character varying)::text, ('SC'::character varying)::text, ('SP'::character varying)::text, ('SE'::character varying)::text, ('TO'::character varying)::text])))),
+    CONSTRAINT kyc_documents_key_document_type_check CHECK (((NOT is_key_document) OR ((document_type)::text = ANY (ARRAY[('CPF'::character varying)::text, ('CNPJ'::character varying)::text])))),
+    CONSTRAINT kyc_documents_non_key_identity_docs_check CHECK ((((document_type)::text <> ALL (ARRAY[('RG'::character varying)::text, ('CNH'::character varying)::text, ('PASSPORT'::character varying)::text])) OR (is_key_document = false))),
     CONSTRAINT kyc_documents_sha256_present_check CHECK ((char_length((sha256)::text) > 0)),
-    CONSTRAINT kyc_documents_status_check CHECK (((status)::text = ANY ((ARRAY['SUBMITTED'::character varying, 'VERIFIED'::character varying, 'REJECTED'::character varying, 'EXPIRED'::character varying])::text[]))),
+    CONSTRAINT kyc_documents_status_check CHECK (((status)::text = ANY (ARRAY[('SUBMITTED'::character varying)::text, ('VERIFIED'::character varying)::text, ('REJECTED'::character varying)::text, ('EXPIRED'::character varying)::text]))),
     CONSTRAINT kyc_documents_storage_key_present_check CHECK ((char_length((storage_key)::text) > 0))
 );
 
@@ -364,8 +587,8 @@ CREATE TABLE public.kyc_profiles (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT kyc_profiles_risk_level_check CHECK (((risk_level)::text = ANY ((ARRAY['UNKNOWN'::character varying, 'LOW'::character varying, 'MEDIUM'::character varying, 'HIGH'::character varying])::text[]))),
-    CONSTRAINT kyc_profiles_status_check CHECK (((status)::text = ANY ((ARRAY['DRAFT'::character varying, 'PENDING_REVIEW'::character varying, 'NEEDS_INFORMATION'::character varying, 'APPROVED'::character varying, 'REJECTED'::character varying])::text[])))
+    CONSTRAINT kyc_profiles_risk_level_check CHECK (((risk_level)::text = ANY (ARRAY[('UNKNOWN'::character varying)::text, ('LOW'::character varying)::text, ('MEDIUM'::character varying)::text, ('HIGH'::character varying)::text]))),
+    CONSTRAINT kyc_profiles_status_check CHECK (((status)::text = ANY (ARRAY[('DRAFT'::character varying)::text, ('PENDING_REVIEW'::character varying)::text, ('NEEDS_INFORMATION'::character varying)::text, ('APPROVED'::character varying)::text, ('REJECTED'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.kyc_profiles FORCE ROW LEVEL SECURITY;
@@ -391,12 +614,48 @@ CREATE TABLE public.ledger_entries (
     posted_at timestamp(6) without time zone NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
+    entry_position integer NOT NULL,
+    txn_entry_count integer NOT NULL,
+    payment_reference character varying,
     CONSTRAINT ledger_entries_amount_positive_check CHECK ((amount > (0)::numeric)),
     CONSTRAINT ledger_entries_currency_brl_check CHECK (((currency)::text = 'BRL'::text)),
-    CONSTRAINT ledger_entries_entry_side_check CHECK (((entry_side)::text = ANY ((ARRAY['DEBIT'::character varying, 'CREDIT'::character varying])::text[])))
+    CONSTRAINT ledger_entries_entry_position_lte_count_check CHECK ((entry_position <= txn_entry_count)),
+    CONSTRAINT ledger_entries_entry_position_positive_check CHECK ((entry_position > 0)),
+    CONSTRAINT ledger_entries_entry_side_check CHECK (((entry_side)::text = ANY (ARRAY[('DEBIT'::character varying)::text, ('CREDIT'::character varying)::text]))),
+    CONSTRAINT ledger_entries_settlement_payment_reference_required_check CHECK ((((source_type)::text <> 'ReceivablePaymentSettlement'::text) OR ((payment_reference IS NOT NULL) AND (btrim((payment_reference)::text) <> ''::text)))),
+    CONSTRAINT ledger_entries_txn_entry_count_positive_check CHECK ((txn_entry_count > 0))
 );
 
 ALTER TABLE ONLY public.ledger_entries FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: ledger_transactions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.ledger_transactions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    txn_id uuid NOT NULL,
+    receivable_id uuid,
+    source_type character varying NOT NULL,
+    source_id uuid NOT NULL,
+    payment_reference character varying,
+    payload_hash character varying NOT NULL,
+    entry_count integer NOT NULL,
+    posted_at timestamp(6) without time zone NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    actor_party_id uuid,
+    actor_role character varying,
+    request_id character varying,
+    CONSTRAINT ledger_transactions_entry_count_positive_check CHECK ((entry_count > 0)),
+    CONSTRAINT ledger_transactions_payload_hash_present_check CHECK ((btrim((payload_hash)::text) <> ''::text)),
+    CONSTRAINT ledger_transactions_settlement_payment_reference_required_check CHECK ((((source_type)::text <> 'ReceivablePaymentSettlement'::text) OR ((payment_reference IS NOT NULL) AND (btrim((payment_reference)::text) <> ''::text))))
+);
+
+ALTER TABLE ONLY public.ledger_transactions FORCE ROW LEVEL SECURITY;
 
 
 --
@@ -417,7 +676,7 @@ CREATE TABLE public.outbox_events (
     payload jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT outbox_events_status_check CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying, 'CANCELLED'::character varying])::text[])))
+    CONSTRAINT outbox_events_status_check CHECK (((status)::text = ANY (ARRAY[('PENDING'::character varying)::text, ('SENT'::character varying)::text, ('FAILED'::character varying)::text, ('CANCELLED'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.outbox_events FORCE ROW LEVEL SECURITY;
@@ -440,9 +699,9 @@ CREATE TABLE public.parties (
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
     document_type character varying NOT NULL,
-    CONSTRAINT parties_document_type_check CHECK (((document_type)::text = ANY ((ARRAY['CPF'::character varying, 'CNPJ'::character varying])::text[]))),
+    CONSTRAINT parties_document_type_check CHECK (((document_type)::text = ANY (ARRAY[('CPF'::character varying)::text, ('CNPJ'::character varying)::text]))),
     CONSTRAINT parties_document_type_kind_check CHECK (((((kind)::text = 'PHYSICIAN_PF'::text) AND ((document_type)::text = 'CPF'::text)) OR (((kind)::text <> 'PHYSICIAN_PF'::text) AND ((document_type)::text = 'CNPJ'::text)))),
-    CONSTRAINT parties_kind_check CHECK (((kind)::text = ANY ((ARRAY['HOSPITAL'::character varying, 'SUPPLIER'::character varying, 'PHYSICIAN_PF'::character varying, 'LEGAL_ENTITY_PJ'::character varying, 'FIDC'::character varying, 'PLATFORM'::character varying])::text[])))
+    CONSTRAINT parties_kind_check CHECK (((kind)::text = ANY (ARRAY[('HOSPITAL'::character varying)::text, ('SUPPLIER'::character varying)::text, ('PHYSICIAN_PF'::character varying)::text, ('LEGAL_ENTITY_PJ'::character varying)::text, ('FIDC'::character varying)::text, ('PLATFORM'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.parties FORCE ROW LEVEL SECURITY;
@@ -464,7 +723,7 @@ CREATE TABLE public.physician_anticipation_authorizations (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT physician_authorization_status_check CHECK (((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'REVOKED'::character varying, 'EXPIRED'::character varying])::text[])))
+    CONSTRAINT physician_authorization_status_check CHECK (((status)::text = ANY (ARRAY[('ACTIVE'::character varying)::text, ('REVOKED'::character varying)::text, ('EXPIRED'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.physician_anticipation_authorizations FORCE ROW LEVEL SECURITY;
@@ -490,7 +749,7 @@ CREATE TABLE public.physician_cnpj_split_policies (
     CONSTRAINT physician_cnpj_split_policies_cnpj_rate_check CHECK (((cnpj_share_rate >= (0)::numeric) AND (cnpj_share_rate <= (1)::numeric))),
     CONSTRAINT physician_cnpj_split_policies_physician_rate_check CHECK (((physician_share_rate >= (0)::numeric) AND (physician_share_rate <= (1)::numeric))),
     CONSTRAINT physician_cnpj_split_policies_scope_check CHECK (((scope)::text = 'SHARED_CNPJ'::text)),
-    CONSTRAINT physician_cnpj_split_policies_status_check CHECK (((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'INACTIVE'::character varying])::text[]))),
+    CONSTRAINT physician_cnpj_split_policies_status_check CHECK (((status)::text = ANY (ARRAY[('ACTIVE'::character varying)::text, ('INACTIVE'::character varying)::text]))),
     CONSTRAINT physician_cnpj_split_policies_total_rate_check CHECK (((cnpj_share_rate + physician_share_rate) = 1.00000000))
 );
 
@@ -513,8 +772,8 @@ CREATE TABLE public.physician_legal_entity_memberships (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT physician_membership_role_check CHECK (((membership_role)::text = ANY ((ARRAY['ADMIN'::character varying, 'MEMBER'::character varying])::text[]))),
-    CONSTRAINT physician_membership_status_check CHECK (((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'INACTIVE'::character varying])::text[])))
+    CONSTRAINT physician_membership_role_check CHECK (((membership_role)::text = ANY (ARRAY[('ADMIN'::character varying)::text, ('MEMBER'::character varying)::text]))),
+    CONSTRAINT physician_membership_status_check CHECK (((status)::text = ANY (ARRAY[('ACTIVE'::character varying)::text, ('INACTIVE'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.physician_legal_entity_memberships FORCE ROW LEVEL SECURITY;
@@ -539,7 +798,7 @@ CREATE TABLE public.physicians (
     crm_state character varying(2),
     CONSTRAINT physicians_crm_number_length_check CHECK (((crm_number IS NULL) OR ((char_length((crm_number)::text) >= 4) AND (char_length((crm_number)::text) <= 10)))),
     CONSTRAINT physicians_crm_pair_presence_check CHECK ((((crm_number IS NULL) AND (crm_state IS NULL)) OR ((crm_number IS NOT NULL) AND (crm_state IS NOT NULL)))),
-    CONSTRAINT physicians_crm_state_check CHECK (((crm_state IS NULL) OR ((crm_state)::text = ANY ((ARRAY['AC'::character varying, 'AL'::character varying, 'AP'::character varying, 'AM'::character varying, 'BA'::character varying, 'CE'::character varying, 'DF'::character varying, 'ES'::character varying, 'GO'::character varying, 'MA'::character varying, 'MT'::character varying, 'MS'::character varying, 'MG'::character varying, 'PA'::character varying, 'PB'::character varying, 'PR'::character varying, 'PE'::character varying, 'PI'::character varying, 'RJ'::character varying, 'RN'::character varying, 'RS'::character varying, 'RO'::character varying, 'RR'::character varying, 'SC'::character varying, 'SP'::character varying, 'SE'::character varying, 'TO'::character varying])::text[]))))
+    CONSTRAINT physicians_crm_state_check CHECK (((crm_state IS NULL) OR ((crm_state)::text = ANY (ARRAY[('AC'::character varying)::text, ('AL'::character varying)::text, ('AP'::character varying)::text, ('AM'::character varying)::text, ('BA'::character varying)::text, ('CE'::character varying)::text, ('DF'::character varying)::text, ('ES'::character varying)::text, ('GO'::character varying)::text, ('MA'::character varying)::text, ('MT'::character varying)::text, ('MS'::character varying)::text, ('MG'::character varying)::text, ('PA'::character varying)::text, ('PB'::character varying)::text, ('PR'::character varying)::text, ('PE'::character varying)::text, ('PI'::character varying)::text, ('RJ'::character varying)::text, ('RN'::character varying)::text, ('RS'::character varying)::text, ('RO'::character varying)::text, ('RR'::character varying)::text, ('SC'::character varying)::text, ('SP'::character varying)::text, ('SE'::character varying)::text, ('TO'::character varying)::text]))))
 );
 
 ALTER TABLE ONLY public.physicians FORCE ROW LEVEL SECURITY;
@@ -564,7 +823,7 @@ CREATE TABLE public.receivable_allocations (
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
     CONSTRAINT receivable_allocations_gross_amount_check CHECK ((gross_amount >= (0)::numeric)),
-    CONSTRAINT receivable_allocations_status_check CHECK (((status)::text = ANY ((ARRAY['OPEN'::character varying, 'SETTLED'::character varying, 'CANCELLED'::character varying])::text[]))),
+    CONSTRAINT receivable_allocations_status_check CHECK (((status)::text = ANY (ARRAY[('OPEN'::character varying)::text, ('SETTLED'::character varying)::text, ('CANCELLED'::character varying)::text]))),
     CONSTRAINT receivable_allocations_tax_reserve_amount_check CHECK ((tax_reserve_amount >= (0)::numeric))
 );
 
@@ -609,7 +868,7 @@ CREATE TABLE public.receivable_kinds (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT receivable_kinds_source_family_check CHECK (((source_family)::text = ANY ((ARRAY['PHYSICIAN'::character varying, 'SUPPLIER'::character varying, 'OTHER'::character varying])::text[])))
+    CONSTRAINT receivable_kinds_source_family_check CHECK (((source_family)::text = ANY (ARRAY[('PHYSICIAN'::character varying)::text, ('SUPPLIER'::character varying)::text, ('OTHER'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.receivable_kinds FORCE ROW LEVEL SECURITY;
@@ -631,18 +890,21 @@ CREATE TABLE public.receivable_payment_settlements (
     fdic_balance_before numeric(18,2) DEFAULT 0.0 NOT NULL,
     fdic_balance_after numeric(18,2) DEFAULT 0.0 NOT NULL,
     paid_at timestamp(6) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    payment_reference character varying,
+    payment_reference character varying NOT NULL,
     request_id character varying,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
+    idempotency_key character varying NOT NULL,
     CONSTRAINT receivable_payment_settlements_beneficiary_non_negative_check CHECK ((beneficiary_amount >= (0)::numeric)),
     CONSTRAINT receivable_payment_settlements_cnpj_non_negative_check CHECK ((cnpj_amount >= (0)::numeric)),
     CONSTRAINT receivable_payment_settlements_fdic_after_non_negative_check CHECK ((fdic_balance_after >= (0)::numeric)),
     CONSTRAINT receivable_payment_settlements_fdic_balance_flow_check CHECK ((fdic_balance_before >= fdic_balance_after)),
     CONSTRAINT receivable_payment_settlements_fdic_before_non_negative_check CHECK ((fdic_balance_before >= (0)::numeric)),
     CONSTRAINT receivable_payment_settlements_fdic_non_negative_check CHECK ((fdic_amount >= (0)::numeric)),
+    CONSTRAINT receivable_payment_settlements_idempotency_key_present_check CHECK ((btrim((idempotency_key)::text) <> ''::text)),
     CONSTRAINT receivable_payment_settlements_paid_positive_check CHECK ((paid_amount > (0)::numeric)),
+    CONSTRAINT receivable_payment_settlements_payment_reference_present_check CHECK ((btrim((payment_reference)::text) <> ''::text)),
     CONSTRAINT receivable_payment_settlements_split_total_check CHECK ((((cnpj_amount + fdic_amount) + beneficiary_amount) = paid_amount))
 );
 
@@ -669,7 +931,7 @@ CREATE TABLE public.receivable_statistics_daily (
     last_computed_at timestamp(6) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT receivable_statistics_daily_metric_scope_check CHECK (((metric_scope)::text = ANY ((ARRAY['GLOBAL'::character varying, 'DEBTOR'::character varying, 'CREDITOR'::character varying, 'BENEFICIARY'::character varying])::text[])))
+    CONSTRAINT receivable_statistics_daily_metric_scope_check CHECK (((metric_scope)::text = ANY (ARRAY[('GLOBAL'::character varying)::text, ('DEBTOR'::character varying)::text, ('CREDITOR'::character varying)::text, ('BENEFICIARY'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.receivable_statistics_daily FORCE ROW LEVEL SECURITY;
@@ -700,10 +962,29 @@ CREATE TABLE public.receivables (
     updated_at timestamp(6) without time zone NOT NULL,
     CONSTRAINT receivables_currency_brl_check CHECK (((currency)::text = 'BRL'::text)),
     CONSTRAINT receivables_gross_amount_positive_check CHECK ((gross_amount > (0)::numeric)),
-    CONSTRAINT receivables_status_check CHECK (((status)::text = ANY ((ARRAY['PERFORMED'::character varying, 'ANTICIPATION_REQUESTED'::character varying, 'FUNDED'::character varying, 'SETTLED'::character varying, 'CANCELLED'::character varying])::text[])))
+    CONSTRAINT receivables_status_check CHECK (((status)::text = ANY (ARRAY[('PERFORMED'::character varying)::text, ('ANTICIPATION_REQUESTED'::character varying)::text, ('FUNDED'::character varying)::text, ('SETTLED'::character varying)::text, ('CANCELLED'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.receivables FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: roles; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.roles (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    code character varying NOT NULL,
+    name character varying NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT roles_code_check CHECK (((code)::text = ANY (ARRAY[('hospital_admin'::character varying)::text, ('supplier_user'::character varying)::text, ('ops_admin'::character varying)::text, ('physician_pf_user'::character varying)::text, ('physician_pj_admin'::character varying)::text, ('physician_pj_member'::character varying)::text, ('integration_api'::character varying)::text])))
+);
+
+ALTER TABLE ONLY public.roles FORCE ROW LEVEL SECURITY;
 
 
 --
@@ -725,8 +1006,11 @@ CREATE TABLE public.sessions (
     ip_address character varying,
     user_agent character varying,
     created_at timestamp(6) without time zone NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL
+    updated_at timestamp(6) without time zone NOT NULL,
+    tenant_id uuid NOT NULL
 );
+
+ALTER TABLE ONLY public.sessions FORCE ROW LEVEL SECURITY;
 
 
 --
@@ -762,6 +1046,27 @@ CREATE TABLE public.tenants (
     updated_at timestamp(6) without time zone NOT NULL
 );
 
+ALTER TABLE ONLY public.tenants FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: user_roles; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_roles (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    user_id bigint NOT NULL,
+    role_id uuid NOT NULL,
+    assigned_by_user_id bigint,
+    assigned_at timestamp(6) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.user_roles FORCE ROW LEVEL SECURITY;
+
 
 --
 -- Name: users; Type: TABLE; Schema: public; Owner: -
@@ -775,8 +1080,11 @@ CREATE TABLE public.users (
     updated_at timestamp(6) without time zone NOT NULL,
     tenant_id uuid NOT NULL,
     party_id uuid,
-    role character varying DEFAULT 'supplier_user'::character varying NOT NULL
+    mfa_enabled boolean DEFAULT false NOT NULL,
+    mfa_secret character varying
 );
+
+ALTER TABLE ONLY public.users FORCE ROW LEVEL SECURITY;
 
 
 --
@@ -799,6 +1107,27 @@ ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
 
 
 --
+-- Name: active_storage_attachments id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.active_storage_attachments ALTER COLUMN id SET DEFAULT nextval('public.active_storage_attachments_id_seq'::regclass);
+
+
+--
+-- Name: active_storage_blobs id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.active_storage_blobs ALTER COLUMN id SET DEFAULT nextval('public.active_storage_blobs_id_seq'::regclass);
+
+
+--
+-- Name: active_storage_variant_records id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.active_storage_variant_records ALTER COLUMN id SET DEFAULT nextval('public.active_storage_variant_records_id_seq'::regclass);
+
+
+--
 -- Name: sessions id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -818,6 +1147,30 @@ ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_
 
 ALTER TABLE ONLY public.action_ip_logs
     ADD CONSTRAINT action_ip_logs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: active_storage_attachments active_storage_attachments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.active_storage_attachments
+    ADD CONSTRAINT active_storage_attachments_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: active_storage_blobs active_storage_blobs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.active_storage_blobs
+    ADD CONSTRAINT active_storage_blobs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: active_storage_variant_records active_storage_variant_records_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.active_storage_variant_records
+    ADD CONSTRAINT active_storage_variant_records_pkey PRIMARY KEY (id);
 
 
 --
@@ -850,6 +1203,14 @@ ALTER TABLE ONLY public.api_access_tokens
 
 ALTER TABLE ONLY public.ar_internal_metadata
     ADD CONSTRAINT ar_internal_metadata_pkey PRIMARY KEY (key);
+
+
+--
+-- Name: assignment_contracts assignment_contracts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.assignment_contracts
+    ADD CONSTRAINT assignment_contracts_pkey PRIMARY KEY (id);
 
 
 --
@@ -906,6 +1267,14 @@ ALTER TABLE ONLY public.kyc_profiles
 
 ALTER TABLE ONLY public.ledger_entries
     ADD CONSTRAINT ledger_entries_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: ledger_transactions ledger_transactions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ledger_transactions
+    ADD CONSTRAINT ledger_transactions_pkey PRIMARY KEY (id);
 
 
 --
@@ -1005,6 +1374,14 @@ ALTER TABLE ONLY public.receivables
 
 
 --
+-- Name: roles roles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.roles
+    ADD CONSTRAINT roles_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: schema_migrations schema_migrations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1026,6 +1403,14 @@ ALTER TABLE ONLY public.sessions
 
 ALTER TABLE ONLY public.tenants
     ADD CONSTRAINT tenants_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: user_roles user_roles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_roles
+    ADD CONSTRAINT user_roles_pkey PRIMARY KEY (id);
 
 
 --
@@ -1086,6 +1471,13 @@ CREATE INDEX idx_ledger_entries_tenant_account_posted ON public.ledger_entries U
 
 
 --
+-- Name: idx_ledger_entries_tenant_payment_reference; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ledger_entries_tenant_payment_reference ON public.ledger_entries USING btree (tenant_id, payment_reference) WHERE (payment_reference IS NOT NULL);
+
+
+--
 -- Name: idx_ledger_entries_tenant_receivable_posted; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1104,6 +1496,48 @@ CREATE INDEX idx_ledger_entries_tenant_source ON public.ledger_entries USING btr
 --
 
 CREATE INDEX idx_ledger_entries_tenant_txn ON public.ledger_entries USING btree (tenant_id, txn_id);
+
+
+--
+-- Name: idx_ledger_entries_tenant_txn_entry_position; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_ledger_entries_tenant_txn_entry_position ON public.ledger_entries USING btree (tenant_id, txn_id, entry_position);
+
+
+--
+-- Name: idx_ledger_transactions_settlement_source_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_ledger_transactions_settlement_source_unique ON public.ledger_transactions USING btree (tenant_id, source_type, source_id) WHERE ((source_type)::text = 'ReceivablePaymentSettlement'::text);
+
+
+--
+-- Name: idx_ledger_transactions_tenant_actor; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ledger_transactions_tenant_actor ON public.ledger_transactions USING btree (tenant_id, actor_party_id);
+
+
+--
+-- Name: idx_ledger_transactions_tenant_payment_reference; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ledger_transactions_tenant_payment_reference ON public.ledger_transactions USING btree (tenant_id, payment_reference) WHERE (payment_reference IS NOT NULL);
+
+
+--
+-- Name: idx_ledger_transactions_tenant_source; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ledger_transactions_tenant_source ON public.ledger_transactions USING btree (tenant_id, source_type, source_id);
+
+
+--
+-- Name: idx_ledger_transactions_tenant_txn; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_ledger_transactions_tenant_txn ON public.ledger_transactions USING btree (tenant_id, txn_id);
 
 
 --
@@ -1163,10 +1597,17 @@ CREATE UNIQUE INDEX idx_physicians_tenant_crm ON public.physicians USING btree (
 
 
 --
+-- Name: idx_rps_tenant_idempotency_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_rps_tenant_idempotency_key ON public.receivable_payment_settlements USING btree (tenant_id, idempotency_key);
+
+
+--
 -- Name: idx_rps_tenant_payment_ref; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX idx_rps_tenant_payment_ref ON public.receivable_payment_settlements USING btree (tenant_id, payment_reference) WHERE (payment_reference IS NOT NULL);
+CREATE UNIQUE INDEX idx_rps_tenant_payment_ref ON public.receivable_payment_settlements USING btree (tenant_id, payment_reference);
 
 
 --
@@ -1216,6 +1657,34 @@ CREATE INDEX index_action_ip_logs_on_tenant_request_id ON public.action_ip_logs 
 --
 
 CREATE INDEX index_active_physician_authorizations ON public.physician_anticipation_authorizations USING btree (tenant_id, legal_entity_party_id, beneficiary_physician_party_id) WHERE ((status)::text = 'ACTIVE'::text);
+
+
+--
+-- Name: index_active_storage_attachments_on_blob_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_active_storage_attachments_on_blob_id ON public.active_storage_attachments USING btree (blob_id);
+
+
+--
+-- Name: index_active_storage_attachments_uniqueness; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_active_storage_attachments_uniqueness ON public.active_storage_attachments USING btree (record_type, record_id, name, blob_id);
+
+
+--
+-- Name: index_active_storage_blobs_on_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_active_storage_blobs_on_key ON public.active_storage_blobs USING btree (key);
+
+
+--
+-- Name: index_active_storage_variant_records_uniqueness; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_active_storage_variant_records_uniqueness ON public.active_storage_variant_records USING btree (blob_id, variation_digest);
 
 
 --
@@ -1293,6 +1762,62 @@ CREATE UNIQUE INDEX index_api_access_tokens_on_token_identifier ON public.api_ac
 --
 
 CREATE INDEX index_api_access_tokens_on_user_id ON public.api_access_tokens USING btree (user_id);
+
+
+--
+-- Name: index_assignment_contracts_on_anticipation_request_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_assignment_contracts_on_anticipation_request_id ON public.assignment_contracts USING btree (anticipation_request_id);
+
+
+--
+-- Name: index_assignment_contracts_on_assignee_party_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_assignment_contracts_on_assignee_party_id ON public.assignment_contracts USING btree (assignee_party_id);
+
+
+--
+-- Name: index_assignment_contracts_on_assignor_party_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_assignment_contracts_on_assignor_party_id ON public.assignment_contracts USING btree (assignor_party_id);
+
+
+--
+-- Name: index_assignment_contracts_on_receivable_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_assignment_contracts_on_receivable_id ON public.assignment_contracts USING btree (receivable_id);
+
+
+--
+-- Name: index_assignment_contracts_on_tenant_contract_number; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_assignment_contracts_on_tenant_contract_number ON public.assignment_contracts USING btree (tenant_id, contract_number);
+
+
+--
+-- Name: index_assignment_contracts_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_assignment_contracts_on_tenant_id ON public.assignment_contracts USING btree (tenant_id);
+
+
+--
+-- Name: index_assignment_contracts_on_tenant_idempotency_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_assignment_contracts_on_tenant_idempotency_key ON public.assignment_contracts USING btree (tenant_id, idempotency_key);
+
+
+--
+-- Name: index_assignment_contracts_on_tenant_receivable; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_assignment_contracts_on_tenant_receivable ON public.assignment_contracts USING btree (tenant_id, receivable_id);
 
 
 --
@@ -1482,6 +2007,20 @@ CREATE INDEX index_ledger_entries_on_receivable_id ON public.ledger_entries USIN
 --
 
 CREATE INDEX index_ledger_entries_on_tenant_id ON public.ledger_entries USING btree (tenant_id);
+
+
+--
+-- Name: index_ledger_transactions_on_receivable_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_ledger_transactions_on_receivable_id ON public.ledger_transactions USING btree (receivable_id);
+
+
+--
+-- Name: index_ledger_transactions_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_ledger_transactions_on_tenant_id ON public.ledger_transactions USING btree (tenant_id);
 
 
 --
@@ -1793,6 +2332,34 @@ CREATE INDEX index_receivables_on_tenant_status_due_at ON public.receivables USI
 
 
 --
+-- Name: index_roles_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_roles_on_tenant_id ON public.roles USING btree (tenant_id);
+
+
+--
+-- Name: index_roles_on_tenant_id_and_code; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_roles_on_tenant_id_and_code ON public.roles USING btree (tenant_id, code);
+
+
+--
+-- Name: index_sessions_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_sessions_on_tenant_id ON public.sessions USING btree (tenant_id);
+
+
+--
+-- Name: index_sessions_on_tenant_id_and_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_sessions_on_tenant_id_and_user_id ON public.sessions USING btree (tenant_id, user_id);
+
+
+--
 -- Name: index_sessions_on_user_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1804,6 +2371,48 @@ CREATE INDEX index_sessions_on_user_id ON public.sessions USING btree (user_id);
 --
 
 CREATE UNIQUE INDEX index_tenants_on_slug ON public.tenants USING btree (slug);
+
+
+--
+-- Name: index_user_roles_on_assigned_by_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_user_roles_on_assigned_by_user_id ON public.user_roles USING btree (assigned_by_user_id);
+
+
+--
+-- Name: index_user_roles_on_role_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_user_roles_on_role_id ON public.user_roles USING btree (role_id);
+
+
+--
+-- Name: index_user_roles_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_user_roles_on_tenant_id ON public.user_roles USING btree (tenant_id);
+
+
+--
+-- Name: index_user_roles_on_tenant_role; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_user_roles_on_tenant_role ON public.user_roles USING btree (tenant_id, role_id);
+
+
+--
+-- Name: index_user_roles_on_tenant_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_user_roles_on_tenant_user ON public.user_roles USING btree (tenant_id, user_id);
+
+
+--
+-- Name: index_user_roles_on_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_user_roles_on_user_id ON public.user_roles USING btree (user_id);
 
 
 --
@@ -1859,7 +2468,7 @@ CREATE TRIGGER kyc_events_no_update_delete BEFORE DELETE OR UPDATE ON public.kyc
 -- Name: ledger_entries ledger_entries_balance_check; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE CONSTRAINT TRIGGER ledger_entries_balance_check AFTER INSERT ON public.ledger_entries DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.ledger_entries_check_balance();
+CREATE TRIGGER ledger_entries_balance_check AFTER INSERT ON public.ledger_entries REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION public.ledger_entries_check_balance();
 
 
 --
@@ -1867,6 +2476,13 @@ CREATE CONSTRAINT TRIGGER ledger_entries_balance_check AFTER INSERT ON public.le
 --
 
 CREATE TRIGGER ledger_entries_no_update_delete BEFORE DELETE OR UPDATE ON public.ledger_entries FOR EACH ROW EXECUTE FUNCTION public.app_forbid_mutation();
+
+
+--
+-- Name: ledger_transactions ledger_transactions_no_update_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER ledger_transactions_no_update_delete BEFORE DELETE OR UPDATE ON public.ledger_transactions FOR EACH ROW EXECUTE FUNCTION public.app_forbid_mutation();
 
 
 --
@@ -1891,6 +2507,14 @@ CREATE TRIGGER receivable_payment_settlements_no_update_delete BEFORE DELETE OR 
 
 
 --
+-- Name: ledger_entries fk_ledger_entries_ledger_transactions; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ledger_entries
+    ADD CONSTRAINT fk_ledger_entries_ledger_transactions FOREIGN KEY (tenant_id, txn_id) REFERENCES public.ledger_transactions(tenant_id, txn_id);
+
+
+--
 -- Name: outbox_events fk_rails_00e6bcedbf; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1912,6 +2536,14 @@ ALTER TABLE ONLY public.document_events
 
 ALTER TABLE ONLY public.kyc_profiles
     ADD CONSTRAINT fk_rails_03e3cee98f FOREIGN KEY (reviewer_party_id) REFERENCES public.parties(id);
+
+
+--
+-- Name: assignment_contracts fk_rails_074ac762b1; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.assignment_contracts
+    ADD CONSTRAINT fk_rails_074ac762b1 FOREIGN KEY (assignee_party_id) REFERENCES public.parties(id);
 
 
 --
@@ -1987,6 +2619,14 @@ ALTER TABLE ONLY public.ledger_entries
 
 
 --
+-- Name: assignment_contracts fk_rails_1de7571265; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.assignment_contracts
+    ADD CONSTRAINT fk_rails_1de7571265 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
 -- Name: document_events fk_rails_2226eae8f7; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2011,6 +2651,30 @@ ALTER TABLE ONLY public.kyc_events
 
 
 --
+-- Name: assignment_contracts fk_rails_3090896c8e; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.assignment_contracts
+    ADD CONSTRAINT fk_rails_3090896c8e FOREIGN KEY (assignor_party_id) REFERENCES public.parties(id);
+
+
+--
+-- Name: user_roles fk_rails_318345354e; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_roles
+    ADD CONSTRAINT fk_rails_318345354e FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- Name: user_roles fk_rails_3369e0d5fc; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_roles
+    ADD CONSTRAINT fk_rails_3369e0d5fc FOREIGN KEY (role_id) REFERENCES public.roles(id);
+
+
+--
 -- Name: receivables fk_rails_33bc71f297; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2024,6 +2688,14 @@ ALTER TABLE ONLY public.receivables
 
 ALTER TABLE ONLY public.receivable_payment_settlements
     ADD CONSTRAINT fk_rails_3b061f5f35 FOREIGN KEY (receivable_id) REFERENCES public.receivables(id);
+
+
+--
+-- Name: user_roles fk_rails_3b61ce6619; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_roles
+    ADD CONSTRAINT fk_rails_3b61ce6619 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 
 --
@@ -2051,6 +2723,30 @@ ALTER TABLE ONLY public.physician_legal_entity_memberships
 
 
 --
+-- Name: ledger_transactions fk_rails_44cf54fd66; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ledger_transactions
+    ADD CONSTRAINT fk_rails_44cf54fd66 FOREIGN KEY (actor_party_id) REFERENCES public.parties(id);
+
+
+--
+-- Name: user_roles fk_rails_4cc38d53ec; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_roles
+    ADD CONSTRAINT fk_rails_4cc38d53ec FOREIGN KEY (assigned_by_user_id) REFERENCES public.users(id);
+
+
+--
+-- Name: sessions fk_rails_4cc5d929b0; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sessions
+    ADD CONSTRAINT fk_rails_4cc5d929b0 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
 -- Name: documents fk_rails_4fd21ed2d6; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2059,11 +2755,27 @@ ALTER TABLE ONLY public.documents
 
 
 --
+-- Name: assignment_contracts fk_rails_5b862aa1fb; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.assignment_contracts
+    ADD CONSTRAINT fk_rails_5b862aa1fb FOREIGN KEY (receivable_id) REFERENCES public.receivables(id);
+
+
+--
 -- Name: documents fk_rails_5ca55da786; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.documents
     ADD CONSTRAINT fk_rails_5ca55da786 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
+-- Name: assignment_contracts fk_rails_5ea04a897c; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.assignment_contracts
+    ADD CONSTRAINT fk_rails_5ea04a897c FOREIGN KEY (anticipation_request_id) REFERENCES public.anticipation_requests(id);
 
 
 --
@@ -2195,6 +2907,14 @@ ALTER TABLE ONLY public.receivable_allocations
 
 
 --
+-- Name: active_storage_variant_records fk_rails_993965df05; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.active_storage_variant_records
+    ADD CONSTRAINT fk_rails_993965df05 FOREIGN KEY (blob_id) REFERENCES public.active_storage_blobs(id);
+
+
+--
 -- Name: physicians fk_rails_9f3467f1e8; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2275,6 +2995,14 @@ ALTER TABLE ONLY public.receivable_events
 
 
 --
+-- Name: active_storage_attachments fk_rails_c3b3935057; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.active_storage_attachments
+    ADD CONSTRAINT fk_rails_c3b3935057 FOREIGN KEY (blob_id) REFERENCES public.active_storage_blobs(id);
+
+
+--
 -- Name: kyc_documents fk_rails_cb866af6de; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2331,11 +3059,35 @@ ALTER TABLE ONLY public.anticipation_settlement_entries
 
 
 --
+-- Name: roles fk_rails_d7321fcec4; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.roles
+    ADD CONSTRAINT fk_rails_d7321fcec4 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
 -- Name: receivable_events fk_rails_d9606ecce3; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.receivable_events
     ADD CONSTRAINT fk_rails_d9606ecce3 FOREIGN KEY (actor_party_id) REFERENCES public.parties(id);
+
+
+--
+-- Name: ledger_transactions fk_rails_d9cb72cfef; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ledger_transactions
+    ADD CONSTRAINT fk_rails_d9cb72cfef FOREIGN KEY (receivable_id) REFERENCES public.receivables(id);
+
+
+--
+-- Name: ledger_transactions fk_rails_dae13efe9e; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ledger_transactions
+    ADD CONSTRAINT fk_rails_dae13efe9e FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 
 --
@@ -2487,6 +3239,19 @@ CREATE POLICY api_access_tokens_tenant_policy ON public.api_access_tokens USING 
 
 
 --
+-- Name: assignment_contracts; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.assignment_contracts ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: assignment_contracts assignment_contracts_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY assignment_contracts_tenant_policy ON public.assignment_contracts USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
 -- Name: auth_challenges; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -2575,6 +3340,19 @@ ALTER TABLE public.ledger_entries ENABLE ROW LEVEL SECURITY;
 --
 
 CREATE POLICY ledger_entries_tenant_policy ON public.ledger_entries USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
+-- Name: ledger_transactions; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.ledger_transactions ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: ledger_transactions ledger_transactions_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY ledger_transactions_tenant_policy ON public.ledger_transactions USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
 
 
 --
@@ -2734,12 +3512,87 @@ CREATE POLICY receivables_tenant_policy ON public.receivables USING ((tenant_id 
 
 
 --
+-- Name: roles; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.roles ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: roles roles_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY roles_tenant_policy ON public.roles USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
+-- Name: sessions; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.sessions ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: sessions sessions_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY sessions_tenant_policy ON public.sessions USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
+-- Name: tenants; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.tenants ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: tenants tenants_self_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY tenants_self_policy ON public.tenants USING ((id = public.app_current_tenant_id())) WITH CHECK ((id = public.app_current_tenant_id()));
+
+
+--
+-- Name: user_roles; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.user_roles ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: user_roles user_roles_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY user_roles_tenant_policy ON public.user_roles USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
+-- Name: users; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: users users_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY users_tenant_policy ON public.users USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
 -- PostgreSQL database dump complete
 --
 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260214113000'),
+('20260214102000'),
+('20260214101000'),
+('20260213212700'),
+('20260213133000'),
+('20260213124000'),
+('20260213123000'),
+('20260213115000'),
+('20260213114000'),
+('20260213113000'),
 ('20260213100000'),
 ('20260210213000'),
 ('20260210200500'),
@@ -2753,3 +3606,4 @@ INSERT INTO "schema_migrations" (version) VALUES
 ('20260210144819'),
 ('20260210113000');
 
+\unrestrict wPFdXVkfYy4isnmKgj32KoHduZvZOGwuzIJfVfRnRUrzgcWLSz4ABFdA0emjT35

@@ -1,0 +1,9 @@
+one_supplier:
+  tenant: default
+  user: one
+  role: default_supplier
+
+two_supplier:
+  tenant: secondary
+  user: two
+  role: secondary_supplier

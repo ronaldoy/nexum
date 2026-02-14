@@ -25,5 +25,52 @@ class UserTest < ActiveSupport::TestCase
 
     refute_equal "sensitive@example.com", raw_email
     assert_equal user.id, User.authenticate_by(email_address: "sensitive@example.com", password: "Password@2026")&.id
+    assert_equal "supplier_user", user.reload.role
+    assert_equal "supplier_user", user.roles.pick(:code)
+  end
+
+  test "users sessions and tenants enforce forced RLS" do
+    rows = User.connection.select_rows(<<~SQL)
+      SELECT relname, relrowsecurity, relforcerowsecurity
+      FROM pg_class
+      WHERE relname IN ('users', 'sessions', 'tenants')
+      ORDER BY relname
+    SQL
+
+    assert_equal 3, rows.size
+    rows.each do |relname, rls_enabled, force_rls|
+      assert_equal true, rls_enabled, "#{relname} must have RLS enabled"
+      assert_equal true, force_rls, "#{relname} must have forced RLS"
+    end
+  end
+
+  test "users sessions and tenants tenant policies exist" do
+    rows = User.connection.select_rows(<<~SQL)
+      SELECT tablename, policyname
+      FROM pg_policies
+      WHERE tablename IN ('users', 'sessions', 'tenants')
+      ORDER BY tablename, policyname
+    SQL
+
+    assert_includes rows, [ "users", "users_tenant_policy" ]
+    assert_includes rows, [ "sessions", "sessions_tenant_policy" ]
+    assert_includes rows, [ "tenants", "tenants_self_policy" ]
+  end
+
+  test "validates MFA codes for privileged profiles" do
+    user = User.create!(
+      tenant: @tenant,
+      role: "ops_admin",
+      email_address: "ops-mfa@example.com",
+      password: "Password@2026",
+      password_confirmation: "Password@2026",
+      mfa_enabled: true,
+      mfa_secret: ROTP::Base32.random
+    )
+
+    code = ROTP::TOTP.new(user.mfa_secret).now
+    assert user.mfa_required_for_role?
+    assert user.valid_mfa_code?(code)
+    refute user.valid_mfa_code?("000000")
   end
 end

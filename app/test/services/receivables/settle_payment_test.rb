@@ -146,6 +146,11 @@ module Receivables
           tenant_id: @tenant.id,
           payment_reference: "hospital-payment-replay-001"
         ).count
+        assert_equal 1, ActionIpLog.where(
+          tenant_id: @tenant.id,
+          action_type: "RECEIVABLE_PAYMENT_SETTLEMENT_REPLAYED",
+          target_id: first.settlement.id
+        ).count
       end
     end
 
@@ -172,6 +177,134 @@ module Receivables
         end
 
         assert_equal "payment_reference_reused_with_different_payload", error.code
+        assert_equal 1, ActionIpLog.where(
+          tenant_id: @tenant.id,
+          action_type: "RECEIVABLE_PAYMENT_SETTLEMENT_FAILED",
+          target_id: bundle[:receivable].id
+        ).count
+      end
+    end
+
+    test "maps ledger validation errors to deterministic settlement validation errors" do
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
+        bundle = create_supplier_bundle!("supplier-ledger-validation")
+        failing_poster = Object.new
+        failing_poster.define_singleton_method(:call) do |**|
+          raise Ledger::PostTransaction::ValidationError.new(
+            code: "unbalanced_transaction",
+            message: "transaction is unbalanced."
+          )
+        end
+
+        error = nil
+        with_stubbed_post_settlement(failing_poster) do
+          error = assert_raises(Receivables::SettlePayment::ValidationError) do
+            service.call(
+              receivable_id: bundle[:receivable].id,
+              receivable_allocation_id: bundle[:allocation].id,
+              paid_amount: "100.00",
+              paid_at: Time.current,
+              payment_reference: "hospital-payment-ledger-validation-001"
+            )
+          end
+        end
+
+        assert_equal "unbalanced_transaction", error.code
+      end
+    end
+
+    test "maps ledger idempotency conflicts to settlement idempotency conflicts" do
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
+        bundle = create_supplier_bundle!("supplier-ledger-conflict")
+        failing_poster = Object.new
+        failing_poster.define_singleton_method(:call) do |**|
+          raise Ledger::PostTransaction::IdempotencyConflict.new(
+            code: "txn_id_reused_with_different_payload",
+            message: "txn_id was already used with a different payload."
+          )
+        end
+
+        error = nil
+        with_stubbed_post_settlement(failing_poster) do
+          error = assert_raises(Receivables::SettlePayment::IdempotencyConflict) do
+            service.call(
+              receivable_id: bundle[:receivable].id,
+              receivable_allocation_id: bundle[:allocation].id,
+              paid_amount: "100.00",
+              paid_at: Time.current,
+              payment_reference: "hospital-payment-ledger-conflict-001"
+            )
+          end
+        end
+
+        assert_equal "txn_id_reused_with_different_payload", error.code
+      end
+    end
+
+    test "re-raises unexpected DB errors from ledger posting" do
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
+        bundle = create_supplier_bundle!("supplier-ledger-db-error")
+        failing_poster = Object.new
+        failing_poster.define_singleton_method(:call) do |**|
+          raise ActiveRecord::StatementInvalid, "PG::UndefinedTable: relation does not exist"
+        end
+
+        with_stubbed_post_settlement(failing_poster) do
+          assert_raises(ActiveRecord::StatementInvalid) do
+            service.call(
+              receivable_id: bundle[:receivable].id,
+              receivable_allocation_id: bundle[:allocation].id,
+              paid_amount: "100.00",
+              paid_at: Time.current,
+              payment_reference: "hospital-payment-ledger-db-error-001"
+            )
+          end
+        end
+      end
+    end
+
+    test "rounding edge keeps split amounts and clearing postings reconciled" do
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
+        bundle = create_shared_cnpj_physician_bundle!("rounding-edge")
+        bundle[:allocation].update!(
+          metadata: {
+            "cnpj_split" => {
+              "applied" => true,
+              "cnpj_share_rate" => "0.33333333"
+            }
+          }
+        )
+        create_direct_anticipation_request!(
+          tenant_bundle: bundle,
+          idempotency_key: "settle-rounding-edge-antic-1",
+          requested_amount: "25.55",
+          discount_rate: "0.00000001",
+          discount_amount: "0.01",
+          net_amount: "25.54",
+          status: "APPROVED"
+        )
+
+        result = service.call(
+          receivable_id: bundle[:receivable].id,
+          receivable_allocation_id: bundle[:allocation].id,
+          paid_amount: "100.01",
+          paid_at: Time.current,
+          payment_reference: "hospital-payment-rounding-edge-001"
+        )
+        settlement = result.settlement
+        total_split = settlement.cnpj_amount.to_d + settlement.fdic_amount.to_d + settlement.beneficiary_amount.to_d
+        assert_equal settlement.paid_amount.to_d, total_split
+
+        ledger_entries = LedgerEntry.where(
+          tenant_id: @tenant.id,
+          source_type: "ReceivablePaymentSettlement",
+          source_id: settlement.id
+        ).to_a
+        clearing_debit = ledger_entries.select { |entry| entry.account_code == "clearing:settlement" && entry.entry_side == "DEBIT" }
+          .sum { |entry| entry.amount.to_d }
+        clearing_credit = ledger_entries.select { |entry| entry.account_code == "clearing:settlement" && entry.entry_side == "CREDIT" }
+          .sum { |entry| entry.amount.to_d }
+        assert_equal clearing_debit, clearing_credit
       end
     end
 
@@ -182,6 +315,7 @@ module Receivables
         tenant_id: @tenant.id,
         actor_role: "ops_admin",
         request_id: @request_id,
+        idempotency_key: "test-idempotency-#{@request_id}",
         request_ip: "127.0.0.1",
         user_agent: "rails-test",
         endpoint_path: "/api/v1/receivables/settlements",
@@ -338,6 +472,15 @@ module Receivables
         settlement_target_date: BusinessCalendar.next_business_day(from: Time.current),
         metadata: {}
       )
+    end
+
+    def with_stubbed_post_settlement(poster)
+      singleton = Ledger::PostSettlement.singleton_class
+      original_new = Ledger::PostSettlement.method(:new)
+      singleton.send(:define_method, :new) { |*| poster }
+      yield
+    ensure
+      singleton.send(:define_method, :new, original_new)
     end
   end
 end

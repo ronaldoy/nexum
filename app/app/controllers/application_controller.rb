@@ -6,4 +6,12 @@ class ApplicationController < ActionController::Base
 
   # Changes to the importmap will invalidate the etag for HTML responses
   stale_when_importmap_changes
+
+  rescue_from RequestContext::ContextError, with: :render_request_context_error
+
+  private
+
+  def render_request_context_error
+    render plain: "Serviço temporariamente indisponível.", status: :service_unavailable
+  end
 end

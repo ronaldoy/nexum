@@ -25,16 +25,20 @@ module Receivables
 
     def initialize(
       tenant_id:,
+      actor_party_id: nil,
       actor_role:,
       request_id:,
+      idempotency_key:,
       request_ip:,
       user_agent:,
       endpoint_path:,
       http_method:
     )
       @tenant_id = tenant_id
+      @actor_party_id = actor_party_id
       @actor_role = actor_role
       @request_id = request_id
+      @idempotency_key = idempotency_key.to_s.strip
       @request_ip = request_ip
       @user_agent = user_agent
       @endpoint_path = endpoint_path
@@ -42,9 +46,12 @@ module Receivables
     end
 
     def call(receivable_id:, paid_amount:, receivable_allocation_id: nil, paid_at: Time.current, payment_reference: nil, metadata: {})
+      raise_validation_error!("missing_idempotency_key", "Idempotency-Key is required.") if @idempotency_key.blank?
+
       amount = round_money(parse_decimal(paid_amount, field: "paid_amount"))
       raise_validation_error!("invalid_paid_amount", "paid_amount must be greater than zero.") if amount <= 0
       paid_time = parse_time(paid_at, field: "paid_at")
+      normalized_payment_reference = payment_reference.to_s.strip.presence || @idempotency_key
 
       metadata_hash = normalize_metadata(metadata || {})
       payload_hash = payment_payload_hash(
@@ -52,7 +59,7 @@ module Receivables
         receivable_allocation_id: receivable_allocation_id,
         paid_amount: amount,
         paid_at: paid_time,
-        payment_reference: payment_reference,
+        payment_reference: normalized_payment_reference,
         metadata: metadata_hash
       )
 
@@ -61,22 +68,30 @@ module Receivables
       replayed = false
 
       ActiveRecord::Base.transaction do
-        if payment_reference.present?
-          existing = ReceivablePaymentSettlement.lock.find_by(tenant_id: @tenant_id, payment_reference: payment_reference)
-          if existing
-            ensure_matching_replay!(existing:, payload_hash:, receivable_id:, receivable_allocation_id:, paid_amount: amount)
-            create_action_log!(
-              action_type: "RECEIVABLE_PAYMENT_SETTLEMENT_REPLAYED",
-              success: true,
-              target_id: existing.id,
-              metadata: { replayed: true, payment_reference: payment_reference }
-            )
-            return Result.new(
-              settlement: existing,
-              settlement_entries: existing.anticipation_settlement_entries.order(created_at: :asc).to_a,
-              replayed: true
-            )
-          end
+        existing = find_existing_settlement(normalized_payment_reference)
+        if existing
+          ensure_matching_replay!(
+            existing: existing,
+            payload_hash: payload_hash,
+            receivable_id: receivable_id,
+            receivable_allocation_id: receivable_allocation_id,
+            paid_amount: amount
+          )
+          create_action_log!(
+            action_type: "RECEIVABLE_PAYMENT_SETTLEMENT_REPLAYED",
+            success: true,
+            target_id: existing.id,
+            metadata: {
+              replayed: true,
+              payment_reference: normalized_payment_reference,
+              idempotency_key: @idempotency_key
+            }
+          )
+          return Result.new(
+            settlement: existing,
+            settlement_entries: existing.anticipation_settlement_entries.order(created_at: :asc).to_a,
+            replayed: true
+          )
         end
 
         receivable = Receivable.where(tenant_id: @tenant_id).lock.find(receivable_id)
@@ -103,11 +118,13 @@ module Receivables
           fdic_balance_before: fdic_balance_before,
           fdic_balance_after: fdic_balance_after,
           paid_at: paid_time,
-          payment_reference: payment_reference,
+          payment_reference: normalized_payment_reference,
+          idempotency_key: @idempotency_key,
           request_id: @request_id,
           metadata: metadata_hash.merge(
             PAYLOAD_HASH_METADATA_KEY => payload_hash,
             "cnpj_share_rate" => decimal_as_string(cnpj_share_rate),
+            "idempotency_key" => @idempotency_key,
             "replayed" => false
           )
         )
@@ -144,7 +161,8 @@ module Receivables
           target_id: settlement.id,
           metadata: {
             replayed: false,
-            payment_reference: payment_reference,
+            payment_reference: normalized_payment_reference,
+            idempotency_key: @idempotency_key,
             paid_amount: decimal_as_string(amount),
             cnpj_amount: decimal_as_string(cnpj_amount),
             fdic_amount: decimal_as_string(fdic_amount),
@@ -155,10 +173,31 @@ module Receivables
 
       Result.new(settlement:, settlement_entries:, replayed:)
     rescue ActiveRecord::RecordNotFound => error
-      create_failure_log(error:, receivable_id:, payment_reference:)
+      create_failure_log(error:, receivable_id:, payment_reference: normalized_payment_reference)
       raise
     rescue ValidationError => error
-      create_failure_log(error:, receivable_id:, payment_reference:)
+      create_failure_log(error:, receivable_id:, payment_reference: normalized_payment_reference)
+      raise
+    rescue ActiveRecord::RecordNotUnique
+      existing = ReceivablePaymentSettlement.where(tenant_id: @tenant_id, idempotency_key: @idempotency_key).first
+      if existing
+        ensure_matching_replay!(
+          existing: existing,
+          payload_hash: payload_hash,
+          receivable_id: receivable_id,
+          receivable_allocation_id: receivable_allocation_id,
+          paid_amount: amount
+        )
+        return Result.new(
+          settlement: existing,
+          settlement_entries: existing.anticipation_settlement_entries.order(created_at: :asc).to_a,
+          replayed: true
+        )
+      end
+
+      raise
+    rescue ActiveRecord::ActiveRecordError => error
+      create_failure_log(error:, receivable_id:, payment_reference: normalized_payment_reference)
       raise
     end
 
@@ -288,7 +327,12 @@ module Receivables
     end
 
     def post_ledger_entries!(settlement:, receivable:, allocation:, cnpj_amount:, fdic_amount:, beneficiary_amount:, paid_at:)
-      Ledger::PostSettlement.new(tenant_id: @tenant_id, request_id: @request_id).call(
+      Ledger::PostSettlement.new(
+        tenant_id: @tenant_id,
+        request_id: @request_id,
+        actor_party_id: @actor_party_id,
+        actor_role: @actor_role
+      ).call(
         settlement: settlement,
         receivable: receivable,
         allocation: allocation,
@@ -297,6 +341,18 @@ module Receivables
         beneficiary_amount: beneficiary_amount,
         paid_at: paid_at
       )
+    rescue Ledger::PostTransaction::IdempotencyConflict => error
+      raise IdempotencyConflict.new(code: error.code, message: error.message)
+    rescue Ledger::PostTransaction::ValidationError => error
+      raise ValidationError.new(code: error.code, message: error.message)
+    rescue ActiveRecord::StatementInvalid => error
+      if error.message.match?(
+        /unbalanced ledger transaction|incomplete ledger transaction|inconsistent txn_entry_count|inconsistent source linkage|ledger transaction source mismatch|ledger transaction payment_reference mismatch|payment_reference is required for settlement ledger transaction/
+      )
+        raise ValidationError.new(code: "ledger_invariant_violation", message: "Ledger invariants were violated.")
+      end
+
+      raise
     end
 
     def update_statuses_after_payment!(receivable:, allocation:)
@@ -322,6 +378,14 @@ module Receivables
       if receivable.status != "SETTLED" && receivable_paid_total >= receivable.gross_amount.to_d
         receivable.update!(status: "SETTLED")
       end
+    end
+
+    def find_existing_settlement(payment_reference)
+      by_idempotency = ReceivablePaymentSettlement.lock.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
+      return by_idempotency if by_idempotency
+      return nil if payment_reference.blank?
+
+      ReceivablePaymentSettlement.lock.find_by(tenant_id: @tenant_id, payment_reference: payment_reference)
     end
 
     def ensure_matching_replay!(existing:, payload_hash:, receivable_id:, receivable_allocation_id:, paid_amount:)
@@ -351,6 +415,7 @@ module Receivables
         settlement_id: settlement.id,
         receivable_allocation_id: settlement.receivable_allocation_id,
         payment_reference: settlement.payment_reference,
+        idempotency_key: settlement.idempotency_key,
         paid_amount: decimal_as_string(settlement.paid_amount),
         cnpj_amount: decimal_as_string(settlement.cnpj_amount),
         fdic_amount: decimal_as_string(settlement.fdic_amount),
@@ -383,6 +448,7 @@ module Receivables
         receivable: receivable,
         sequence: sequence,
         event_type: event_type,
+        actor_party_id: @actor_party_id,
         actor_role: @actor_role,
         occurred_at: occurred_at,
         request_id: @request_id,
@@ -395,6 +461,7 @@ module Receivables
     def create_action_log!(action_type:, success:, target_id:, metadata:)
       ActionIpLog.create!(
         tenant_id: @tenant_id,
+        actor_party_id: @actor_party_id,
         action_type: action_type,
         ip_address: @request_ip.presence || "0.0.0.0",
         user_agent: @user_agent,
@@ -413,6 +480,7 @@ module Receivables
     def create_failure_log(error:, receivable_id:, payment_reference:)
       ActionIpLog.create!(
         tenant_id: @tenant_id,
+        actor_party_id: @actor_party_id,
         action_type: "RECEIVABLE_PAYMENT_SETTLEMENT_FAILED",
         ip_address: @request_ip.presence || "0.0.0.0",
         user_agent: @user_agent,
@@ -426,6 +494,7 @@ module Receivables
         occurred_at: Time.current,
         metadata: {
           payment_reference: payment_reference,
+          idempotency_key: @idempotency_key,
           error_class: error.class.name,
           error_code: error.respond_to?(:code) ? error.code : "not_found",
           error_message: error.message

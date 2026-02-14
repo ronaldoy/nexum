@@ -1,8 +1,10 @@
 module Ledger
   class PostSettlement
-    def initialize(tenant_id:, request_id:)
+    def initialize(tenant_id:, request_id:, actor_party_id: nil, actor_role: nil)
       @tenant_id = tenant_id
       @request_id = request_id
+      @actor_party_id = actor_party_id
+      @actor_role = actor_role
     end
 
     def call(settlement:, receivable:, allocation:, cnpj_amount:, fdic_amount:, beneficiary_amount:, paid_at:)
@@ -18,10 +20,16 @@ module Ledger
 
       return [] if entries.empty?
 
-      poster = PostTransaction.new(tenant_id: @tenant_id, request_id: @request_id)
+      poster = PostTransaction.new(
+        tenant_id: @tenant_id,
+        request_id: @request_id,
+        actor_party_id: @actor_party_id,
+        actor_role: @actor_role
+      )
       poster.call(
         txn_id: txn_id,
         receivable_id: receivable.id,
+        payment_reference: settlement.payment_reference,
         posted_at: paid_at,
         source_type: "ReceivablePaymentSettlement",
         source_id: settlement.id,

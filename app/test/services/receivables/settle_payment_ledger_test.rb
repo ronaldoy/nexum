@@ -2,6 +2,8 @@ require "test_helper"
 
 module Receivables
   class SettlePaymentLedgerTest < ActiveSupport::TestCase
+    RLS_TEST_ROLE = "nexum_rls_tester".freeze
+
     setup do
       @tenant = tenants(:default)
       @request_id = SecureRandom.uuid
@@ -58,6 +60,7 @@ module Receivables
         assert ledger_entries.all? { |e| e.source_type == "ReceivablePaymentSettlement" }
         assert ledger_entries.all? { |e| e.source_id == settlement.id }
         assert ledger_entries.all? { |e| e.receivable_id == bundle[:receivable].id }
+        assert ledger_entries.all? { |e| e.payment_reference == "ledger-int-payment-002" }
       end
     end
 
@@ -141,6 +144,163 @@ module Receivables
       end
     end
 
+    test "DB constraints block inserts beyond finalized transaction size" do
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
+        txn_id = SecureRandom.uuid
+        payment_reference = "ledger-int-identity-001"
+        Ledger::PostTransaction.new(tenant_id: @tenant.id, request_id: @request_id).call(
+          txn_id: txn_id,
+          posted_at: Time.current,
+          source_type: "LedgerSqlTest",
+          source_id: sql_source_id_for(txn_id),
+          payment_reference: payment_reference,
+          entries: [
+            { account_code: "clearing:settlement", entry_side: "DEBIT", amount: "10.00" },
+            { account_code: "receivables:hospital", entry_side: "CREDIT", amount: "10.00" }
+          ]
+        )
+
+        error = assert_raises(ActiveRecord::StatementInvalid) do
+          ActiveRecord::Base.transaction(requires_new: true) do
+            insert_ledger_entry_sql!(
+              tenant_id: @tenant.id,
+              txn_id: txn_id,
+              entry_position: 3,
+              txn_entry_count: 2,
+              account_code: "obligations:beneficiary",
+              entry_side: "DEBIT",
+              amount: "1.00",
+              payment_reference: payment_reference
+            )
+          end
+        end
+
+        assert_match(/entry_position|check/, error.message)
+      end
+    end
+
+    test "DB trigger rejects unbalanced ledger transaction at commit" do
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
+        txn_id = SecureRandom.uuid
+
+        error = assert_raises(ActiveRecord::StatementInvalid) do
+          ActiveRecord::Base.transaction(requires_new: true) do
+            insert_ledger_entry_sql!(
+              tenant_id: @tenant.id,
+              txn_id: txn_id,
+              entry_position: 1,
+              txn_entry_count: 1,
+              account_code: "clearing:settlement",
+              entry_side: "DEBIT",
+              amount: "100.00"
+            )
+          end
+        end
+
+        assert_match(/unbalanced ledger transaction/, error.message)
+      end
+    end
+
+    test "DB trigger rejects incomplete ledger transaction at commit" do
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
+        txn_id = SecureRandom.uuid
+
+        error = assert_raises(ActiveRecord::StatementInvalid) do
+          ActiveRecord::Base.transaction(requires_new: true) do
+            insert_ledger_entry_sql!(
+              tenant_id: @tenant.id,
+              txn_id: txn_id,
+              entry_position: 1,
+              txn_entry_count: 2,
+              account_code: "clearing:settlement",
+              entry_side: "DEBIT",
+              amount: "100.00"
+            )
+          end
+        end
+
+        assert_match(/incomplete ledger transaction/, error.message)
+      end
+    end
+
+    test "DB requires payment_reference for settlement ledger sources" do
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
+        txn_id = SecureRandom.uuid
+
+        error = assert_raises(ActiveRecord::StatementInvalid) do
+          ActiveRecord::Base.transaction(requires_new: true) do
+            insert_ledger_entry_sql!(
+              tenant_id: @tenant.id,
+              txn_id: txn_id,
+              entry_position: 1,
+              txn_entry_count: 1,
+              account_code: "clearing:settlement",
+              entry_side: "DEBIT",
+              amount: "100.00",
+              source_type: "ReceivablePaymentSettlement",
+              payment_reference: nil
+            )
+          end
+        end
+
+        assert_match(/payment_reference|required/, error.message)
+      end
+    end
+
+    test "functional RLS isolates ledger_entries by app.tenant_id" do
+      secondary_tenant = tenants(:secondary)
+      default_txn_id = create_minimal_ledger_txn!(tenant: @tenant)
+      secondary_txn_id = create_minimal_ledger_txn!(tenant: secondary_tenant)
+
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
+        visible_tenant_ids = with_rls_enforced_role do
+          LedgerEntry.where(txn_id: [ default_txn_id, secondary_txn_id ]).pluck(:tenant_id).uniq
+        end
+        assert_equal [ @tenant.id ], visible_tenant_ids
+      end
+
+      with_tenant_db_context(tenant_id: secondary_tenant.id, actor_id: secondary_tenant.id, role: "ops_admin") do
+        visible_tenant_ids = with_rls_enforced_role do
+          LedgerEntry.where(txn_id: [ default_txn_id, secondary_txn_id ]).pluck(:tenant_id).uniq
+        end
+        assert_equal [ secondary_tenant.id ], visible_tenant_ids
+      end
+    end
+
+    test "functional RLS rejects insert with mismatched tenant_id" do
+      secondary_tenant = tenants(:secondary)
+
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
+        txn_id = SecureRandom.uuid
+        error = assert_raises(ActiveRecord::StatementInvalid) do
+          with_rls_enforced_role do
+            ActiveRecord::Base.transaction(requires_new: true) do
+              insert_ledger_entry_sql!(
+                tenant_id: secondary_tenant.id,
+                txn_id: txn_id,
+                entry_position: 1,
+                txn_entry_count: 2,
+                account_code: "clearing:settlement",
+                entry_side: "DEBIT",
+                amount: "10.00"
+              )
+              insert_ledger_entry_sql!(
+                tenant_id: secondary_tenant.id,
+                txn_id: txn_id,
+                entry_position: 2,
+                txn_entry_count: 2,
+                account_code: "receivables:hospital",
+                entry_side: "CREDIT",
+                amount: "10.00"
+              )
+            end
+          end
+        end
+
+        assert_match(/row-level security policy/, error.message)
+      end
+    end
+
     test "RLS policy exists on ledger_entries" do
       policy = ActiveRecord::Base.connection.select_one(<<~SQL)
         SELECT policyname, cmd, qual
@@ -171,6 +331,7 @@ module Receivables
         tenant_id: @tenant.id,
         actor_role: "ops_admin",
         request_id: @request_id,
+        idempotency_key: "test-idempotency-#{@request_id}",
         request_ip: "127.0.0.1",
         user_agent: "rails-test",
         endpoint_path: "/api/v1/receivables/settlements",
@@ -247,6 +408,142 @@ module Receivables
         settlement_target_date: BusinessCalendar.next_business_day(from: Time.current),
         metadata: {}
       )
+    end
+
+    def create_minimal_ledger_txn!(tenant:)
+      txn_id = SecureRandom.uuid
+
+      with_tenant_db_context(tenant_id: tenant.id, actor_id: tenant.id, role: "ops_admin") do
+        Ledger::PostTransaction.new(tenant_id: tenant.id, request_id: SecureRandom.uuid).call(
+          txn_id: txn_id,
+          posted_at: Time.current,
+          source_type: "LedgerRlsTest",
+          source_id: SecureRandom.uuid,
+          payment_reference: "ledger-rls-#{txn_id}",
+          entries: [
+            { account_code: "clearing:settlement", entry_side: "DEBIT", amount: "10.00" },
+            { account_code: "receivables:hospital", entry_side: "CREDIT", amount: "10.00" }
+          ]
+        )
+      end
+
+      txn_id
+    end
+
+    def insert_ledger_entry_sql!(tenant_id:, txn_id:, entry_position:, txn_entry_count:, account_code:, entry_side:, amount:, payment_reference: nil, source_type: "LedgerSqlTest", source_id: nil)
+      connection = ActiveRecord::Base.connection
+      now = Time.current
+      effective_source_id = source_id || sql_source_id_for(txn_id)
+
+      ensure_ledger_transaction_header_sql!(
+        tenant_id: tenant_id,
+        txn_id: txn_id,
+        source_type: source_type,
+        source_id: effective_source_id,
+        payment_reference: payment_reference,
+        entry_count: txn_entry_count,
+        posted_at: now
+      )
+
+      connection.execute(<<~SQL)
+        INSERT INTO ledger_entries (
+          id, tenant_id, txn_id, entry_position, txn_entry_count, account_code, entry_side, amount, currency, payment_reference,
+          source_type, source_id, metadata, posted_at, created_at, updated_at
+        ) VALUES (
+          #{connection.quote(SecureRandom.uuid)},
+          #{connection.quote(tenant_id)},
+          #{connection.quote(txn_id)},
+          #{connection.quote(entry_position)},
+          #{connection.quote(txn_entry_count)},
+          #{connection.quote(account_code)},
+          #{connection.quote(entry_side)},
+          #{connection.quote(amount)},
+          'BRL',
+          #{connection.quote(payment_reference)},
+          #{connection.quote(source_type)},
+          #{connection.quote(effective_source_id)},
+          '{}'::jsonb,
+          #{connection.quote(now)},
+          #{connection.quote(now)},
+          #{connection.quote(now)}
+        )
+      SQL
+    end
+
+    def ensure_ledger_transaction_header_sql!(tenant_id:, txn_id:, source_type:, source_id:, payment_reference:, entry_count:, posted_at:)
+      connection = ActiveRecord::Base.connection
+      now = Time.current
+
+      connection.execute(<<~SQL)
+        INSERT INTO ledger_transactions (
+          id, tenant_id, txn_id, source_type, source_id, payment_reference, payload_hash, entry_count, posted_at, metadata, created_at, updated_at
+        ) VALUES (
+          #{connection.quote(SecureRandom.uuid)},
+          #{connection.quote(tenant_id)},
+          #{connection.quote(txn_id)},
+          #{connection.quote(source_type)},
+          #{connection.quote(source_id)},
+          #{connection.quote(payment_reference)},
+          #{connection.quote("0" * 64)},
+          #{connection.quote(entry_count)},
+          #{connection.quote(posted_at)},
+          '{}'::jsonb,
+          #{connection.quote(now)},
+          #{connection.quote(now)}
+        )
+        ON CONFLICT (tenant_id, txn_id) DO NOTHING
+      SQL
+    end
+
+    def sql_source_id_for(txn_id)
+      @sql_source_ids ||= {}
+      @sql_source_ids[txn_id] ||= SecureRandom.uuid
+    end
+
+    def with_rls_enforced_role
+      connection = ActiveRecord::Base.connection
+      switched_role = false
+
+      if current_role_bypasses_rls?
+        ensure_rls_test_role!
+        connection.execute("SET LOCAL ROLE #{RLS_TEST_ROLE}")
+        switched_role = true
+      end
+
+      yield
+    ensure
+      connection.execute("RESET ROLE") if switched_role
+    end
+
+    def ensure_rls_test_role!
+      return if @rls_test_role_ready
+
+      connection = ActiveRecord::Base.connection
+      connection.execute(<<~SQL)
+        DO $$
+        BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '#{RLS_TEST_ROLE}') THEN
+            CREATE ROLE #{RLS_TEST_ROLE} NOLOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS;
+          END IF;
+        END
+        $$;
+      SQL
+      connection.execute("GRANT #{RLS_TEST_ROLE} TO CURRENT_USER")
+      connection.execute("GRANT USAGE ON SCHEMA public TO #{RLS_TEST_ROLE}")
+      connection.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE ledger_entries TO #{RLS_TEST_ROLE}")
+      connection.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE ledger_transactions TO #{RLS_TEST_ROLE}")
+
+      @rls_test_role_ready = true
+    end
+
+    def current_role_bypasses_rls?
+      row = ActiveRecord::Base.connection.select_one(<<~SQL)
+        SELECT r.rolsuper, r.rolbypassrls
+        FROM pg_roles r
+        WHERE r.rolname = current_user
+      SQL
+
+      row["rolsuper"] || row["rolbypassrls"]
     end
   end
 end

@@ -21,17 +21,44 @@ Rails.application.configure do
   # Enable serving of images, stylesheets, and JavaScripts from an asset server.
   # config.asset_host = "http://assets.example.com"
 
-  # Store uploaded files on the local file system (see config/storage.yml for options).
-  config.active_storage.service = :local
+  # Use Google Cloud Storage in production by default, falling back to local if the GCS adapter is unavailable.
+  configured_storage_service = ENV.fetch("ACTIVE_STORAGE_SERVICE", "google")
+  if configured_storage_service == "google"
+    begin
+      require "google/cloud/storage"
+    rescue LoadError
+      configured_storage_service = "local"
+    end
+  end
+  config.active_storage.service = configured_storage_service.to_sym
 
   # Assume all access to the app is happening through a SSL-terminating reverse proxy.
-  # config.assume_ssl = true
+  config.assume_ssl = ActiveModel::Type::Boolean.new.cast(
+    Rails.app.creds.option(:security, :assume_ssl, default: ENV.fetch("RAILS_ASSUME_SSL", true))
+  )
 
   # Force all access to the app over SSL, use Strict-Transport-Security, and use secure cookies.
-  # config.force_ssl = true
+  config.force_ssl = true
 
-  # Skip http-to-https redirect for the default health check endpoint.
-  # config.ssl_options = { redirect: { exclude: ->(request) { request.path == "/up" } } }
+  # Skip http-to-https redirect for health endpoints used by infrastructure probes.
+  config.ssl_options = {
+    redirect: {
+      exclude: ->(request) { ["/up", "/health", "/ready"].include?(request.path) }
+    },
+    hsts: {
+      expires: 2.years,
+      subdomains: true
+    }
+  }
+
+  # Enforce strict same-site cookie protection globally.
+  config.action_dispatch.cookies_same_site_protection = :strict
+
+  # Additional browser hardening headers for financial workloads.
+  config.action_dispatch.default_headers.merge!(
+    "Permissions-Policy" => "camera=(), geolocation=(), microphone=(), payment=(), usb=()",
+    "X-Download-Options" => "noopen"
+  )
 
   # Log to STDOUT with the current request id as a default log tag.
   config.log_tags = [ :request_id ]
@@ -79,10 +106,11 @@ Rails.application.configure do
   config.active_record.attributes_for_inspect = [ :id ]
 
   # Enable DNS rebinding protection and other `Host` header attacks.
-  # config.hosts = [
-  #   "example.com",     # Allow requests from example.com
-  #   /.*\.example\.com/ # Allow requests from subdomains like `www.example.com`
-  # ]
+  allowed_hosts = Array(Rails.app.creds.option(:security, :allowed_hosts, default: ENV["APP_ALLOWED_HOSTS"]))
+                    .flat_map { |value| value.to_s.split(",") }
+                    .map(&:strip)
+                    .reject(&:blank?)
+  config.hosts = allowed_hosts if allowed_hosts.any?
   #
   # Skip DNS rebinding protection for the default health check endpoint.
   # config.host_authorization = { exclude: ->(request) { request.path == "/up" } }

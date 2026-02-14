@@ -1,15 +1,15 @@
 module Api
   module V1
     class KycProfilesController < Api::BaseController
-      before_action only: :show do
-        require_api_scope!("kyc:read")
-      end
-      before_action only: %i[create submit_document] do
-        require_api_scope!("kyc:write")
-      end
+      require_api_scopes(
+        show: "kyc:read",
+        create: "kyc:write",
+        submit_document: "kyc:write"
+      )
 
       def show
         kyc_profile = tenant_kyc_profiles.find(params[:id])
+        authorize_party_access!(kyc_profile.party_id)
 
         render json: {
           data: kyc_profile_payload(kyc_profile)
@@ -17,9 +17,11 @@ module Api
       end
 
       def create
+        authorize_party_access!(create_params[:party_id]) if create_params[:party_id].present?
+
         result = kyc_profile_creation_service.call(
           create_params.to_h,
-          default_party_id: Current.user&.party_id
+          default_party_id: current_actor_party_id
         )
 
         render json: {
@@ -34,8 +36,11 @@ module Api
       end
 
       def submit_document
+        kyc_profile = tenant_kyc_profiles.find(params[:id])
+        authorize_party_access!(kyc_profile.party_id)
+
         result = kyc_document_submission_service.call(
-          kyc_profile_id: params[:id],
+          kyc_profile_id: kyc_profile.id,
           raw_payload: submit_document_params.to_h
         )
 
@@ -74,6 +79,7 @@ module Api
           :expires_on,
           :is_key_document,
           :storage_key,
+          :blob_signed_id,
           :sha256,
           metadata: {}
         )

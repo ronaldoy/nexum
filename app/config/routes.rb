@@ -1,13 +1,18 @@
 Rails.application.routes.draw do
   resource :session, only: [:new, :create, :destroy]
   resources :passwords, param: :token, only: [:new, :create, :edit, :update]
+  get "health" => "health#health"
   get "ready" => "health#ready"
+  post "security/csp_reports" => "csp_reports#create"
+  get "docs/openapi/v1" => "openapi_docs#v1"
+  get "docs/openapi/v1.yaml" => "openapi_docs#v1"
 
   namespace :api do
     namespace :v1 do
       resources :receivables, only: %i[index show] do
         get :history, on: :member
         post :settle_payment, on: :member
+        post :attach_document, on: :member
       end
       resources :kyc_profiles, only: %i[create show] do
         post :submit_document, on: :member

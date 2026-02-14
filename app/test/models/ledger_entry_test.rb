@@ -119,28 +119,13 @@ class LedgerEntryTest < ActiveSupport::TestCase
     with_tenant_db_context(tenant_id: @tenant.id) do
       source_id = SecureRandom.uuid
       txn_id = SecureRandom.uuid
-
-      LedgerEntry.create!(
-        tenant_id: @tenant.id,
+      insert_entries_for_transaction!(
         txn_id: txn_id,
-        account_code: "obligations:beneficiary",
-        entry_side: "CREDIT",
-        amount: BigDecimal("50.00"),
-        currency: "BRL",
-        source_type: "Test",
         source_id: source_id,
-        posted_at: Time.current
-      )
-      LedgerEntry.create!(
-        tenant_id: @tenant.id,
-        txn_id: txn_id,
-        account_code: "clearing:settlement",
-        entry_side: "DEBIT",
-        amount: BigDecimal("50.00"),
-        currency: "BRL",
-        source_type: "Test",
-        source_id: source_id,
-        posted_at: Time.current
+        rows: [
+          { account_code: "obligations:beneficiary", entry_side: "CREDIT", amount: BigDecimal("50.00") },
+          { account_code: "clearing:settlement", entry_side: "DEBIT", amount: BigDecimal("50.00") }
+        ]
       )
 
       # liability: credit - debit = 50 - 0 = 50
@@ -155,6 +140,8 @@ class LedgerEntryTest < ActiveSupport::TestCase
     LedgerEntry.new({
       tenant_id: @tenant.id,
       txn_id: @txn_id,
+      entry_position: 1,
+      txn_entry_count: 2,
       account_code: "clearing:settlement",
       entry_side: "DEBIT",
       amount: BigDecimal("100.00"),
@@ -166,27 +153,55 @@ class LedgerEntryTest < ActiveSupport::TestCase
   end
 
   def create_balanced_pair!(source_id:)
-    LedgerEntry.create!(
-      tenant_id: @tenant.id,
+    insert_entries_for_transaction!(
       txn_id: @txn_id,
-      account_code: "clearing:settlement",
-      entry_side: "DEBIT",
-      amount: BigDecimal("100.00"),
-      currency: "BRL",
-      source_type: "Test",
       source_id: source_id,
-      posted_at: Time.current
+      rows: [
+        { account_code: "clearing:settlement", entry_side: "DEBIT", amount: BigDecimal("100.00") },
+        { account_code: "receivables:hospital", entry_side: "CREDIT", amount: BigDecimal("100.00") }
+      ]
     )
-    LedgerEntry.create!(
+  end
+
+  def insert_entries_for_transaction!(txn_id:, source_id:, rows:)
+    create_ledger_transaction_header!(txn_id: txn_id, source_id: source_id, entry_count: rows.length)
+
+    posted_at = Time.current
+    now = Time.current
+    total_entries = rows.length
+    payload = rows.each_with_index.map do |row, index|
+      {
+        tenant_id: @tenant.id,
+        txn_id: txn_id,
+        entry_position: index + 1,
+        txn_entry_count: total_entries,
+        account_code: row.fetch(:account_code),
+        entry_side: row.fetch(:entry_side),
+        amount: row.fetch(:amount),
+        currency: "BRL",
+        source_type: "Test",
+        source_id: source_id,
+        posted_at: posted_at,
+        created_at: now,
+        updated_at: now
+      }
+    end
+
+    LedgerEntry.insert_all!(payload)
+  end
+
+  def create_ledger_transaction_header!(txn_id:, source_id:, entry_count:, source_type: "Test", payment_reference: nil, receivable_id: nil)
+    LedgerTransaction.create!(
       tenant_id: @tenant.id,
-      txn_id: @txn_id,
-      account_code: "receivables:hospital",
-      entry_side: "CREDIT",
-      amount: BigDecimal("100.00"),
-      currency: "BRL",
-      source_type: "Test",
+      txn_id: txn_id,
+      source_type: source_type,
       source_id: source_id,
-      posted_at: Time.current
+      receivable_id: receivable_id,
+      payment_reference: payment_reference,
+      payload_hash: "0" * 64,
+      entry_count: entry_count,
+      posted_at: Time.current,
+      metadata: {}
     )
   end
 end

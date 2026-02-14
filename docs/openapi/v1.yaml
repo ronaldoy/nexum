@@ -1,0 +1,589 @@
+openapi: 3.1.0
+info:
+  title: Nexum API
+  version: 1.0.0
+  summary: Baseline contract for API v1 endpoints
+  description: |
+    Contract-first baseline for `/api/v1` endpoints.
+    Monetary and rate fields are represented as strings.
+    Error responses are deterministic and machine-readable.
+servers:
+  - url: /
+tags:
+  - name: Health
+  - name: Receivables
+  - name: Anticipation
+  - name: KYC
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness check
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /ready:
+    get:
+      tags: [Health]
+      summary: Readiness check
+      operationId: getReady
+      responses:
+        "200":
+          description: Service and dependencies are ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadyResponse"
+        "503":
+          description: Service is not ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadyResponse"
+  /api/v1/receivables:
+    get:
+      tags: [Receivables]
+      summary: List receivables
+      operationId: listReceivables
+      responses:
+        "200":
+          description: Receivable collection.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Receivable"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+  /api/v1/receivables/{id}:
+    get:
+      tags: [Receivables]
+      summary: Fetch receivable by id
+      operationId: getReceivable
+      parameters:
+        - $ref: "#/components/parameters/ReceivableId"
+      responses:
+        "200":
+          description: Receivable.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Receivable"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+  /api/v1/receivables/{id}/history:
+    get:
+      tags: [Receivables]
+      summary: Fetch receivable timeline
+      operationId: getReceivableHistory
+      parameters:
+        - $ref: "#/components/parameters/ReceivableId"
+      responses:
+        "200":
+          description: Unified event timeline.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HistoryItem"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+  /api/v1/receivables/{id}/settle_payment:
+    post:
+      tags: [Receivables]
+      summary: Settle receivable payment
+      operationId: settleReceivablePayment
+      parameters:
+        - $ref: "#/components/parameters/ReceivableId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SettlePaymentRequest"
+      responses:
+        "200":
+          description: Payment settled.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/v1/receivables/{id}/attach_document:
+    post:
+      tags: [Receivables]
+      summary: Attach signed document metadata to receivable
+      operationId: attachReceivableDocument
+      parameters:
+        - $ref: "#/components/parameters/ReceivableId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttachDocumentRequest"
+      responses:
+        "201":
+          description: Signed document metadata attached.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "200":
+          description: Replay of previously attached document.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/v1/anticipation_requests:
+    post:
+      tags: [Anticipation]
+      summary: Create anticipation request
+      operationId: createAnticipationRequest
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "201":
+          description: Anticipation request created.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/v1/anticipation_requests/{id}/issue_challenges:
+    post:
+      tags: [Anticipation]
+      summary: Issue email and WhatsApp confirmation challenges
+      operationId: issueAnticipationChallenges
+      parameters:
+        - $ref: "#/components/parameters/GenericId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Challenges issued.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/v1/anticipation_requests/{id}/confirm:
+    post:
+      tags: [Anticipation]
+      summary: Confirm anticipation by challenge codes
+      operationId: confirmAnticipation
+      parameters:
+        - $ref: "#/components/parameters/GenericId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Anticipation confirmed.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/v1/kyc_profiles:
+    post:
+      tags: [KYC]
+      summary: Create KYC profile
+      operationId: createKycProfile
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "201":
+          description: KYC profile created.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/v1/kyc_profiles/{id}:
+    get:
+      tags: [KYC]
+      summary: Fetch KYC profile
+      operationId: getKycProfile
+      parameters:
+        - $ref: "#/components/parameters/GenericId"
+      responses:
+        "200":
+          description: KYC profile.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+  /api/v1/kyc_profiles/{id}/submit_document:
+    post:
+      tags: [KYC]
+      summary: Submit KYC document metadata
+      operationId: submitKycDocument
+      parameters:
+        - $ref: "#/components/parameters/GenericId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: KYC document accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 255
+      description: Required for all mutating endpoints.
+    ReceivableId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    GenericId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    BadRequestError:
+      description: Request syntax or payload shape is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    UnauthorizedError:
+      description: Authentication is required or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ForbiddenError:
+      description: Authenticated actor is not allowed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    NotFoundError:
+      description: Resource does not exist in the current tenant scope.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ConflictError:
+      description: Idempotency or state conflict.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ValidationError:
+      description: Business validation error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, checks, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        checks:
+          type: object
+          additionalProperties: false
+        timestamp:
+          type: string
+          format: date-time
+    ReadyResponse:
+      type: object
+      required: [status, checks, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [ok, error]
+        checks:
+          type: object
+          required: [database]
+          properties:
+            database:
+              type: string
+              enum: [ok, error]
+        timestamp:
+          type: string
+          format: date-time
+    MoneyString:
+      type: string
+      pattern: '^\d+\.\d{2}$'
+      examples: ["100.00", "0.01"]
+    Receivable:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          format: uuid
+        gross_amount:
+          $ref: "#/components/schemas/MoneyString"
+        currency:
+          type: string
+          enum: [BRL]
+    HistoryItem:
+      type: object
+      required: [event_type, occurred_at]
+      properties:
+        event_type:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        payload:
+          type: object
+          additionalProperties: true
+    SettlePaymentRequest:
+      type: object
+      required: [paid_amount, paid_at, payment_reference]
+      properties:
+        paid_amount:
+          $ref: "#/components/schemas/MoneyString"
+        paid_at:
+          type: string
+          format: date-time
+        payment_reference:
+          type: string
+          minLength: 1
+        receivable_allocation_id:
+          type: string
+          format: uuid
+    AttachDocumentRequest:
+      type: object
+      required:
+        - actor_party_id
+        - document_type
+        - sha256
+        - signed_at
+        - provider_envelope_id
+        - email_challenge_id
+        - whatsapp_challenge_id
+      oneOf:
+        - required: [storage_key]
+        - required: [blob_signed_id]
+      properties:
+        actor_party_id:
+          type: string
+          format: uuid
+        document_type:
+          type: string
+          minLength: 1
+        signature_method:
+          type: string
+          enum: [OWN_PLATFORM_CONFIRMATION]
+          default: OWN_PLATFORM_CONFIRMATION
+        sha256:
+          type: string
+          minLength: 1
+        storage_key:
+          type: string
+          minLength: 1
+        blob_signed_id:
+          type: string
+          description: ActiveStorage direct-upload signed blob id. When present, storage_key may be omitted and will use blob key.
+        signed_at:
+          type: string
+          format: date-time
+        provider_envelope_id:
+          type: string
+          minLength: 1
+        email_challenge_id:
+          type: string
+          minLength: 1
+        whatsapp_challenge_id:
+          type: string
+          minLength: 1
+        metadata:
+          type: object
+          additionalProperties: true
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code in English.
+              example: invalid_idempotency_key
+            message:
+              type: string
+              description: Human-readable technical message.
+            request_id:
+              type: string
+              description: Request correlation id.
+            details:
+              type: object
+              additionalProperties: true

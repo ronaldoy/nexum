@@ -1,4 +1,5 @@
 require "test_helper"
+require "stringio"
 
 module Api
   module V1
@@ -15,6 +16,10 @@ module Api
         @secondary_party = nil
         @kyc_profile = nil
         @secondary_profile = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          @user.update!(role: "ops_admin")
+        end
 
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
           _, @write_token = ApiAccessToken.issue!(
@@ -147,7 +152,33 @@ module Api
         assert_equal "idempotency_key_reused_with_different_payload", response.parsed_body.dig("error", "code")
       end
 
+      test "returns unprocessable entity when kyc profile already exists and logs failure" do
+        post api_v1_kyc_profiles_path,
+          headers: authorization_headers(@write_token, idempotency_key: "idem-kyc-profile-existing-001"),
+          params: {
+            kyc_profile: {
+              party_id: @party.id,
+              status: "DRAFT",
+              risk_level: "UNKNOWN"
+            }
+          },
+          as: :json
+
+        assert_response :unprocessable_entity
+        assert_equal "kyc_profile_already_exists", response.parsed_body.dig("error", "code")
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          assert_equal 1, ActionIpLog.where(
+            tenant_id: @tenant.id,
+            action_type: "KYC_PROFILE_CREATE_FAILED",
+            target_id: @party.id
+          ).count
+        end
+      end
+
       test "submits kyc document with append-only event and action log" do
+        blob = create_active_storage_blob(filename: "kyc-rg-001.pdf", content: "kyc rg content")
+
         post submit_document_api_v1_kyc_profile_path(@kyc_profile.id),
           headers: authorization_headers(@write_token, idempotency_key: "idem-kyc-doc-submit-001"),
           params: {
@@ -159,7 +190,7 @@ module Api
               issued_on: "2020-01-10",
               expires_on: "2030-01-10",
               is_key_document: false,
-              storage_key: "kyc/rg-001.pdf",
+              blob_signed_id: blob.signed_id,
               sha256: "abc123",
               metadata: { source: "portal_upload" }
             }
@@ -175,7 +206,10 @@ module Api
 
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
           document_id = body.dig("data", "id")
-          assert_equal 1, KycDocument.where(tenant_id: @tenant.id, id: document_id).count
+          document = KycDocument.find(document_id)
+          assert document.file.attached?
+          assert_equal blob.id, document.file.blob.id
+          assert_equal blob.key, document.storage_key
           assert_equal 1, KycEvent.where(tenant_id: @tenant.id, kyc_profile_id: @kyc_profile.id, event_type: "KYC_DOCUMENT_SUBMITTED").count
           assert_equal 1, OutboxEvent.where(tenant_id: @tenant.id, event_type: "KYC_DOCUMENT_SUBMITTED", idempotency_key: "idem-kyc-doc-submit-001").count
           assert_equal 1, ActionIpLog.where(tenant_id: @tenant.id, action_type: "KYC_DOCUMENT_SUBMITTED", target_id: document_id).count
@@ -361,6 +395,14 @@ module Api
         headers = { "Authorization" => "Bearer #{raw_token}" }
         headers["Idempotency-Key"] = idempotency_key if idempotency_key
         headers
+      end
+
+      def create_active_storage_blob(filename:, content:)
+        ActiveStorage::Blob.create_and_upload!(
+          io: StringIO.new(content),
+          filename: filename,
+          content_type: "application/pdf"
+        )
       end
 
       def create_supplier_party!(tenant:, suffix:)

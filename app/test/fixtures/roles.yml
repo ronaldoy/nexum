@@ -1,0 +1,11 @@
+default_supplier:
+  tenant: default
+  code: supplier_user
+  name: Fornecedor
+  active: true
+
+secondary_supplier:
+  tenant: secondary
+  code: supplier_user
+  name: Fornecedor
+  active: true

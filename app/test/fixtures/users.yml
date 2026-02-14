@@ -3,12 +3,12 @@
 
 one:
   tenant: default
-  role: supplier_user
+  party: default_supplier_party
   email_address: one@example.com
   password_digest: <%= password_digest %>
 
 two:
   tenant: secondary
-  role: supplier_user
+  party: secondary_supplier_party
   email_address: two@example.com
   password_digest: <%= password_digest %>
