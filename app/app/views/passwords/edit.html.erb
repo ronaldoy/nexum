@@ -7,6 +7,7 @@
     </header>
 
     <%= form_with url: password_path(params[:token]), method: :put, class: "auth-form" do |form| %>
+      <%= form.hidden_field :tenant_slug, value: params[:tenant_slug] %>
       <div class="field">
         <%= form.label :password, "Nova senha" %>
         <%= form.password_field :password, required: true, autocomplete: "new-password", placeholder: "Digite a nova senha", maxlength: 72 %>

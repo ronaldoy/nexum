@@ -274,14 +274,7 @@ module KycProfiles
     end
 
     def canonical_json(value)
-      case value
-      when Hash
-        "{" + value.sort_by { |key, _| key.to_s }.map { |key, entry| "#{key.to_s.to_json}:#{canonical_json(entry)}" }.join(",") + "}"
-      when Array
-        "[" + value.map { |entry| canonical_json(entry) }.join(",") + "]"
-      else
-        value.to_json
-      end
+      CanonicalJson.encode(value)
     end
 
     def normalize_metadata(raw_metadata)

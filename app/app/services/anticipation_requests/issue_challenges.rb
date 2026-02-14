@@ -404,14 +404,7 @@ module AnticipationRequests
     end
 
     def canonical_json(value)
-      case value
-      when Hash
-        "{" + value.sort_by { |k, _| k.to_s }.map { |k, v| "#{k.to_s.to_json}:#{canonical_json(v)}" }.join(",") + "}"
-      when Array
-        "[" + value.map { |entry| canonical_json(entry) }.join(",") + "]"
-      else
-        value.to_json
-      end
+      CanonicalJson.encode(value)
     end
 
     def normalized_metadata(raw_metadata)

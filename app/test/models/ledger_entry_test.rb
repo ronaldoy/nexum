@@ -198,6 +198,7 @@ class LedgerEntryTest < ActiveSupport::TestCase
       source_id: source_id,
       receivable_id: receivable_id,
       payment_reference: payment_reference,
+      request_id: SecureRandom.uuid,
       payload_hash: "0" * 64,
       entry_count: entry_count,
       posted_at: Time.current,

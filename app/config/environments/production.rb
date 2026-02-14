@@ -84,7 +84,9 @@ Rails.application.configure do
   # config.action_mailer.raise_delivery_errors = false
 
   # Set host to be used by links generated in mailer templates.
-  config.action_mailer.default_url_options = { host: "example.com" }
+  mailer_host = Rails.app.creds.option(:mailer, :host, default: ENV["MAILER_HOST"])
+  raise "MAILER_HOST must be configured in production." if mailer_host.blank?
+  config.action_mailer.default_url_options = { host: mailer_host, protocol: "https" }
 
   # Specify outgoing SMTP server. Remember to add smtp/* credentials via bin/rails credentials:edit.
   # config.action_mailer.smtp_settings = {
@@ -111,6 +113,10 @@ Rails.application.configure do
                     .map(&:strip)
                     .reject(&:blank?)
   config.hosts = allowed_hosts if allowed_hosts.any?
+
+  if allowed_hosts.empty? && ENV["ALLOW_EMPTY_HOSTS"] != "true"
+    raise "APP_ALLOWED_HOSTS must be configured in production."
+  end
   #
   # Skip DNS rebinding protection for the default health check endpoint.
   # config.host_authorization = { exclude: ->(request) { request.path == "/up" } }

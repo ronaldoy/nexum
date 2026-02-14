@@ -355,16 +355,7 @@ module AnticipationRequests
     end
 
     def canonical_json(value)
-      case value
-      when Hash
-        "{" + value.sort_by { |k, _| k.to_s }.map { |k, v| "#{k.to_s.to_json}:#{canonical_json(v)}" }.join(",") + "}"
-      when Array
-        "[" + value.map { |entry| canonical_json(entry) }.join(",") + "]"
-      when BigDecimal
-        decimal_as_string(value).to_json
-      else
-        value.to_json
-      end
+      CanonicalJson.encode(value)
     end
 
     def decimal_as_string(value)

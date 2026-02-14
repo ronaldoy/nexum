@@ -319,7 +319,7 @@ module Receivables
         remaining_fdic = round_money(remaining_fdic - settled_amount)
         remaining_request_outstanding = round_money(outstanding - settled_amount)
         if remaining_request_outstanding <= 0 && anticipation_request.status != "SETTLED"
-          anticipation_request.update!(status: "SETTLED", settled_at: settled_at)
+          anticipation_request.transition_status!("SETTLED", settled_at: settled_at)
         end
       end
 
@@ -500,7 +500,12 @@ module Receivables
           error_message: error.message
         }
       )
-    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique
+    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique => log_error
+      Rails.logger.error(
+        "settle_payment_failure_log_write_error " \
+        "error_class=#{log_error.class.name} error_message=#{log_error.message} " \
+        "original_error_class=#{error.class.name} request_id=#{@request_id}"
+      )
       nil
     end
 
@@ -518,16 +523,7 @@ module Receivables
     end
 
     def canonical_json(value)
-      case value
-      when Hash
-        "{" + value.sort_by { |k, _| k.to_s }.map { |k, v| "#{k.to_s.to_json}:#{canonical_json(v)}" }.join(",") + "}"
-      when Array
-        "[" + value.map { |entry| canonical_json(entry) }.join(",") + "]"
-      when BigDecimal
-        decimal_as_string(value).to_json
-      else
-        value.to_json
-      end
+      CanonicalJson.encode(value)
     end
 
     def decimal_as_string(value)

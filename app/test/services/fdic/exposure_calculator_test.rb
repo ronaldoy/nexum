@@ -142,6 +142,7 @@ module Fdic
     end
 
     def create_settlement_for_request!(bundle:, anticipation:, settled_amount:, paid_at:)
+      settlement_idempotency = SecureRandom.uuid
       receivable_settlement = ReceivablePaymentSettlement.create!(
         tenant: @tenant,
         receivable: bundle[:receivable],
@@ -152,7 +153,9 @@ module Fdic
         beneficiary_amount: "0.00",
         fdic_balance_before: settled_amount,
         fdic_balance_after: "0.00",
-        paid_at: paid_at
+        paid_at: paid_at,
+        payment_reference: settlement_idempotency,
+        idempotency_key: settlement_idempotency
       )
 
       AnticipationSettlementEntry.create!(

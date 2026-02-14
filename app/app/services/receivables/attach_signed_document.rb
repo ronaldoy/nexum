@@ -486,7 +486,12 @@ module Receivables
           "error_message" => error.message
         }
       )
-    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique
+    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique => log_error
+      Rails.logger.error(
+        "attach_signed_document_failure_log_write_error " \
+        "error_class=#{log_error.class.name} error_message=#{log_error.message} " \
+        "original_error_class=#{error.class.name} request_id=#{@request_id}"
+      )
       nil
     end
 
@@ -509,14 +514,7 @@ module Receivables
     end
 
     def canonical_json(value)
-      case value
-      when Hash
-        "{" + value.sort_by { |key, _| key.to_s }.map { |key, entry| "#{key.to_s.to_json}:#{canonical_json(entry)}" }.join(",") + "}"
-      when Array
-        "[" + value.map { |entry| canonical_json(entry) }.join(",") + "]"
-      else
-        value.to_json
-      end
+      CanonicalJson.encode(value)
     end
 
     def normalize_metadata(raw_metadata)

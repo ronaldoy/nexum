@@ -36,6 +36,6 @@ Rails.application.configure do
   config.active_record.encryption.key_derivation_salt = key_derivation_salt
   config.active_record.encryption.hash_digest_class = OpenSSL::Digest::SHA256
   config.active_record.encryption.store_key_references = true
-  config.active_record.encryption.support_unencrypted_data = true
+  config.active_record.encryption.support_unencrypted_data = !Rails.env.production?
   config.active_record.encryption.extend_queries = true
 end

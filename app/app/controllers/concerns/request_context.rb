@@ -28,7 +28,7 @@ module RequestContext
   end
 
   def resolved_tenant_id
-    Current.user&.tenant_id
+    Current.tenant_id || Current.user&.tenant_id
   end
 
   def resolved_actor_id
@@ -69,5 +69,20 @@ module RequestContext
 
   def clear_bootstrap_database_tenant_context!
     self.class.set_database_context!("app.tenant_id", "")
+  end
+
+  def resolve_tenant_id_from_slug(slug)
+    normalized_slug = slug.to_s.strip.downcase
+    return nil if normalized_slug.blank?
+
+    set_database_context!("app.allow_tenant_slug_lookup", "true")
+    set_database_context!("app.requested_tenant_slug", normalized_slug)
+
+    ActiveRecord::Base.connection.select_value(
+      "SELECT app_resolve_tenant_id_by_slug(#{ActiveRecord::Base.connection.quote(normalized_slug)})"
+    )
+  ensure
+    set_database_context!("app.requested_tenant_slug", "")
+    set_database_context!("app.allow_tenant_slug_lookup", "false")
   end
 end

@@ -23,8 +23,8 @@ class AssignmentContract < ApplicationRecord
   validate :cancelled_at_required_for_cancelled_status
   validate :consistent_tenant_scope
 
-  after_create_commit :record_created_event
-  after_update_commit :record_status_change_event, if: :saved_change_to_status?
+  after_create :record_created_event
+  after_update :record_status_change_event, if: :saved_change_to_status?
 
   private
 
@@ -132,7 +132,7 @@ class AssignmentContract < ApplicationRecord
   end
 
   def event_hash_for(receivable_id:, sequence:, event_type:, previous_hash:, payload:)
-    canonical_payload = JSON.generate(payload)
+    canonical_payload = CanonicalJson.encode(payload)
     Digest::SHA256.hexdigest("#{receivable_id}:#{sequence}:#{event_type}:#{previous_hash}:#{canonical_payload}")
   end
 end

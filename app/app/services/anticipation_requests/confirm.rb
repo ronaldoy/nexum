@@ -92,14 +92,15 @@ module AnticipationRequests
           verify_challenge!(challenge: whatsapp_challenge, code: whatsapp_code, invalid_code: "invalid_whatsapp_code")
 
           confirmed_at = Time.current
-          anticipation_request.metadata = normalized_metadata(anticipation_request.metadata).merge(
-            "confirmed_at" => confirmed_at.utc.iso8601(6),
-            "confirmation_channels" => %w[EMAIL WHATSAPP],
-            "confirmation_idempotency_key" => @idempotency_key,
-            PAYLOAD_HASH_METADATA_KEY => payload_hash
+          anticipation_request.transition_status!(
+            "APPROVED",
+            metadata: {
+              "confirmed_at" => confirmed_at.utc.iso8601(6),
+              "confirmation_channels" => %w[EMAIL WHATSAPP],
+              "confirmation_idempotency_key" => @idempotency_key,
+              PAYLOAD_HASH_METADATA_KEY => payload_hash
+            }
           )
-          anticipation_request.status = "APPROVED"
-          anticipation_request.save!
 
           create_receivable_event!(
             anticipation_request: anticipation_request,
@@ -285,7 +286,12 @@ module AnticipationRequests
         occurred_at: Time.current,
         metadata: metadata
       )
-    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique
+    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique => log_error
+      Rails.logger.error(
+        "anticipation_confirm_failure_log_write_error " \
+        "error_class=#{log_error.class.name} error_message=#{log_error.message} " \
+        "original_error_class=#{error.class.name} request_id=#{@request_id}"
+      )
       nil
     end
 
@@ -310,14 +316,7 @@ module AnticipationRequests
     end
 
     def canonical_json(value)
-      case value
-      when Hash
-        "{" + value.sort_by { |k, _| k.to_s }.map { |k, v| "#{k.to_s.to_json}:#{canonical_json(v)}" }.join(",") + "}"
-      when Array
-        "[" + value.map { |entry| canonical_json(entry) }.join(",") + "]"
-      else
-        value.to_json
-      end
+      CanonicalJson.encode(value)
     end
 
     def normalized_metadata(raw_metadata)

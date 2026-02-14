@@ -8,8 +8,13 @@
 
     <%= form_with url: session_path, class: "auth-form" do |form| %>
       <div class="field">
+        <%= form.label :tenant_slug, "Código da organização" %>
+        <%= form.text_field :tenant_slug, required: true, autofocus: true, autocomplete: "organization", placeholder: "ex: hospital-alpha", value: params[:tenant_slug] %>
+      </div>
+
+      <div class="field">
         <%= form.label :email_address, "E-mail" %>
-        <%= form.email_field :email_address, required: true, autofocus: true, autocomplete: "username", placeholder: "voce@empresa.com.br", value: params[:email_address] %>
+        <%= form.email_field :email_address, required: true, autocomplete: "username", placeholder: "voce@empresa.com.br", value: params[:email_address] %>
       </div>
 
       <div class="field">
@@ -25,7 +30,7 @@
       <%= form.submit "Entrar no portal", class: "button button-primary" %>
     <% end %>
 
-    <p class="auth-secondary-link"><%= link_to "Esqueceu sua senha?", new_password_path %></p>
+    <p class="auth-secondary-link"><%= link_to "Esqueceu sua senha?", new_password_path(tenant_slug: params[:tenant_slug]) %></p>
   </section>
 
   <aside class="demo-card">

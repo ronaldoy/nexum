@@ -1,12 +1,3 @@
---
--- PostgreSQL database dump
---
-
-\restrict wPFdXVkfYy4isnmKgj32KoHduZvZOGwuzIJfVfRnRUrzgcWLSz4ABFdA0emjT35
-
--- Dumped from database version 18.1 (Debian 18.1-1.pgdg13+2)
--- Dumped by pg_dump version 18.1 (Debian 18.1-1.pgdg13+2)
-
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
@@ -68,6 +59,90 @@ CREATE FUNCTION public.app_forbid_mutation() RETURNS trigger
 BEGIN
   RAISE EXCEPTION 'append-only table: % operation not allowed on %', TG_OP, TG_TABLE_NAME;
 END;
+$$;
+
+
+--
+-- Name: app_protect_anticipation_requests(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.app_protect_anticipation_requests() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'DELETE not allowed on anticipation_requests';
+  END IF;
+
+  IF TG_OP = 'UPDATE' THEN
+    IF current_setting('app.allow_anticipation_status_transition', true) <> 'true' THEN
+      RAISE EXCEPTION 'UPDATE not allowed on anticipation_requests without status transition gate';
+    END IF;
+
+    IF NEW.id IS DISTINCT FROM OLD.id
+      OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+      OR NEW.receivable_id IS DISTINCT FROM OLD.receivable_id
+      OR NEW.receivable_allocation_id IS DISTINCT FROM OLD.receivable_allocation_id
+      OR NEW.requester_party_id IS DISTINCT FROM OLD.requester_party_id
+      OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
+      OR NEW.requested_amount IS DISTINCT FROM OLD.requested_amount
+      OR NEW.discount_rate IS DISTINCT FROM OLD.discount_rate
+      OR NEW.discount_amount IS DISTINCT FROM OLD.discount_amount
+      OR NEW.net_amount IS DISTINCT FROM OLD.net_amount
+      OR NEW.channel IS DISTINCT FROM OLD.channel
+      OR NEW.requested_at IS DISTINCT FROM OLD.requested_at
+      OR NEW.settlement_target_date IS DISTINCT FROM OLD.settlement_target_date
+      OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+      RAISE EXCEPTION 'Only status, funded_at, settled_at, metadata, and updated_at can change on anticipation_requests';
+    END IF;
+
+    IF NEW.status IS NOT DISTINCT FROM OLD.status THEN
+      RAISE EXCEPTION 'Status must change when updating anticipation_requests';
+    END IF;
+
+    IF NOT (
+      (OLD.status = 'REQUESTED' AND NEW.status IN ('APPROVED', 'CANCELLED', 'REJECTED')) OR
+      (OLD.status = 'APPROVED' AND NEW.status IN ('FUNDED', 'SETTLED', 'CANCELLED')) OR
+      (OLD.status = 'FUNDED' AND NEW.status IN ('SETTLED', 'CANCELLED'))
+    ) THEN
+      RAISE EXCEPTION 'Invalid anticipation_requests status transition from % to %', OLD.status, NEW.status;
+    END IF;
+
+    IF NEW.status = 'FUNDED' AND NEW.funded_at IS NULL THEN
+      RAISE EXCEPTION 'funded_at is required when status transitions to FUNDED';
+    END IF;
+
+    IF NEW.status = 'SETTLED' AND NEW.settled_at IS NULL THEN
+      RAISE EXCEPTION 'settled_at is required when status transitions to SETTLED';
+    END IF;
+
+    IF NEW.status <> 'FUNDED' AND NEW.funded_at IS DISTINCT FROM OLD.funded_at THEN
+      RAISE EXCEPTION 'funded_at can only change when status transitions to FUNDED';
+    END IF;
+
+    IF NEW.status <> 'SETTLED' AND NEW.settled_at IS DISTINCT FROM OLD.settled_at THEN
+      RAISE EXCEPTION 'settled_at can only change when status transitions to SETTLED';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: app_resolve_tenant_id_by_slug(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.app_resolve_tenant_id_by_slug(slug text) RETURNS uuid
+    LANGUAGE sql STABLE
+    SET search_path TO 'public'
+    AS $$
+  SELECT id
+  FROM tenants
+  WHERE tenants.slug = app_resolve_tenant_id_by_slug.slug
+    AND active = true
+  LIMIT 1;
 $$;
 
 
@@ -206,7 +281,7 @@ CREATE TABLE public.action_ip_logs (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT action_ip_logs_channel_check CHECK (((channel)::text = ANY (ARRAY[('API'::character varying)::text, ('PORTAL'::character varying)::text, ('WORKER'::character varying)::text, ('WEBHOOK'::character varying)::text, ('ADMIN'::character varying)::text])))
+    CONSTRAINT action_ip_logs_channel_check CHECK (((channel)::text = ANY ((ARRAY['API'::character varying, 'PORTAL'::character varying, 'WORKER'::character varying, 'WEBHOOK'::character varying, 'ADMIN'::character varying])::text[])))
 );
 
 ALTER TABLE ONLY public.action_ip_logs FORCE ROW LEVEL SECURITY;
@@ -312,6 +387,32 @@ ALTER SEQUENCE public.active_storage_variant_records_id_seq OWNED BY public.acti
 
 
 --
+-- Name: anticipation_request_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.anticipation_request_events (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    anticipation_request_id uuid NOT NULL,
+    sequence integer NOT NULL,
+    event_type character varying NOT NULL,
+    status_before character varying,
+    status_after character varying,
+    actor_party_id uuid,
+    actor_role character varying,
+    request_id character varying,
+    occurred_at timestamp(6) without time zone NOT NULL,
+    prev_hash character varying,
+    event_hash character varying NOT NULL,
+    payload jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.anticipation_request_events FORCE ROW LEVEL SECURITY;
+
+
+--
 -- Name: anticipation_requests; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -335,12 +436,12 @@ CREATE TABLE public.anticipation_requests (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT anticipation_requests_channel_check CHECK (((channel)::text = ANY (ARRAY[('API'::character varying)::text, ('PORTAL'::character varying)::text, ('WEBHOOK'::character varying)::text, ('INTERNAL'::character varying)::text]))),
+    CONSTRAINT anticipation_requests_channel_check CHECK (((channel)::text = ANY ((ARRAY['API'::character varying, 'PORTAL'::character varying, 'WEBHOOK'::character varying, 'INTERNAL'::character varying])::text[]))),
     CONSTRAINT anticipation_requests_discount_amount_check CHECK ((discount_amount >= (0)::numeric)),
     CONSTRAINT anticipation_requests_discount_rate_check CHECK ((discount_rate >= (0)::numeric)),
     CONSTRAINT anticipation_requests_net_amount_positive_check CHECK ((net_amount > (0)::numeric)),
     CONSTRAINT anticipation_requests_requested_amount_positive_check CHECK ((requested_amount > (0)::numeric)),
-    CONSTRAINT anticipation_requests_status_check CHECK (((status)::text = ANY (ARRAY[('REQUESTED'::character varying)::text, ('APPROVED'::character varying)::text, ('FUNDED'::character varying)::text, ('SETTLED'::character varying)::text, ('CANCELLED'::character varying)::text, ('REJECTED'::character varying)::text])))
+    CONSTRAINT anticipation_requests_status_check CHECK (((status)::text = ANY ((ARRAY['REQUESTED'::character varying, 'APPROVED'::character varying, 'FUNDED'::character varying, 'SETTLED'::character varying, 'CANCELLED'::character varying, 'REJECTED'::character varying])::text[])))
 );
 
 ALTER TABLE ONLY public.anticipation_requests FORCE ROW LEVEL SECURITY;
@@ -430,8 +531,8 @@ CREATE TABLE public.assignment_contracts (
     CONSTRAINT assignment_contracts_cancelled_at_state_check CHECK (((cancelled_at IS NULL) OR ((status)::text = 'CANCELLED'::text))),
     CONSTRAINT assignment_contracts_currency_brl_check CHECK (((currency)::text = 'BRL'::text)),
     CONSTRAINT assignment_contracts_idempotency_key_present_check CHECK ((btrim((idempotency_key)::text) <> ''::text)),
-    CONSTRAINT assignment_contracts_signed_at_required_check CHECK ((((status)::text = ANY (ARRAY[('DRAFT'::character varying)::text, ('CANCELLED'::character varying)::text])) OR (signed_at IS NOT NULL))),
-    CONSTRAINT assignment_contracts_status_check CHECK (((status)::text = ANY (ARRAY[('DRAFT'::character varying)::text, ('SIGNED'::character varying)::text, ('ACTIVE'::character varying)::text, ('SETTLED'::character varying)::text, ('CANCELLED'::character varying)::text])))
+    CONSTRAINT assignment_contracts_signed_at_required_check CHECK ((((status)::text = ANY ((ARRAY['DRAFT'::character varying, 'CANCELLED'::character varying])::text[])) OR (signed_at IS NOT NULL))),
+    CONSTRAINT assignment_contracts_status_check CHECK (((status)::text = ANY ((ARRAY['DRAFT'::character varying, 'SIGNED'::character varying, 'ACTIVE'::character varying, 'SETTLED'::character varying, 'CANCELLED'::character varying])::text[])))
 );
 
 ALTER TABLE ONLY public.assignment_contracts FORCE ROW LEVEL SECURITY;
@@ -461,9 +562,9 @@ CREATE TABLE public.auth_challenges (
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
     CONSTRAINT auth_challenges_attempts_check CHECK ((attempts >= 0)),
-    CONSTRAINT auth_challenges_delivery_channel_check CHECK (((delivery_channel)::text = ANY (ARRAY[('EMAIL'::character varying)::text, ('WHATSAPP'::character varying)::text]))),
+    CONSTRAINT auth_challenges_delivery_channel_check CHECK (((delivery_channel)::text = ANY ((ARRAY['EMAIL'::character varying, 'WHATSAPP'::character varying])::text[]))),
     CONSTRAINT auth_challenges_max_attempts_check CHECK ((max_attempts > 0)),
-    CONSTRAINT auth_challenges_status_check CHECK (((status)::text = ANY (ARRAY[('PENDING'::character varying)::text, ('VERIFIED'::character varying)::text, ('EXPIRED'::character varying)::text, ('CANCELLED'::character varying)::text])))
+    CONSTRAINT auth_challenges_status_check CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'VERIFIED'::character varying, 'EXPIRED'::character varying, 'CANCELLED'::character varying])::text[])))
 );
 
 ALTER TABLE ONLY public.auth_challenges FORCE ROW LEVEL SECURITY;
@@ -508,7 +609,7 @@ CREATE TABLE public.documents (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT documents_status_check CHECK (((status)::text = ANY (ARRAY[('SIGNED'::character varying)::text, ('REVOKED'::character varying)::text, ('SUPERSEDED'::character varying)::text])))
+    CONSTRAINT documents_status_check CHECK (((status)::text = ANY ((ARRAY['SIGNED'::character varying, 'REVOKED'::character varying, 'SUPERSEDED'::character varying])::text[])))
 );
 
 ALTER TABLE ONLY public.documents FORCE ROW LEVEL SECURITY;
@@ -538,12 +639,12 @@ CREATE TABLE public.kyc_documents (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT kyc_documents_document_type_check CHECK (((document_type)::text = ANY (ARRAY[('CPF'::character varying)::text, ('CNPJ'::character varying)::text, ('RG'::character varying)::text, ('CNH'::character varying)::text, ('PASSPORT'::character varying)::text, ('PROOF_OF_ADDRESS'::character varying)::text, ('SELFIE'::character varying)::text, ('CONTRACT'::character varying)::text, ('OTHER'::character varying)::text]))),
-    CONSTRAINT kyc_documents_issuing_state_check CHECK (((issuing_state IS NULL) OR ((issuing_state)::text = ANY (ARRAY[('AC'::character varying)::text, ('AL'::character varying)::text, ('AP'::character varying)::text, ('AM'::character varying)::text, ('BA'::character varying)::text, ('CE'::character varying)::text, ('DF'::character varying)::text, ('ES'::character varying)::text, ('GO'::character varying)::text, ('MA'::character varying)::text, ('MT'::character varying)::text, ('MS'::character varying)::text, ('MG'::character varying)::text, ('PA'::character varying)::text, ('PB'::character varying)::text, ('PR'::character varying)::text, ('PE'::character varying)::text, ('PI'::character varying)::text, ('RJ'::character varying)::text, ('RN'::character varying)::text, ('RS'::character varying)::text, ('RO'::character varying)::text, ('RR'::character varying)::text, ('SC'::character varying)::text, ('SP'::character varying)::text, ('SE'::character varying)::text, ('TO'::character varying)::text])))),
-    CONSTRAINT kyc_documents_key_document_type_check CHECK (((NOT is_key_document) OR ((document_type)::text = ANY (ARRAY[('CPF'::character varying)::text, ('CNPJ'::character varying)::text])))),
-    CONSTRAINT kyc_documents_non_key_identity_docs_check CHECK ((((document_type)::text <> ALL (ARRAY[('RG'::character varying)::text, ('CNH'::character varying)::text, ('PASSPORT'::character varying)::text])) OR (is_key_document = false))),
+    CONSTRAINT kyc_documents_document_type_check CHECK (((document_type)::text = ANY ((ARRAY['CPF'::character varying, 'CNPJ'::character varying, 'RG'::character varying, 'CNH'::character varying, 'PASSPORT'::character varying, 'PROOF_OF_ADDRESS'::character varying, 'SELFIE'::character varying, 'CONTRACT'::character varying, 'OTHER'::character varying])::text[]))),
+    CONSTRAINT kyc_documents_issuing_state_check CHECK (((issuing_state IS NULL) OR ((issuing_state)::text = ANY ((ARRAY['AC'::character varying, 'AL'::character varying, 'AP'::character varying, 'AM'::character varying, 'BA'::character varying, 'CE'::character varying, 'DF'::character varying, 'ES'::character varying, 'GO'::character varying, 'MA'::character varying, 'MT'::character varying, 'MS'::character varying, 'MG'::character varying, 'PA'::character varying, 'PB'::character varying, 'PR'::character varying, 'PE'::character varying, 'PI'::character varying, 'RJ'::character varying, 'RN'::character varying, 'RS'::character varying, 'RO'::character varying, 'RR'::character varying, 'SC'::character varying, 'SP'::character varying, 'SE'::character varying, 'TO'::character varying])::text[])))),
+    CONSTRAINT kyc_documents_key_document_type_check CHECK (((NOT is_key_document) OR ((document_type)::text = ANY ((ARRAY['CPF'::character varying, 'CNPJ'::character varying])::text[])))),
+    CONSTRAINT kyc_documents_non_key_identity_docs_check CHECK ((((document_type)::text <> ALL ((ARRAY['RG'::character varying, 'CNH'::character varying, 'PASSPORT'::character varying])::text[])) OR (is_key_document = false))),
     CONSTRAINT kyc_documents_sha256_present_check CHECK ((char_length((sha256)::text) > 0)),
-    CONSTRAINT kyc_documents_status_check CHECK (((status)::text = ANY (ARRAY[('SUBMITTED'::character varying)::text, ('VERIFIED'::character varying)::text, ('REJECTED'::character varying)::text, ('EXPIRED'::character varying)::text]))),
+    CONSTRAINT kyc_documents_status_check CHECK (((status)::text = ANY ((ARRAY['SUBMITTED'::character varying, 'VERIFIED'::character varying, 'REJECTED'::character varying, 'EXPIRED'::character varying])::text[]))),
     CONSTRAINT kyc_documents_storage_key_present_check CHECK ((char_length((storage_key)::text) > 0))
 );
 
@@ -587,8 +688,8 @@ CREATE TABLE public.kyc_profiles (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT kyc_profiles_risk_level_check CHECK (((risk_level)::text = ANY (ARRAY[('UNKNOWN'::character varying)::text, ('LOW'::character varying)::text, ('MEDIUM'::character varying)::text, ('HIGH'::character varying)::text]))),
-    CONSTRAINT kyc_profiles_status_check CHECK (((status)::text = ANY (ARRAY[('DRAFT'::character varying)::text, ('PENDING_REVIEW'::character varying)::text, ('NEEDS_INFORMATION'::character varying)::text, ('APPROVED'::character varying)::text, ('REJECTED'::character varying)::text])))
+    CONSTRAINT kyc_profiles_risk_level_check CHECK (((risk_level)::text = ANY ((ARRAY['UNKNOWN'::character varying, 'LOW'::character varying, 'MEDIUM'::character varying, 'HIGH'::character varying])::text[]))),
+    CONSTRAINT kyc_profiles_status_check CHECK (((status)::text = ANY ((ARRAY['DRAFT'::character varying, 'PENDING_REVIEW'::character varying, 'NEEDS_INFORMATION'::character varying, 'APPROVED'::character varying, 'REJECTED'::character varying])::text[])))
 );
 
 ALTER TABLE ONLY public.kyc_profiles FORCE ROW LEVEL SECURITY;
@@ -621,7 +722,7 @@ CREATE TABLE public.ledger_entries (
     CONSTRAINT ledger_entries_currency_brl_check CHECK (((currency)::text = 'BRL'::text)),
     CONSTRAINT ledger_entries_entry_position_lte_count_check CHECK ((entry_position <= txn_entry_count)),
     CONSTRAINT ledger_entries_entry_position_positive_check CHECK ((entry_position > 0)),
-    CONSTRAINT ledger_entries_entry_side_check CHECK (((entry_side)::text = ANY (ARRAY[('DEBIT'::character varying)::text, ('CREDIT'::character varying)::text]))),
+    CONSTRAINT ledger_entries_entry_side_check CHECK (((entry_side)::text = ANY ((ARRAY['DEBIT'::character varying, 'CREDIT'::character varying])::text[]))),
     CONSTRAINT ledger_entries_settlement_payment_reference_required_check CHECK ((((source_type)::text <> 'ReceivablePaymentSettlement'::text) OR ((payment_reference IS NOT NULL) AND (btrim((payment_reference)::text) <> ''::text)))),
     CONSTRAINT ledger_entries_txn_entry_count_positive_check CHECK ((txn_entry_count > 0))
 );
@@ -676,7 +777,7 @@ CREATE TABLE public.outbox_events (
     payload jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT outbox_events_status_check CHECK (((status)::text = ANY (ARRAY[('PENDING'::character varying)::text, ('SENT'::character varying)::text, ('FAILED'::character varying)::text, ('CANCELLED'::character varying)::text])))
+    CONSTRAINT outbox_events_status_check CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying, 'CANCELLED'::character varying])::text[])))
 );
 
 ALTER TABLE ONLY public.outbox_events FORCE ROW LEVEL SECURITY;
@@ -699,9 +800,9 @@ CREATE TABLE public.parties (
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
     document_type character varying NOT NULL,
-    CONSTRAINT parties_document_type_check CHECK (((document_type)::text = ANY (ARRAY[('CPF'::character varying)::text, ('CNPJ'::character varying)::text]))),
+    CONSTRAINT parties_document_type_check CHECK (((document_type)::text = ANY ((ARRAY['CPF'::character varying, 'CNPJ'::character varying])::text[]))),
     CONSTRAINT parties_document_type_kind_check CHECK (((((kind)::text = 'PHYSICIAN_PF'::text) AND ((document_type)::text = 'CPF'::text)) OR (((kind)::text <> 'PHYSICIAN_PF'::text) AND ((document_type)::text = 'CNPJ'::text)))),
-    CONSTRAINT parties_kind_check CHECK (((kind)::text = ANY (ARRAY[('HOSPITAL'::character varying)::text, ('SUPPLIER'::character varying)::text, ('PHYSICIAN_PF'::character varying)::text, ('LEGAL_ENTITY_PJ'::character varying)::text, ('FIDC'::character varying)::text, ('PLATFORM'::character varying)::text])))
+    CONSTRAINT parties_kind_check CHECK (((kind)::text = ANY ((ARRAY['HOSPITAL'::character varying, 'SUPPLIER'::character varying, 'PHYSICIAN_PF'::character varying, 'LEGAL_ENTITY_PJ'::character varying, 'FIDC'::character varying, 'PLATFORM'::character varying])::text[])))
 );
 
 ALTER TABLE ONLY public.parties FORCE ROW LEVEL SECURITY;
@@ -723,7 +824,7 @@ CREATE TABLE public.physician_anticipation_authorizations (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT physician_authorization_status_check CHECK (((status)::text = ANY (ARRAY[('ACTIVE'::character varying)::text, ('REVOKED'::character varying)::text, ('EXPIRED'::character varying)::text])))
+    CONSTRAINT physician_authorization_status_check CHECK (((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'REVOKED'::character varying, 'EXPIRED'::character varying])::text[])))
 );
 
 ALTER TABLE ONLY public.physician_anticipation_authorizations FORCE ROW LEVEL SECURITY;
@@ -749,7 +850,7 @@ CREATE TABLE public.physician_cnpj_split_policies (
     CONSTRAINT physician_cnpj_split_policies_cnpj_rate_check CHECK (((cnpj_share_rate >= (0)::numeric) AND (cnpj_share_rate <= (1)::numeric))),
     CONSTRAINT physician_cnpj_split_policies_physician_rate_check CHECK (((physician_share_rate >= (0)::numeric) AND (physician_share_rate <= (1)::numeric))),
     CONSTRAINT physician_cnpj_split_policies_scope_check CHECK (((scope)::text = 'SHARED_CNPJ'::text)),
-    CONSTRAINT physician_cnpj_split_policies_status_check CHECK (((status)::text = ANY (ARRAY[('ACTIVE'::character varying)::text, ('INACTIVE'::character varying)::text]))),
+    CONSTRAINT physician_cnpj_split_policies_status_check CHECK (((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'INACTIVE'::character varying])::text[]))),
     CONSTRAINT physician_cnpj_split_policies_total_rate_check CHECK (((cnpj_share_rate + physician_share_rate) = 1.00000000))
 );
 
@@ -772,8 +873,8 @@ CREATE TABLE public.physician_legal_entity_memberships (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT physician_membership_role_check CHECK (((membership_role)::text = ANY (ARRAY[('ADMIN'::character varying)::text, ('MEMBER'::character varying)::text]))),
-    CONSTRAINT physician_membership_status_check CHECK (((status)::text = ANY (ARRAY[('ACTIVE'::character varying)::text, ('INACTIVE'::character varying)::text])))
+    CONSTRAINT physician_membership_role_check CHECK (((membership_role)::text = ANY ((ARRAY['ADMIN'::character varying, 'MEMBER'::character varying])::text[]))),
+    CONSTRAINT physician_membership_status_check CHECK (((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'INACTIVE'::character varying])::text[])))
 );
 
 ALTER TABLE ONLY public.physician_legal_entity_memberships FORCE ROW LEVEL SECURITY;
@@ -798,7 +899,7 @@ CREATE TABLE public.physicians (
     crm_state character varying(2),
     CONSTRAINT physicians_crm_number_length_check CHECK (((crm_number IS NULL) OR ((char_length((crm_number)::text) >= 4) AND (char_length((crm_number)::text) <= 10)))),
     CONSTRAINT physicians_crm_pair_presence_check CHECK ((((crm_number IS NULL) AND (crm_state IS NULL)) OR ((crm_number IS NOT NULL) AND (crm_state IS NOT NULL)))),
-    CONSTRAINT physicians_crm_state_check CHECK (((crm_state IS NULL) OR ((crm_state)::text = ANY (ARRAY[('AC'::character varying)::text, ('AL'::character varying)::text, ('AP'::character varying)::text, ('AM'::character varying)::text, ('BA'::character varying)::text, ('CE'::character varying)::text, ('DF'::character varying)::text, ('ES'::character varying)::text, ('GO'::character varying)::text, ('MA'::character varying)::text, ('MT'::character varying)::text, ('MS'::character varying)::text, ('MG'::character varying)::text, ('PA'::character varying)::text, ('PB'::character varying)::text, ('PR'::character varying)::text, ('PE'::character varying)::text, ('PI'::character varying)::text, ('RJ'::character varying)::text, ('RN'::character varying)::text, ('RS'::character varying)::text, ('RO'::character varying)::text, ('RR'::character varying)::text, ('SC'::character varying)::text, ('SP'::character varying)::text, ('SE'::character varying)::text, ('TO'::character varying)::text]))))
+    CONSTRAINT physicians_crm_state_check CHECK (((crm_state IS NULL) OR ((crm_state)::text = ANY ((ARRAY['AC'::character varying, 'AL'::character varying, 'AP'::character varying, 'AM'::character varying, 'BA'::character varying, 'CE'::character varying, 'DF'::character varying, 'ES'::character varying, 'GO'::character varying, 'MA'::character varying, 'MT'::character varying, 'MS'::character varying, 'MG'::character varying, 'PA'::character varying, 'PB'::character varying, 'PR'::character varying, 'PE'::character varying, 'PI'::character varying, 'RJ'::character varying, 'RN'::character varying, 'RS'::character varying, 'RO'::character varying, 'RR'::character varying, 'SC'::character varying, 'SP'::character varying, 'SE'::character varying, 'TO'::character varying])::text[]))))
 );
 
 ALTER TABLE ONLY public.physicians FORCE ROW LEVEL SECURITY;
@@ -823,7 +924,7 @@ CREATE TABLE public.receivable_allocations (
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
     CONSTRAINT receivable_allocations_gross_amount_check CHECK ((gross_amount >= (0)::numeric)),
-    CONSTRAINT receivable_allocations_status_check CHECK (((status)::text = ANY (ARRAY[('OPEN'::character varying)::text, ('SETTLED'::character varying)::text, ('CANCELLED'::character varying)::text]))),
+    CONSTRAINT receivable_allocations_status_check CHECK (((status)::text = ANY ((ARRAY['OPEN'::character varying, 'SETTLED'::character varying, 'CANCELLED'::character varying])::text[]))),
     CONSTRAINT receivable_allocations_tax_reserve_amount_check CHECK ((tax_reserve_amount >= (0)::numeric))
 );
 
@@ -868,7 +969,7 @@ CREATE TABLE public.receivable_kinds (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT receivable_kinds_source_family_check CHECK (((source_family)::text = ANY (ARRAY[('PHYSICIAN'::character varying)::text, ('SUPPLIER'::character varying)::text, ('OTHER'::character varying)::text])))
+    CONSTRAINT receivable_kinds_source_family_check CHECK (((source_family)::text = ANY ((ARRAY['PHYSICIAN'::character varying, 'SUPPLIER'::character varying, 'OTHER'::character varying])::text[])))
 );
 
 ALTER TABLE ONLY public.receivable_kinds FORCE ROW LEVEL SECURITY;
@@ -931,7 +1032,7 @@ CREATE TABLE public.receivable_statistics_daily (
     last_computed_at timestamp(6) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT receivable_statistics_daily_metric_scope_check CHECK (((metric_scope)::text = ANY (ARRAY[('GLOBAL'::character varying)::text, ('DEBTOR'::character varying)::text, ('CREDITOR'::character varying)::text, ('BENEFICIARY'::character varying)::text])))
+    CONSTRAINT receivable_statistics_daily_metric_scope_check CHECK (((metric_scope)::text = ANY ((ARRAY['GLOBAL'::character varying, 'DEBTOR'::character varying, 'CREDITOR'::character varying, 'BENEFICIARY'::character varying])::text[])))
 );
 
 ALTER TABLE ONLY public.receivable_statistics_daily FORCE ROW LEVEL SECURITY;
@@ -962,7 +1063,7 @@ CREATE TABLE public.receivables (
     updated_at timestamp(6) without time zone NOT NULL,
     CONSTRAINT receivables_currency_brl_check CHECK (((currency)::text = 'BRL'::text)),
     CONSTRAINT receivables_gross_amount_positive_check CHECK ((gross_amount > (0)::numeric)),
-    CONSTRAINT receivables_status_check CHECK (((status)::text = ANY (ARRAY[('PERFORMED'::character varying)::text, ('ANTICIPATION_REQUESTED'::character varying)::text, ('FUNDED'::character varying)::text, ('SETTLED'::character varying)::text, ('CANCELLED'::character varying)::text])))
+    CONSTRAINT receivables_status_check CHECK (((status)::text = ANY ((ARRAY['PERFORMED'::character varying, 'ANTICIPATION_REQUESTED'::character varying, 'FUNDED'::character varying, 'SETTLED'::character varying, 'CANCELLED'::character varying])::text[])))
 );
 
 ALTER TABLE ONLY public.receivables FORCE ROW LEVEL SECURITY;
@@ -981,7 +1082,7 @@ CREATE TABLE public.roles (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT roles_code_check CHECK (((code)::text = ANY (ARRAY[('hospital_admin'::character varying)::text, ('supplier_user'::character varying)::text, ('ops_admin'::character varying)::text, ('physician_pf_user'::character varying)::text, ('physician_pj_admin'::character varying)::text, ('physician_pj_member'::character varying)::text, ('integration_api'::character varying)::text])))
+    CONSTRAINT roles_code_check CHECK (((code)::text = ANY ((ARRAY['hospital_admin'::character varying, 'supplier_user'::character varying, 'ops_admin'::character varying, 'physician_pf_user'::character varying, 'physician_pj_admin'::character varying, 'physician_pj_member'::character varying, 'integration_api'::character varying])::text[])))
 );
 
 ALTER TABLE ONLY public.roles FORCE ROW LEVEL SECURITY;
@@ -1171,6 +1272,14 @@ ALTER TABLE ONLY public.active_storage_blobs
 
 ALTER TABLE ONLY public.active_storage_variant_records
     ADD CONSTRAINT active_storage_variant_records_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: anticipation_request_events anticipation_request_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_request_events
+    ADD CONSTRAINT anticipation_request_events_pkey PRIMARY KEY (id);
 
 
 --
@@ -1419,6 +1528,13 @@ ALTER TABLE ONLY public.user_roles
 
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: idx_anticipation_request_events_unique_seq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_anticipation_request_events_unique_seq ON public.anticipation_request_events USING btree (tenant_id, anticipation_request_id, sequence);
 
 
 --
@@ -1685,6 +1801,27 @@ CREATE UNIQUE INDEX index_active_storage_blobs_on_key ON public.active_storage_b
 --
 
 CREATE UNIQUE INDEX index_active_storage_variant_records_uniqueness ON public.active_storage_variant_records USING btree (blob_id, variation_digest);
+
+
+--
+-- Name: index_anticipation_request_events_on_actor_party_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_request_events_on_actor_party_id ON public.anticipation_request_events USING btree (actor_party_id);
+
+
+--
+-- Name: index_anticipation_request_events_on_anticipation_request_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_request_events_on_anticipation_request_id ON public.anticipation_request_events USING btree (anticipation_request_id);
+
+
+--
+-- Name: index_anticipation_request_events_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_request_events_on_tenant_id ON public.anticipation_request_events USING btree (tenant_id);
 
 
 --
@@ -2444,6 +2581,20 @@ CREATE TRIGGER action_ip_logs_no_update_delete BEFORE DELETE OR UPDATE ON public
 
 
 --
+-- Name: anticipation_request_events anticipation_request_events_no_update_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER anticipation_request_events_no_update_delete BEFORE DELETE OR UPDATE ON public.anticipation_request_events FOR EACH ROW EXECUTE FUNCTION public.app_forbid_mutation();
+
+
+--
+-- Name: anticipation_requests anticipation_requests_protect_mutation; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER anticipation_requests_protect_mutation BEFORE DELETE OR UPDATE ON public.anticipation_requests FOR EACH ROW EXECUTE FUNCTION public.app_protect_anticipation_requests();
+
+
+--
 -- Name: anticipation_settlement_entries anticipation_settlement_entries_no_update_delete; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -2627,6 +2778,22 @@ ALTER TABLE ONLY public.assignment_contracts
 
 
 --
+-- Name: anticipation_request_events fk_rails_1fb2d6ea67; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_request_events
+    ADD CONSTRAINT fk_rails_1fb2d6ea67 FOREIGN KEY (anticipation_request_id) REFERENCES public.anticipation_requests(id);
+
+
+--
+-- Name: anticipation_request_events fk_rails_213b4b1aba; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_request_events
+    ADD CONSTRAINT fk_rails_213b4b1aba FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
 -- Name: document_events fk_rails_2226eae8f7; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2648,6 +2815,14 @@ ALTER TABLE ONLY public.anticipation_settlement_entries
 
 ALTER TABLE ONLY public.kyc_events
     ADD CONSTRAINT fk_rails_27044fbea3 FOREIGN KEY (party_id) REFERENCES public.parties(id);
+
+
+--
+-- Name: anticipation_request_events fk_rails_273612e857; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_request_events
+    ADD CONSTRAINT fk_rails_273612e857 FOREIGN KEY (actor_party_id) REFERENCES public.parties(id);
 
 
 --
@@ -3200,6 +3375,19 @@ CREATE POLICY action_ip_logs_tenant_policy ON public.action_ip_logs USING ((tena
 
 
 --
+-- Name: anticipation_request_events; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.anticipation_request_events ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: anticipation_request_events anticipation_request_events_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY anticipation_request_events_tenant_policy ON public.anticipation_request_events USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
 -- Name: anticipation_requests; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -3551,6 +3739,13 @@ CREATE POLICY tenants_self_policy ON public.tenants USING ((id = public.app_curr
 
 
 --
+-- Name: tenants tenants_slug_lookup_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY tenants_slug_lookup_policy ON public.tenants FOR SELECT USING (((current_setting('app.allow_tenant_slug_lookup'::text, true) = 'true'::text) AND ((slug)::text = NULLIF(current_setting('app.requested_tenant_slug'::text, true), ''::text)) AND (active = true)));
+
+
+--
 -- Name: user_roles; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -3583,6 +3778,11 @@ CREATE POLICY users_tenant_policy ON public.users USING ((tenant_id = public.app
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260214145000'),
+('20260214144000'),
+('20260214143000'),
+('20260214130000'),
+('20260214120000'),
 ('20260214113000'),
 ('20260214102000'),
 ('20260214101000'),
@@ -3606,4 +3806,3 @@ INSERT INTO "schema_migrations" (version) VALUES
 ('20260210144819'),
 ('20260210113000');
 
-\unrestrict wPFdXVkfYy4isnmKgj32KoHduZvZOGwuzIJfVfRnRUrzgcWLSz4ABFdA0emjT35

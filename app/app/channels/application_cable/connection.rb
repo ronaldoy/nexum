@@ -44,8 +44,15 @@ module ApplicationCable
           return false
         end
 
-        return false if session.ip_address.present? && session.ip_address != request.remote_ip
+        return false if session.ip_address.present? && enforce_websocket_ip_binding? && session.ip_address != request.remote_ip
         return false if session.user_agent.present? && session.user_agent != request.user_agent.to_s
+
+        true
+      end
+
+      def enforce_websocket_ip_binding?
+        configured = Rails.app.creds.option(:security, :websocket_bind_ip, default: ENV["WEBSOCKET_BIND_IP"])
+        return ActiveModel::Type::Boolean.new.cast(configured) unless configured.nil?
 
         true
       end
@@ -60,7 +67,11 @@ module ApplicationCable
             yield
           end
         end
-      rescue ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid
+      rescue ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid => error
+        Rails.logger.error(
+          "websocket_tenant_context_failure tenant_id=#{tenant_id} " \
+          "error_class=#{error.class.name} error_message=#{error.message}"
+        )
         nil
       end
   end

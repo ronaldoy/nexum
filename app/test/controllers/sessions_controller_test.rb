@@ -11,7 +11,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "create with valid credentials" do
-    post session_path, params: { email_address: @user.email_address, password: "password" }
+    post session_path, params: { tenant_slug: @user.tenant.slug, email_address: @user.email_address, password: "password" }
 
     assert_redirected_to root_path
     assert cookies[:session_id]
@@ -19,7 +19,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "create sets hardened session cookie attributes" do
-    post session_path, params: { email_address: @user.email_address, password: "password" }
+    post session_path, params: { tenant_slug: @user.tenant.slug, email_address: @user.email_address, password: "password" }
 
     set_cookie_header = response.headers["Set-Cookie"].to_s.downcase
 
@@ -28,9 +28,23 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "create with invalid credentials" do
-    post session_path, params: { email_address: @user.email_address, password: "wrong" }
+    post session_path, params: { tenant_slug: @user.tenant.slug, email_address: @user.email_address, password: "wrong" }
 
-    assert_redirected_to new_session_path
+    assert_response :redirect
+    assert_nil cookies[:session_id]
+  end
+
+  test "create with invalid tenant slug" do
+    post session_path, params: { tenant_slug: "nonexistent", email_address: @user.email_address, password: "password" }
+
+    assert_response :redirect
+    assert_nil cookies[:session_id]
+  end
+
+  test "create with blank tenant slug" do
+    post session_path, params: { tenant_slug: "", email_address: @user.email_address, password: "password" }
+
+    assert_response :redirect
     assert_nil cookies[:session_id]
   end
 
@@ -51,12 +65,12 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       mfa_code = ROTP::TOTP.new(ops_user.mfa_secret).now
     end
 
-    post session_path, params: { email_address: ops_user.email_address, password: "password" }
+    post session_path, params: { tenant_slug: @user.tenant.slug, email_address: ops_user.email_address, password: "password" }
 
-    assert_redirected_to new_session_path
+    assert_response :redirect
     assert_nil cookies[:session_id]
 
-    post session_path, params: { email_address: ops_user.email_address, password: "password", otp_code: mfa_code }
+    post session_path, params: { tenant_slug: @user.tenant.slug, email_address: ops_user.email_address, password: "password", otp_code: mfa_code }
 
     assert_redirected_to root_path
     assert cookies[:session_id]
@@ -74,7 +88,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   test "create accepts same-origin request when forgery protection is enabled" do
     with_forgery_protection do
       post session_path,
-           params: { email_address: @user.email_address, password: "password" },
+           params: { tenant_slug: @user.tenant.slug, email_address: @user.email_address, password: "password" },
            headers: { "Sec-Fetch-Site" => "same-origin" }
     end
 
@@ -85,7 +99,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   test "create rejects cross-site request when forgery protection is enabled" do
     with_forgery_protection do
       post session_path,
-           params: { email_address: @user.email_address, password: "password" },
+           params: { tenant_slug: @user.tenant.slug, email_address: @user.email_address, password: "password" },
            headers: { "Sec-Fetch-Site" => "cross-site" }
     end
 
