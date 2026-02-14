@@ -57,6 +57,34 @@ class UserTest < ActiveSupport::TestCase
     assert_includes rows, [ "tenants", "tenants_self_policy" ]
   end
 
+  test "active storage tables enforce forced RLS" do
+    rows = User.connection.select_rows(<<~SQL)
+      SELECT relname, relrowsecurity, relforcerowsecurity
+      FROM pg_class
+      WHERE relname IN ('active_storage_blobs', 'active_storage_attachments', 'active_storage_variant_records')
+      ORDER BY relname
+    SQL
+
+    assert_equal 3, rows.size
+    rows.each do |relname, rls_enabled, force_rls|
+      assert_equal true, rls_enabled, "#{relname} must have RLS enabled"
+      assert_equal true, force_rls, "#{relname} must have forced RLS"
+    end
+  end
+
+  test "active storage tenant policies exist" do
+    rows = User.connection.select_rows(<<~SQL)
+      SELECT tablename, policyname
+      FROM pg_policies
+      WHERE tablename IN ('active_storage_blobs', 'active_storage_attachments', 'active_storage_variant_records')
+      ORDER BY tablename, policyname
+    SQL
+
+    assert_includes rows, [ "active_storage_blobs", "active_storage_blobs_tenant_policy" ]
+    assert_includes rows, [ "active_storage_attachments", "active_storage_attachments_tenant_policy" ]
+    assert_includes rows, [ "active_storage_variant_records", "active_storage_variant_records_tenant_policy" ]
+  end
+
   test "validates MFA codes for privileged profiles" do
     user = User.create!(
       tenant: @tenant,
@@ -71,6 +99,8 @@ class UserTest < ActiveSupport::TestCase
     code = ROTP::TOTP.new(user.mfa_secret).now
     assert user.mfa_required_for_role?
     assert user.valid_mfa_code?(code)
+    refute user.valid_mfa_code?(code)
+    assert user.reload.mfa_last_otp_at.present?
     refute user.valid_mfa_code?("000000")
   end
 end

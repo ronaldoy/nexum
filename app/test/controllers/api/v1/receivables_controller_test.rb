@@ -160,7 +160,50 @@ module Api
           assert_equal 1, ReceivableEvent.where(tenant_id: @tenant.id, receivable_id: @receivable.id, event_type: "RECEIVABLE_DOCUMENT_ATTACHED").count
           assert_equal 1, OutboxEvent.where(tenant_id: @tenant.id, event_type: "RECEIVABLE_DOCUMENT_ATTACHED", idempotency_key: "idem-document-attach-001").count
           assert_equal 1, ActionIpLog.where(tenant_id: @tenant.id, action_type: "RECEIVABLE_DOCUMENT_ATTACHED", target_id: document_id).count
+
+          refreshed_email_challenge = AuthChallenge.find(challenges[:email].id)
+          refreshed_whatsapp_challenge = AuthChallenge.find(challenges[:whatsapp].id)
+          assert_equal "CANCELLED", refreshed_email_challenge.status
+          assert_equal "CANCELLED", refreshed_whatsapp_challenge.status
+          assert refreshed_email_challenge.consumed_at.present?
+          assert refreshed_whatsapp_challenge.consumed_at.present?
         end
+      end
+
+      test "rejects reused signature challenges for a new document attach idempotency key" do
+        signed_at = Time.current
+        challenges = create_document_signature_challenges!(
+          receivable: @receivable,
+          actor_party: @receivable.creditor_party,
+          suffix: "reuse-001"
+        )
+
+        payload = {
+          document: {
+            actor_party_id: @receivable.creditor_party_id,
+            document_type: "assignment_contract",
+            sha256: "sha-doc-reuse-001",
+            storage_key: "docs/assignment-contract-reuse-001.pdf",
+            signed_at: signed_at.iso8601,
+            provider_envelope_id: "env-doc-reuse-001",
+            email_challenge_id: challenges[:email].id,
+            whatsapp_challenge_id: challenges[:whatsapp].id
+          }
+        }
+
+        post attach_document_api_v1_receivable_path(@receivable.id),
+          headers: authorization_headers(@document_token, idempotency_key: "idem-document-reuse-001"),
+          params: payload,
+          as: :json
+        assert_response :created
+
+        post attach_document_api_v1_receivable_path(@receivable.id),
+          headers: authorization_headers(@document_token, idempotency_key: "idem-document-reuse-002"),
+          params: payload,
+          as: :json
+
+        assert_response :unprocessable_entity
+        assert_equal "used_email_challenge", response.parsed_body.dig("error", "code")
       end
 
       test "replays signed document attach with same idempotency key and payload" do
@@ -477,7 +520,8 @@ module Api
         ActiveStorage::Blob.create_and_upload!(
           io: StringIO.new(content),
           filename: filename,
-          content_type: "application/pdf"
+          content_type: "application/pdf",
+          metadata: { "tenant_id" => @tenant.id.to_s }
         )
       end
 
@@ -690,7 +734,6 @@ module Api
           attempts: 1,
           max_attempts: 5,
           expires_at: 30.minutes.from_now,
-          consumed_at: Time.current,
           request_id: SecureRandom.uuid,
           target_type: "Receivable",
           target_id: receivable.id,

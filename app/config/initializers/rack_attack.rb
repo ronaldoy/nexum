@@ -31,6 +31,25 @@ class Rack::Attack
     request.ip
   end
 
+  throttle("direct-upload/ip", limit: 60, period: 5.minutes) do |request|
+    request.ip if direct_upload_request?(request)
+  end
+
+  throttle("direct-upload/actor", limit: 90, period: 5.minutes) do |request|
+    next unless direct_upload_request?(request)
+
+    authorization = request.get_header("HTTP_AUTHORIZATION").to_s
+    if authorization.present?
+      "token:#{Digest::SHA256.hexdigest(authorization)}"
+    else
+      tenant_cookie = request.cookies["session_tenant_id"].to_s
+      session_cookie = request.cookies["session_id"].to_s
+      next if tenant_cookie.blank? || session_cookie.blank?
+
+      "session:#{Digest::SHA256.hexdigest("#{tenant_cookie}:#{session_cookie}")}"
+    end
+  end
+
   self.throttled_responder = lambda do |_request|
     request = Rack::Request.new(_request.env)
     if request.path.start_with?("/api/")
@@ -46,5 +65,9 @@ class Rack::Attack
 
   def self.api_mutation_request?(request)
     request.path.start_with?("/api/") && !request.get? && !request.head?
+  end
+
+  def self.direct_upload_request?(request)
+    request.post? && request.path == "/rails/active_storage/direct_uploads"
   end
 end

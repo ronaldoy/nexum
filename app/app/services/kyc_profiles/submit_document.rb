@@ -148,6 +148,7 @@ module KycProfiles
       end
 
       blob = resolve_blob(raw_signed_id: payload[:blob_signed_id])
+      validate_blob_tenant_metadata!(blob:) if blob.present?
       storage_key = payload[:storage_key].to_s.strip
       storage_key = blob.key if storage_key.blank? && blob.present?
 
@@ -192,6 +193,16 @@ module KycProfiles
       return if blob.blank?
 
       record.file.attach(blob)
+    end
+
+    def validate_blob_tenant_metadata!(blob:)
+      metadata_tenant_id = blob.metadata&.dig("tenant_id").to_s.strip
+      if metadata_tenant_id.blank?
+        raise_validation_error!("missing_blob_tenant_metadata", "blob metadata tenant is required.")
+      end
+      return if metadata_tenant_id == @tenant_id.to_s
+
+      raise_validation_error!("blob_tenant_mismatch", "blob metadata tenant does not match request tenant.")
     end
 
     def parse_boolean(raw_value)
@@ -310,7 +321,12 @@ module KycProfiles
           "error_message" => error.message
         }
       )
-    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique
+    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique => log_error
+      Rails.logger.error(
+        "kyc_document_submit_failure_log_write_error " \
+        "error_class=#{log_error.class.name} error_message=#{log_error.message} " \
+        "original_error_class=#{error.class.name} request_id=#{@request_id}"
+      )
       nil
     end
 

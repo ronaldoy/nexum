@@ -350,7 +350,12 @@ module AnticipationRequests
           "error_message" => error.message
         }
       )
-    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique
+    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique => log_error
+      Rails.logger.error(
+        "anticipation_challenges_issue_failure_log_write_error " \
+        "error_class=#{log_error.class.name} error_message=#{log_error.message} " \
+        "original_error_class=#{error.class.name} request_id=#{@request_id}"
+      )
       nil
     end
 

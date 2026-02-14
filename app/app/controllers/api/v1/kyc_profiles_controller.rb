@@ -61,8 +61,6 @@ module Api
         payload = params[:kyc_profile].presence || params
         payload.permit(
           :party_id,
-          :status,
-          :risk_level,
           metadata: {}
         )
       end

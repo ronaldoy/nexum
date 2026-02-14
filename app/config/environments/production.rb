@@ -21,14 +21,17 @@ Rails.application.configure do
   # Enable serving of images, stylesheets, and JavaScripts from an asset server.
   # config.asset_host = "http://assets.example.com"
 
-  # Use Google Cloud Storage in production by default, falling back to local if the GCS adapter is unavailable.
+  # Use Google Cloud Storage in production by default.
   configured_storage_service = ENV.fetch("ACTIVE_STORAGE_SERVICE", "google")
   if configured_storage_service == "google"
     begin
       require "google/cloud/storage"
-    rescue LoadError
-      configured_storage_service = "local"
+    rescue LoadError => error
+      raise "google-cloud-storage gem is required for ACTIVE_STORAGE_SERVICE=google: #{error.message}"
     end
+  end
+  if configured_storage_service == "local"
+    raise "ACTIVE_STORAGE_SERVICE=local is not allowed in production."
   end
   config.active_storage.service = configured_storage_service.to_sym
 

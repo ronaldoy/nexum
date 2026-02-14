@@ -72,8 +72,6 @@ module Api
           params: {
             kyc_profile: {
               party_id: party.id,
-              status: "PENDING_REVIEW",
-              risk_level: "LOW",
               metadata: { source: "portal" }
             }
           },
@@ -83,8 +81,8 @@ module Api
         body = response.parsed_body
         assert_equal false, body.dig("data", "replayed")
         assert_equal party.id, body.dig("data", "party_id")
-        assert_equal "PENDING_REVIEW", body.dig("data", "status")
-        assert_equal "LOW", body.dig("data", "risk_level")
+        assert_equal "DRAFT", body.dig("data", "status")
+        assert_equal "UNKNOWN", body.dig("data", "risk_level")
 
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
           created_profile = KycProfile.find(body.dig("data", "id"))
@@ -102,9 +100,7 @@ module Api
 
         payload = {
           kyc_profile: {
-            party_id: party.id,
-            status: "DRAFT",
-            risk_level: "UNKNOWN"
+            party_id: party.id
           }
         }
 
@@ -139,13 +135,13 @@ module Api
 
         post api_v1_kyc_profiles_path,
           headers: authorization_headers(@write_token, idempotency_key: "idem-kyc-profile-conflict-001"),
-          params: { kyc_profile: { party_id: party.id, status: "DRAFT", risk_level: "UNKNOWN" } },
+          params: { kyc_profile: { party_id: party.id, metadata: { source: "source-a" } } },
           as: :json
         assert_response :created
 
         post api_v1_kyc_profiles_path,
           headers: authorization_headers(@write_token, idempotency_key: "idem-kyc-profile-conflict-001"),
-          params: { kyc_profile: { party_id: party.id, status: "PENDING_REVIEW", risk_level: "HIGH" } },
+          params: { kyc_profile: { party_id: party.id, metadata: { source: "source-b" } } },
           as: :json
 
         assert_response :conflict
@@ -157,9 +153,7 @@ module Api
           headers: authorization_headers(@write_token, idempotency_key: "idem-kyc-profile-existing-001"),
           params: {
             kyc_profile: {
-              party_id: @party.id,
-              status: "DRAFT",
-              risk_level: "UNKNOWN"
+              party_id: @party.id
             }
           },
           as: :json
@@ -401,7 +395,8 @@ module Api
         ActiveStorage::Blob.create_and_upload!(
           io: StringIO.new(content),
           filename: filename,
-          content_type: "application/pdf"
+          content_type: "application/pdf",
+          metadata: { "tenant_id" => @tenant.id.to_s }
         )
       end
 

@@ -1,6 +1,7 @@
 class User < ApplicationRecord
   ROLES = Role::CODES
   PRIVILEGED_ROLES = %w[hospital_admin ops_admin].freeze
+  MFA_ALLOWED_DRIFT_STEPS = 1
 
   belongs_to :tenant
   belongs_to :party, optional: true
@@ -41,7 +42,20 @@ class User < ApplicationRecord
     return false if mfa_secret.to_s.strip.blank?
     return false if otp_code.to_s.strip.blank?
 
-    ROTP::TOTP.new(mfa_secret).verify(otp_code.to_s.strip, drift_behind: 30).present?
+    timestamp = ROTP::TOTP.new(mfa_secret).verify(
+      otp_code.to_s.strip,
+      drift_behind: MFA_ALLOWED_DRIFT_STEPS,
+      drift_ahead: MFA_ALLOWED_DRIFT_STEPS,
+      after: mfa_last_otp_at&.to_i
+    )
+    return false if timestamp.blank?
+
+    update_columns(
+      mfa_last_otp_at: Time.at(timestamp).utc,
+      updated_at: Time.current
+    )
+
+    true
   end
 
   private

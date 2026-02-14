@@ -48,8 +48,8 @@ module KycProfiles
       party_id = payload[:party_id].presence || default_party_id
       raise_validation_error!("party_required", "party_id is required.") if party_id.blank?
 
-      status = normalize_status(payload[:status])
-      risk_level = normalize_risk_level(payload[:risk_level])
+      status = normalize_status
+      risk_level = normalize_risk_level
       metadata = normalize_metadata(payload[:metadata] || {})
       unless metadata.is_a?(Hash)
         raise_validation_error!("invalid_metadata", "metadata must be a JSON object.")
@@ -145,20 +145,12 @@ module KycProfiles
 
     private
 
-    def normalize_status(raw_status)
-      value = raw_status.presence || "DRAFT"
-      normalized = value.to_s.upcase
-      return normalized if KycProfile::STATUSES.include?(normalized)
-
-      raise_validation_error!("invalid_status", "status is invalid.")
+    def normalize_status
+      "DRAFT"
     end
 
-    def normalize_risk_level(raw_risk_level)
-      value = raw_risk_level.presence || "UNKNOWN"
-      normalized = value.to_s.upcase
-      return normalized if KycProfile::RISK_LEVELS.include?(normalized)
-
-      raise_validation_error!("invalid_risk_level", "risk_level is invalid.")
+    def normalize_risk_level
+      "UNKNOWN"
     end
 
     def replay_result(existing_outbox:, payload_hash:)
@@ -258,7 +250,12 @@ module KycProfiles
           "error_message" => error.message
         }
       )
-    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique
+    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique => log_error
+      Rails.logger.error(
+        "kyc_profile_create_failure_log_write_error " \
+        "error_class=#{log_error.class.name} error_message=#{log_error.message} " \
+        "original_error_class=#{error.class.name} request_id=#{@request_id}"
+      )
       nil
     end
 

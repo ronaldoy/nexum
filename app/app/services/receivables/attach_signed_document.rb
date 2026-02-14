@@ -72,7 +72,7 @@ module Receivables
         receivable = Receivable.where(tenant_id: @tenant_id).lock.find(receivable_id)
         actor_party = resolve_actor_party!(payload.fetch(:actor_party_id))
         ensure_actor_party_authorized!(receivable:, actor_party:)
-        ensure_verified_challenge_pair!(
+        challenges = ensure_verified_challenge_pair!(
           receivable: receivable,
           actor_party: actor_party,
           email_challenge_id: payload.fetch(:email_challenge_id),
@@ -91,6 +91,7 @@ module Receivables
           signed_at: payload.fetch(:signed_at),
           metadata: payload.fetch(:metadata)
         )
+        consume_verified_challenges!(challenges:, consumed_at: payload.fetch(:signed_at))
         attach_blob!(record: document, blob: payload[:blob])
 
         create_document_event!(
@@ -263,9 +264,11 @@ module Receivables
     end
 
     def validate_blob_tenant_metadata!(blob:)
-      metadata_tenant_id = blob.metadata&.dig("tenant_id")
-      return if metadata_tenant_id.blank?
-      return if metadata_tenant_id.to_s == @tenant_id.to_s
+      metadata_tenant_id = blob.metadata&.dig("tenant_id").to_s.strip
+      if metadata_tenant_id.blank?
+        raise_validation_error!("missing_blob_tenant_metadata", "blob metadata tenant is required.")
+      end
+      return if metadata_tenant_id == @tenant_id.to_s
 
       raise_validation_error!("blob_tenant_mismatch", "blob metadata tenant does not match request tenant.")
     end
@@ -297,24 +300,32 @@ module Receivables
     end
 
     def ensure_verified_challenge_pair!(receivable:, actor_party:, email_challenge_id:, whatsapp_challenge_id:)
-      verify_signature_challenge!(
+      email_challenge = verify_signature_challenge!(
         challenge_id: email_challenge_id,
         channel: "EMAIL",
         receivable: receivable,
         actor_party: actor_party
       )
-      verify_signature_challenge!(
+      whatsapp_challenge = verify_signature_challenge!(
         challenge_id: whatsapp_challenge_id,
         channel: "WHATSAPP",
         receivable: receivable,
         actor_party: actor_party
       )
+
+      {
+        email: email_challenge,
+        whatsapp: whatsapp_challenge
+      }
     end
 
     def verify_signature_challenge!(challenge_id:, channel:, receivable:, actor_party:)
       challenge = AuthChallenge.where(tenant_id: @tenant_id).lock.find(challenge_id)
       unless challenge.delivery_channel == channel
         raise_validation_error!("invalid_#{channel.downcase}_challenge", "#{channel.downcase} challenge is invalid.")
+      end
+      if challenge.consumed_at.present?
+        raise_validation_error!("used_#{channel.downcase}_challenge", "#{channel.downcase} challenge was already used.")
       end
       unless challenge.status == "VERIFIED"
         raise_validation_error!("unverified_#{channel.downcase}_challenge", "#{channel.downcase} challenge must be verified.")
@@ -328,12 +339,22 @@ module Receivables
       unless challenge.actor_party_id.to_s == actor_party.id.to_s
         raise_validation_error!("invalid_#{channel.downcase}_challenge_actor", "#{channel.downcase} challenge actor is invalid.")
       end
-      return if challenge.expires_at > Time.current
+      return challenge if challenge.expires_at > Time.current
 
       challenge.update!(status: "EXPIRED")
       raise_validation_error!("expired_#{channel.downcase}_challenge", "#{channel.downcase} challenge is expired.")
     rescue ActiveRecord::RecordNotFound
       raise_validation_error!("missing_#{channel.downcase}_challenge", "Missing #{channel.downcase} challenge.")
+    end
+
+    def consume_verified_challenges!(challenges:, consumed_at:)
+      challenge_scope = challenges.values.compact
+      challenge_scope.each do |challenge|
+        challenge.update!(
+          status: "CANCELLED",
+          consumed_at: consumed_at
+        )
+      end
     end
 
     def replay_result(existing_outbox:, payload_hash:)

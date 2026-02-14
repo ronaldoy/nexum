@@ -17,8 +17,8 @@ default: &default
   encoding: unicode
   host: <%= ENV.fetch("DB_HOST", "localhost") %>
   port: <%= ENV.fetch("DB_PORT", 5432) %>
-  username: <%= ENV.fetch("POSTGRES_USER", "nexum") %>
-  password: <%= ENV.fetch("POSTGRES_PASSWORD", "nexum_dev_password") %>
+  username: <%= ENV.fetch("POSTGRES_APP_USER", ENV.fetch("POSTGRES_USER", "nexum")) %>
+  password: <%= ENV.fetch("POSTGRES_APP_PASSWORD", ENV.fetch("POSTGRES_PASSWORD", "nexum_dev_password")) %>
   max_connections: <%= ENV.fetch("RAILS_MAX_THREADS", 5) %>
 
 development:
