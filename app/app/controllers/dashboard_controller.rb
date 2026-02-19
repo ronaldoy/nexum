@@ -272,7 +272,7 @@ class DashboardController < ApplicationController
         happened_at: settlement.paid_at,
         category: "Liquidação",
         title: "Pagamento liquidado",
-        details: "Valor pago #{format_brl(settlement.paid_amount)}",
+        details: "Valor pago #{format_brl_for_timeline(settlement.paid_amount)}",
         payload: settlement.metadata
       }
     end
@@ -400,5 +400,9 @@ class DashboardController < ApplicationController
   def human_status(value)
     key = value.to_s.downcase.strip.tr(" -", "__")
     ApplicationHelper::STATUS_LABELS.fetch(key, key.tr("_", " ").capitalize)
+  end
+
+  def format_brl_for_timeline(value)
+    ApplicationController.helpers.format_brl(value)
   end
 end

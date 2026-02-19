@@ -43,6 +43,7 @@ The system supports:
 - Sensitive tables are RLS protected.
 - Ledger/event/audit tables are append-only where applicable.
 - Privileged actions and money movement are IP-logged.
+- `ops_admin` access to global `/admin/dashboard` requires a WebAuthn passkey step-up (second factor).
 - Signed documents are stored with immutable evidence (`sha256`, `storage_key`, timestamps, actor).
 
 ## Hospital organizations and multi-hospital management
@@ -59,6 +60,7 @@ The system supports:
 
 - `GET /health`
 - `GET /ready`
+- `GET /admin/dashboard`
 - `GET /api/v1/hospital_organizations`
 - `GET /api/v1/receivables`
 - `GET /api/v1/receivables/:id`

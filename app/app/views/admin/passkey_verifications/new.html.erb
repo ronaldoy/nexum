@@ -1,0 +1,45 @@
+<main class="dashboard-shell">
+  <section class="hero-panel">
+    <div>
+      <p class="hero-kicker">Segundo fator obrigatório</p>
+      <h2>Validar acesso ao painel administrativo</h2>
+      <p class="hero-subtitle">
+        Para abrir a visão global do sistema, confirme sua identidade com passkey (WebAuthn).
+      </p>
+      <p class="hero-subtitle">
+        Credenciais registradas: <strong><%= number_with_delimiter(@registered_credentials_count, delimiter: ".") %></strong>
+      </p>
+    </div>
+    <div class="hero-meta">
+      <p><strong>Perfil:</strong> <%= role_label(Current.user&.role) %></p>
+      <p><strong>Usuário:</strong> <%= Current.user&.email_address %></p>
+      <%= link_to "Cancelar", root_path, class: "button button-outline" %>
+    </div>
+  </section>
+
+  <section
+    class="panel"
+    data-controller="admin-passkey"
+    data-admin-passkey-registration-options-url-value="<%= registration_options_admin_passkey_verification_path %>"
+    data-admin-passkey-register-url-value="<%= register_admin_passkey_verification_path %>"
+    data-admin-passkey-authentication-options-url-value="<%= authentication_options_admin_passkey_verification_path %>"
+    data-admin-passkey-verify-url-value="<%= verify_admin_passkey_verification_path %>"
+    data-admin-passkey-fallback-redirect-url-value="<%= @return_to %>"
+  >
+    <header class="panel-header">
+      <h3>Passkey para etapa de segurança</h3>
+      <p>Registro e validação são feitos no navegador com WebAuthn.</p>
+    </header>
+
+    <p class="empty-state" data-admin-passkey-target="status"></p>
+
+    <div class="receivable-selector">
+      <button type="button" class="button button-primary" data-action="admin-passkey#register">
+        Registrar passkey neste dispositivo
+      </button>
+      <button type="button" class="button button-primary" data-action="admin-passkey#verify">
+        Validar passkey para continuar
+      </button>
+    </div>
+  </section>
+</main>

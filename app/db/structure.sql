@@ -1204,7 +1204,8 @@ CREATE TABLE public.sessions (
     user_agent character varying,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    tenant_id uuid NOT NULL
+    tenant_id uuid NOT NULL,
+    admin_webauthn_verified_at timestamp(6) without time zone
 );
 
 ALTER TABLE ONLY public.sessions FORCE ROW LEVEL SECURITY;
@@ -1279,7 +1280,8 @@ CREATE TABLE public.users (
     party_id uuid,
     mfa_enabled boolean DEFAULT false NOT NULL,
     mfa_secret character varying,
-    mfa_last_otp_at timestamp(6) without time zone
+    mfa_last_otp_at timestamp(6) without time zone,
+    webauthn_id character varying
 );
 
 ALTER TABLE ONLY public.users FORCE ROW LEVEL SECURITY;
@@ -1302,6 +1304,28 @@ CREATE SEQUENCE public.users_id_seq
 --
 
 ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
+
+
+--
+-- Name: webauthn_credentials; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.webauthn_credentials (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    user_id bigint NOT NULL,
+    webauthn_id character varying NOT NULL,
+    public_key text NOT NULL,
+    sign_count bigint DEFAULT 0 NOT NULL,
+    nickname character varying,
+    last_used_at timestamp(6) without time zone,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT webauthn_credentials_sign_count_non_negative_check CHECK ((sign_count >= 0))
+);
+
+ALTER TABLE ONLY public.webauthn_credentials FORCE ROW LEVEL SECURITY;
 
 
 --
@@ -1641,6 +1665,14 @@ ALTER TABLE ONLY public.user_roles
 
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: webauthn_credentials webauthn_credentials_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.webauthn_credentials
+    ADD CONSTRAINT webauthn_credentials_pkey PRIMARY KEY (id);
 
 
 --
@@ -2764,6 +2796,41 @@ CREATE INDEX index_users_on_tenant_id ON public.users USING btree (tenant_id);
 
 
 --
+-- Name: index_users_on_tenant_id_and_webauthn_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_users_on_tenant_id_and_webauthn_id ON public.users USING btree (tenant_id, webauthn_id) WHERE (webauthn_id IS NOT NULL);
+
+
+--
+-- Name: index_webauthn_credentials_on_tenant_credential; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_webauthn_credentials_on_tenant_credential ON public.webauthn_credentials USING btree (tenant_id, webauthn_id);
+
+
+--
+-- Name: index_webauthn_credentials_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_webauthn_credentials_on_tenant_id ON public.webauthn_credentials USING btree (tenant_id);
+
+
+--
+-- Name: index_webauthn_credentials_on_tenant_user_credential; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_webauthn_credentials_on_tenant_user_credential ON public.webauthn_credentials USING btree (tenant_id, user_id, webauthn_id);
+
+
+--
+-- Name: index_webauthn_credentials_on_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_webauthn_credentials_on_user_id ON public.webauthn_credentials USING btree (user_id);
+
+
+--
 -- Name: action_ip_logs action_ip_logs_no_update_delete; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3036,6 +3103,14 @@ ALTER TABLE ONLY public.assignment_contracts
 
 ALTER TABLE ONLY public.user_roles
     ADD CONSTRAINT fk_rails_318345354e FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- Name: webauthn_credentials fk_rails_318d45c5d9; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.webauthn_credentials
+    ADD CONSTRAINT fk_rails_318d45c5d9 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 
 --
@@ -3324,6 +3399,14 @@ ALTER TABLE ONLY public.action_ip_logs
 
 ALTER TABLE ONLY public.physician_anticipation_authorizations
     ADD CONSTRAINT fk_rails_a3334b1e81 FOREIGN KEY (legal_entity_party_id) REFERENCES public.parties(id);
+
+
+--
+-- Name: webauthn_credentials fk_rails_a4355aef77; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.webauthn_credentials
+    ADD CONSTRAINT fk_rails_a4355aef77 FOREIGN KEY (user_id) REFERENCES public.users(id);
 
 
 --
@@ -4042,6 +4125,13 @@ CREATE POLICY sessions_tenant_policy ON public.sessions USING ((tenant_id = publ
 ALTER TABLE public.tenants ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: tenants tenants_ops_admin_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY tenants_ops_admin_policy ON public.tenants FOR SELECT USING ((current_setting('app.role'::text, true) = 'ops_admin'::text));
+
+
+--
 -- Name: tenants tenants_self_policy; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -4082,12 +4172,27 @@ CREATE POLICY users_tenant_policy ON public.users USING ((tenant_id = public.app
 
 
 --
+-- Name: webauthn_credentials; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.webauthn_credentials ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: webauthn_credentials webauthn_credentials_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY webauthn_credentials_tenant_policy ON public.webauthn_credentials USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
 -- PostgreSQL database dump complete
 --
 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260219160000'),
+('20260219153000'),
 ('20260219124000'),
 ('20260219123000'),
 ('20260219110000'),

@@ -1,11 +1,11 @@
 # Database Model Documentation
 
-Generated at: 2026-02-19T14:58:31-03:00
+Generated at: 2026-02-19T16:02:33-03:00
 Source schema: `app/db/structure.sql`
 
 ## Summary
 
-- Total tables documented: 36
+- Total tables documented: 37
 - Tables with append-only mutation guard: 11
 - Business timezone: `America/Sao_Paulo`
 
@@ -1317,6 +1317,7 @@ Source schema: `app/db/structure.sql`
 | `created_at` | `timestamp(6) without time zone` | false | `` | - |
 | `updated_at` | `timestamp(6) without time zone` | false | `` | - |
 | `tenant_id` | `uuid` | false | `` | `tenants.id` |
+| `admin_webauthn_verified_at` | `timestamp(6) without time zone` | true | `` | - |
 
 ### Indexes
 
@@ -1332,6 +1333,7 @@ Source schema: `app/db/structure.sql`
 - Append-only guard: `false`
 
 - Policies:
+  - `tenants_ops_admin_policy`
   - `tenants_self_policy`
   - `tenants_slug_lookup_policy`
 
@@ -1408,9 +1410,48 @@ Source schema: `app/db/structure.sql`
 | `mfa_enabled` | `boolean` | false | `false` | - |
 | `mfa_secret` | `character varying` | true | `` | - |
 | `mfa_last_otp_at` | `timestamp(6) without time zone` | true | `` | - |
+| `webauthn_id` | `character varying` | true | `` | - |
 
 ### Indexes
 
 - `index_users_on_email_address` (unique): `email_address`
 - `index_users_on_party_id` (non-unique): `party_id`
 - `index_users_on_tenant_id` (non-unique): `tenant_id`
+- `index_users_on_tenant_id_and_webauthn_id` (unique): `tenant_id, webauthn_id` WHERE (webauthn_id IS NOT NULL)
+
+## `webauthn_credentials`
+
+- Primary key: `id`
+- RLS enabled: `true`
+- RLS forced: `true`
+- Append-only guard: `false`
+
+- Policies:
+  - `webauthn_credentials_tenant_policy`
+
+### Columns
+
+| Column | SQL Type | Null | Default | FK |
+| --- | --- | --- | --- | --- |
+| `id` | `uuid` | false | `` | - |
+| `tenant_id` | `uuid` | false | `` | `tenants.id` |
+| `user_id` | `bigint` | false | `` | `users.id` |
+| `webauthn_id` | `character varying` | false | `` | - |
+| `public_key` | `text` | false | `` | - |
+| `sign_count` | `bigint` | false | `0` | - |
+| `nickname` | `character varying` | true | `` | - |
+| `last_used_at` | `timestamp(6) without time zone` | true | `` | - |
+| `metadata` | `jsonb` | false | `{}` | - |
+| `created_at` | `timestamp(6) without time zone` | false | `` | - |
+| `updated_at` | `timestamp(6) without time zone` | false | `` | - |
+
+### Check Constraints
+
+- `webauthn_credentials_sign_count_non_negative_check`: `sign_count >= 0`
+
+### Indexes
+
+- `index_webauthn_credentials_on_tenant_credential` (unique): `tenant_id, webauthn_id`
+- `index_webauthn_credentials_on_tenant_id` (non-unique): `tenant_id`
+- `index_webauthn_credentials_on_tenant_user_credential` (unique): `tenant_id, user_id, webauthn_id`
+- `index_webauthn_credentials_on_user_id` (non-unique): `user_id`

@@ -11,6 +11,9 @@
       <p><strong>Usuário:</strong> <%= Current.user&.email_address %></p>
       <p><strong>Perfil:</strong> <%= role_label(Current.user&.role) %></p>
       <p><strong>Fuso horário:</strong> América/São_Paulo</p>
+      <% if Current.user&.role == "ops_admin" %>
+        <%= link_to "Abrir painel admin", admin_dashboard_path, class: "button button-primary" %>
+      <% end %>
     </div>
   </section>
 

@@ -322,6 +322,10 @@ code {
   align-content: center;
 }
 
+.hero-meta .button {
+  margin-top: 0.4rem;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

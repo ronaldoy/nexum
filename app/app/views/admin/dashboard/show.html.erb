@@ -1,0 +1,124 @@
+<main class="dashboard-shell">
+  <section class="hero-panel">
+    <div>
+      <p class="hero-kicker">Visão global multi-tenant</p>
+      <h2>Painel administrativo do sistema</h2>
+      <p class="hero-subtitle">
+        Consolidação operacional de todos os tenants, com métricas de recebíveis, antecipações, liquidações e fila de integração.
+      </p>
+      <p class="hero-subtitle">
+        Atualizado em <strong><%= l(@generated_at, format: :short) %></strong>.
+      </p>
+    </div>
+    <div class="hero-meta">
+      <p><strong>Perfil:</strong> <%= role_label(Current.user&.role) %></p>
+      <p><strong>Usuário:</strong> <%= Current.user&.email_address %></p>
+      <p><strong>Tenants ativos:</strong> <%= @totals[:active_tenants_count] %>/<%= @totals[:tenants_count] %></p>
+      <%= link_to "Voltar ao portal", root_path, class: "button button-primary" %>
+    </div>
+  </section>
+
+  <section class="metric-grid">
+    <article class="metric-card">
+      <p class="metric-label">Tenants</p>
+      <p class="metric-value"><%= number_with_delimiter(@totals[:tenants_count], delimiter: ".") %></p>
+      <p class="metric-footnote"><%= @totals[:active_tenants_count] %> ativos</p>
+    </article>
+    <article class="metric-card">
+      <p class="metric-label">Usuários cadastrados</p>
+      <p class="metric-value"><%= number_with_delimiter(@totals[:users_count], delimiter: ".") %></p>
+      <p class="metric-footnote">Base total autenticável</p>
+    </article>
+    <article class="metric-card">
+      <p class="metric-label">Hospitais e organizações</p>
+      <p class="metric-value">
+        <%= number_with_delimiter(@totals[:hospitals_count], delimiter: ".") %> / <%= number_with_delimiter(@totals[:hospital_organizations_count], delimiter: ".") %>
+      </p>
+      <p class="metric-footnote">Hospitais / organizações com vínculo</p>
+    </article>
+    <article class="metric-card">
+      <p class="metric-label">Recebíveis performados</p>
+      <p class="metric-value"><%= number_with_delimiter(@totals[:receivables_count], delimiter: ".") %></p>
+      <p class="metric-footnote"><%= format_brl(@totals[:receivables_gross_amount]) %> bruto</p>
+    </article>
+    <article class="metric-card">
+      <p class="metric-label">Antecipações</p>
+      <p class="metric-value"><%= number_with_delimiter(@totals[:anticipations_count], delimiter: ".") %></p>
+      <p class="metric-footnote"><%= format_brl(@totals[:anticipations_requested_amount]) %> solicitado</p>
+    </article>
+    <article class="metric-card">
+      <p class="metric-label">Liquidações</p>
+      <p class="metric-value"><%= number_with_delimiter(@totals[:settlements_count], delimiter: ".") %></p>
+      <p class="metric-footnote"><%= format_brl(@totals[:settlements_paid_amount]) %> pago</p>
+    </article>
+    <article class="metric-card">
+      <p class="metric-label">Outbox pendente</p>
+      <p class="metric-value"><%= number_with_delimiter(@totals[:outbox_pending_count], delimiter: ".") %></p>
+      <p class="metric-footnote"><%= @totals[:outbox_dead_letter_count] %> em dead-letter</p>
+    </article>
+    <article class="metric-card">
+      <p class="metric-label">Uploads diretos</p>
+      <p class="metric-value"><%= number_with_delimiter(@totals[:direct_upload_count], delimiter: ".") %></p>
+      <p class="metric-footnote">Blobs com contexto de tenant</p>
+    </article>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Resumo por tenant</h3>
+      <p>Visão consolidada por organização/tenant com atividade operacional e confiabilidade de integração.</p>
+    </header>
+
+    <div class="table-wrapper">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Tenant</th>
+            <th>Status</th>
+            <th>Usuários</th>
+            <th>Hospitais</th>
+            <th>Orgs c/ vínculo</th>
+            <th>Vínculos hospital-org</th>
+            <th>Recebíveis</th>
+            <th>Bruto</th>
+            <th>Antecipações</th>
+            <th>Fundadas</th>
+            <th>Liquidações</th>
+            <th>Pago</th>
+            <th>Outbox pendente</th>
+            <th>Dead-letter</th>
+            <th>Uploads</th>
+            <th>Última atividade</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @tenant_rows.each do |row| %>
+            <tr>
+              <td>
+                <strong><%= row[:tenant_slug] %></strong><br>
+                <small><%= row[:tenant_name] %></small>
+              </td>
+              <td>
+                <span class="status-pill"><%= row[:tenant_active] ? "Ativo" : "Inativo" %></span>
+              </td>
+              <td><%= number_with_delimiter(row[:users_count], delimiter: ".") %></td>
+              <td><%= number_with_delimiter(row[:hospital_count], delimiter: ".") %></td>
+              <td><%= number_with_delimiter(row[:hospital_organization_count], delimiter: ".") %></td>
+              <td><%= number_with_delimiter(row[:hospital_ownership_count], delimiter: ".") %></td>
+              <td><%= number_with_delimiter(row[:receivable_count], delimiter: ".") %></td>
+              <td><%= format_brl(row[:receivable_gross_amount]) %></td>
+              <td><%= number_with_delimiter(row[:anticipation_count], delimiter: ".") %></td>
+              <td><%= number_with_delimiter(row[:funded_anticipation_count], delimiter: ".") %></td>
+              <td><%= number_with_delimiter(row[:settlement_count], delimiter: ".") %></td>
+              <td><%= format_brl(row[:settlement_paid_amount]) %></td>
+              <td><%= number_with_delimiter(row[:outbox_pending_count], delimiter: ".") %></td>
+              <td><%= number_with_delimiter(row[:outbox_dead_letter_count], delimiter: ".") %></td>
+              <td><%= number_with_delimiter(row[:direct_upload_count], delimiter: ".") %></td>
+              <td><%= l(row[:last_activity_at], format: :short) if row[:last_activity_at].present? %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>

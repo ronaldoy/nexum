@@ -40,6 +40,7 @@ For full architecture, domain flow, and demo walkthrough see root `README.md`.
 ## API Bootstrap
 - `GET /health` liveness check.
 - `GET /ready` readiness check (database connectivity).
+- `GET /admin/dashboard` global web admin dashboard (`ops_admin` only).
 - `GET /api/v1/receivables` list receivables scoped by tenant context.
 - `GET /api/v1/hospital_organizations` list organizations and managed hospitals.
 - `GET /api/v1/receivables/:id` fetch single receivable.
@@ -92,6 +93,7 @@ From `app/`:
 - CSP is enabled globally; optional allowlist extensions are configurable via:
   - `security.csp_connect_src` or `CSP_CONNECT_SRC`
   - `security.csp_img_src` or `CSP_IMG_SRC`
+- `ops_admin` users must pass WebAuthn (`webauthn-ruby`) second-factor verification to access `/admin/dashboard`.
 
 ## PII Encryption (Rails Native)
 - PII fields are encrypted at rest via Active Record Encryption (AES-256-GCM).

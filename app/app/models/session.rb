@@ -1,5 +1,6 @@
 class Session < ApplicationRecord
   DEFAULT_TTL = 12.hours
+  DEFAULT_ADMIN_WEBAUTHN_TTL = 15.minutes
 
   belongs_to :tenant
   belongs_to :user
@@ -19,6 +20,27 @@ class Session < ApplicationRecord
 
   def expired?(at: Time.current)
     created_at <= (at - self.class.ttl)
+  end
+
+  def self.admin_webauthn_ttl
+    configured_minutes = Integer(
+      Rails.app.creds.option(:security, :admin_webauthn_ttl_minutes, default: ENV["ADMIN_WEBAUTHN_TTL_MINUTES"]),
+      exception: false
+    )
+
+    return DEFAULT_ADMIN_WEBAUTHN_TTL if configured_minutes.nil? || configured_minutes <= 0
+
+    configured_minutes.minutes
+  end
+
+  def admin_webauthn_verified_recently?(at: Time.current)
+    return false if admin_webauthn_verified_at.blank?
+
+    admin_webauthn_verified_at >= (at - self.class.admin_webauthn_ttl)
+  end
+
+  def mark_admin_webauthn_verified!(at: Time.current)
+    update!(admin_webauthn_verified_at: at)
   end
 
   private

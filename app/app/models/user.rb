@@ -12,6 +12,7 @@ class User < ApplicationRecord
   has_secure_password algorithm: :argon2
   has_many :sessions, dependent: :destroy
   has_many :api_access_tokens, dependent: :destroy
+  has_many :webauthn_credentials, dependent: :destroy
   has_many :user_roles, dependent: :restrict_with_exception
   has_many :roles, through: :user_roles
 
@@ -56,6 +57,14 @@ class User < ApplicationRecord
     )
 
     true
+  end
+
+  def ensure_webauthn_id!
+    return webauthn_id if webauthn_id.present?
+
+    generated = SecureRandom.base64(32)
+    update!(webauthn_id: generated)
+    generated
   end
 
   private

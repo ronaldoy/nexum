@@ -1,6 +1,9 @@
 module SessionTestHelper
-  def sign_in_as(user)
-    Current.session = user.sessions.create!(tenant: user.tenant)
+  def sign_in_as(user, admin_webauthn_verified: false)
+    Current.session = user.sessions.create!(
+      tenant: user.tenant,
+      admin_webauthn_verified_at: (admin_webauthn_verified ? Time.current : nil)
+    )
     Current.user = user
 
     ActionDispatch::TestRequest.create.cookie_jar.tap do |cookie_jar|
