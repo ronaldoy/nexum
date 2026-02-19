@@ -729,6 +729,41 @@ ALTER TABLE ONLY public.escrow_payouts FORCE ROW LEVEL SECURITY;
 
 
 --
+-- Name: fdic_operations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.fdic_operations (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    anticipation_request_id uuid,
+    receivable_payment_settlement_id uuid,
+    provider character varying NOT NULL,
+    operation_type character varying NOT NULL,
+    status character varying DEFAULT 'PENDING'::character varying NOT NULL,
+    amount numeric(18,2) NOT NULL,
+    currency character varying DEFAULT 'BRL'::character varying NOT NULL,
+    idempotency_key character varying NOT NULL,
+    provider_reference character varying,
+    requested_at timestamp(6) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    processed_at timestamp(6) without time zone,
+    last_error_code character varying,
+    last_error_message character varying,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT fdic_operations_amount_positive_check CHECK ((amount > (0)::numeric)),
+    CONSTRAINT fdic_operations_currency_check CHECK (((currency)::text = 'BRL'::text)),
+    CONSTRAINT fdic_operations_idempotency_key_present_check CHECK ((btrim((idempotency_key)::text) <> ''::text)),
+    CONSTRAINT fdic_operations_operation_type_check CHECK (((operation_type)::text = ANY ((ARRAY['FUNDING_REQUEST'::character varying, 'SETTLEMENT_REPORT'::character varying])::text[]))),
+    CONSTRAINT fdic_operations_provider_check CHECK (((provider)::text = ANY ((ARRAY['MOCK'::character varying, 'WEBHOOK'::character varying])::text[]))),
+    CONSTRAINT fdic_operations_single_source_reference_check CHECK ((((anticipation_request_id IS NOT NULL) AND (receivable_payment_settlement_id IS NULL)) OR ((anticipation_request_id IS NULL) AND (receivable_payment_settlement_id IS NOT NULL)))),
+    CONSTRAINT fdic_operations_status_check CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying])::text[])))
+);
+
+ALTER TABLE ONLY public.fdic_operations FORCE ROW LEVEL SECURITY;
+
+
+--
 -- Name: hospital_ownerships; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1609,6 +1644,14 @@ ALTER TABLE ONLY public.escrow_payouts
 
 
 --
+-- Name: fdic_operations fdic_operations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fdic_operations
+    ADD CONSTRAINT fdic_operations_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: hospital_ownerships hospital_ownerships_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2460,6 +2503,55 @@ CREATE UNIQUE INDEX index_escrow_payouts_on_tenant_settlement_party ON public.es
 --
 
 CREATE INDEX index_escrow_payouts_on_tenant_status_requested_at ON public.escrow_payouts USING btree (tenant_id, status, requested_at);
+
+
+--
+-- Name: index_fdic_operations_dispatch_scan; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_fdic_operations_dispatch_scan ON public.fdic_operations USING btree (tenant_id, operation_type, status, requested_at);
+
+
+--
+-- Name: index_fdic_operations_on_anticipation_request_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_fdic_operations_on_anticipation_request_id ON public.fdic_operations USING btree (anticipation_request_id);
+
+
+--
+-- Name: index_fdic_operations_on_receivable_payment_settlement_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_fdic_operations_on_receivable_payment_settlement_id ON public.fdic_operations USING btree (receivable_payment_settlement_id);
+
+
+--
+-- Name: index_fdic_operations_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_fdic_operations_on_tenant_id ON public.fdic_operations USING btree (tenant_id);
+
+
+--
+-- Name: index_fdic_operations_on_tenant_idempotency_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_fdic_operations_on_tenant_idempotency_key ON public.fdic_operations USING btree (tenant_id, idempotency_key);
+
+
+--
+-- Name: index_fdic_operations_unique_funding_per_request; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_fdic_operations_unique_funding_per_request ON public.fdic_operations USING btree (tenant_id, anticipation_request_id, operation_type) WHERE (anticipation_request_id IS NOT NULL);
+
+
+--
+-- Name: index_fdic_operations_unique_settlement_per_payment; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_fdic_operations_unique_settlement_per_payment ON public.fdic_operations USING btree (tenant_id, receivable_payment_settlement_id, operation_type) WHERE (receivable_payment_settlement_id IS NOT NULL);
 
 
 --
@@ -3361,6 +3453,14 @@ ALTER TABLE ONLY public.anticipation_request_events
 
 
 --
+-- Name: fdic_operations fk_rails_20c5515e7d; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fdic_operations
+    ADD CONSTRAINT fk_rails_20c5515e7d FOREIGN KEY (anticipation_request_id) REFERENCES public.anticipation_requests(id);
+
+
+--
 -- Name: escrow_payouts fk_rails_2101940f83; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3481,6 +3581,14 @@ ALTER TABLE ONLY public.receivable_statistics_daily
 
 
 --
+-- Name: fdic_operations fk_rails_3d4ce4fb52; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fdic_operations
+    ADD CONSTRAINT fk_rails_3d4ce4fb52 FOREIGN KEY (receivable_payment_settlement_id) REFERENCES public.receivable_payment_settlements(id);
+
+
+--
 -- Name: physician_legal_entity_memberships fk_rails_4202cb5434; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3526,6 +3634,14 @@ ALTER TABLE ONLY public.sessions
 
 ALTER TABLE ONLY public.documents
     ADD CONSTRAINT fk_rails_4fd21ed2d6 FOREIGN KEY (actor_party_id) REFERENCES public.parties(id);
+
+
+--
+-- Name: fdic_operations fk_rails_5123c49b42; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fdic_operations
+    ADD CONSTRAINT fk_rails_5123c49b42 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 
 --
@@ -4263,6 +4379,19 @@ CREATE POLICY escrow_payouts_tenant_policy ON public.escrow_payouts USING ((tena
 
 
 --
+-- Name: fdic_operations; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.fdic_operations ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: fdic_operations fdic_operations_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY fdic_operations_tenant_policy ON public.fdic_operations USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
 -- Name: hospital_ownerships; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -4634,6 +4763,7 @@ CREATE POLICY webauthn_credentials_tenant_policy ON public.webauthn_credentials 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260219195500'),
 ('20260219193000'),
 ('20260219182000'),
 ('20260219174000'),

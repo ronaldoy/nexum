@@ -7,6 +7,8 @@ module Receivables
     PAYLOAD_HASH_METADATA_KEY = "_payment_payload_hash".freeze
     ESCROW_EXCESS_OUTBOX_EVENT_TYPE = "RECEIVABLE_ESCROW_EXCESS_PAYOUT_REQUESTED".freeze
     ESCROW_EXCESS_OUTBOX_IDEMPOTENCY_SUFFIX = "escrow_excess_payout".freeze
+    FDIC_SETTLEMENT_OUTBOX_EVENT_TYPE = "RECEIVABLE_FIDC_SETTLEMENT_REPORTED".freeze
+    FDIC_SETTLEMENT_OUTBOX_IDEMPOTENCY_SUFFIX = "fdic_settlement_report".freeze
 
     Result = Struct.new(:settlement, :settlement_entries, :replayed, keyword_init: true) do
       def replayed?
@@ -161,6 +163,12 @@ module Receivables
           settlement: settlement,
           receivable: receivable,
           beneficiary_amount: beneficiary_amount
+        )
+
+        create_fdic_settlement_outbox_event!(
+          settlement: settlement,
+          receivable: receivable,
+          fdic_amount: fdic_amount
         )
 
         create_action_log!(
@@ -523,6 +531,59 @@ module Receivables
       )
     end
 
+    def create_fdic_settlement_outbox_event!(settlement:, receivable:, fdic_amount:)
+      return if fdic_amount.to_d <= 0
+
+      provider = Integrations::Fdic::ProviderConfig.default_provider(tenant_id: @tenant_id)
+      amount = decimal_as_string(fdic_amount)
+      report_idempotency_key = "#{settlement.id}:#{FDIC_SETTLEMENT_OUTBOX_IDEMPOTENCY_SUFFIX}"
+      receivable_origin = receivable_origin_payload(receivable)
+      payload_hash = fdic_settlement_payload_hash(
+        settlement: settlement,
+        provider: provider,
+        amount: amount,
+        receivable_origin: receivable_origin
+      )
+
+      OutboxEvent.create!(
+        tenant_id: @tenant_id,
+        aggregate_type: TARGET_TYPE,
+        aggregate_id: settlement.id,
+        event_type: FDIC_SETTLEMENT_OUTBOX_EVENT_TYPE,
+        status: "PENDING",
+        idempotency_key: report_idempotency_key,
+        payload: {
+          "payload_hash" => payload_hash,
+          "settlement_id" => settlement.id,
+          "receivable_id" => settlement.receivable_id,
+          "receivable_allocation_id" => settlement.receivable_allocation_id,
+          "payment_reference" => settlement.payment_reference,
+          "amount" => amount,
+          "currency" => "BRL",
+          "provider" => provider,
+          "operation_kind" => "SETTLEMENT_REPORT",
+          "operation_idempotency_key" => report_idempotency_key,
+          "provider_request_control_key" => report_idempotency_key,
+          "fdic_amount" => amount,
+          "fdic_balance_before" => decimal_as_string(settlement.fdic_balance_before),
+          "fdic_balance_after" => decimal_as_string(settlement.fdic_balance_after),
+          "receivable_origin" => receivable_origin
+        }
+      )
+    rescue ActiveRecord::RecordNotUnique
+      existing = OutboxEvent.find_by!(
+        tenant_id: @tenant_id,
+        idempotency_key: report_idempotency_key
+      )
+      stored_hash = existing.payload&.dig("payload_hash").to_s
+      return if stored_hash.blank? || stored_hash == payload_hash
+
+      raise IdempotencyConflict.new(
+        code: "fdic_settlement_idempotency_conflict",
+        message: "FDIC settlement idempotency key was already used with a different payload."
+      )
+    end
+
     def create_action_log!(action_type:, success:, target_id:, metadata:)
       ActionIpLog.create!(
         tenant_id: @tenant_id,
@@ -565,7 +626,7 @@ module Receivables
           error_message: error.message
         }
       )
-    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique => log_error
+    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique, ActiveRecord::Deadlocked => log_error
       Rails.logger.error(
         "settle_payment_failure_log_write_error " \
         "error_class=#{log_error.class.name} error_message=#{log_error.message} " \
@@ -597,6 +658,22 @@ module Receivables
           amount: amount,
           currency: "BRL",
           payout_kind: "EXCESS",
+          receivable_origin: receivable_origin
+        )
+      )
+    end
+
+    def fdic_settlement_payload_hash(settlement:, provider:, amount:, receivable_origin:)
+      Digest::SHA256.hexdigest(
+        canonical_json(
+          settlement_id: settlement.id,
+          receivable_id: settlement.receivable_id,
+          receivable_allocation_id: settlement.receivable_allocation_id,
+          payment_reference: settlement.payment_reference,
+          provider: provider,
+          amount: amount,
+          currency: "BRL",
+          operation_kind: "SETTLEMENT_REPORT",
           receivable_origin: receivable_origin
         )
       )

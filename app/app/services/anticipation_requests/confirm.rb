@@ -5,6 +5,8 @@ module AnticipationRequests
     CONFIRMATION_PURPOSE = "ANTICIPATION_CONFIRMATION".freeze
     TARGET_TYPE = "AnticipationRequest".freeze
     PAYLOAD_HASH_METADATA_KEY = "_confirmation_payload_hash".freeze
+    FDIC_FUNDING_OUTBOX_EVENT_TYPE = "ANTICIPATION_FIDC_FUNDING_REQUESTED".freeze
+    FDIC_FUNDING_OUTBOX_IDEMPOTENCY_SUFFIX = "fdic_funding_request".freeze
 
     Result = Struct.new(:anticipation_request, :replayed, keyword_init: true) do
       def replayed?
@@ -107,6 +109,10 @@ module AnticipationRequests
             email_challenge: email_challenge,
             whatsapp_challenge: whatsapp_challenge,
             occurred_at: confirmed_at
+          )
+
+          create_fdic_funding_outbox_event!(
+            anticipation_request: anticipation_request
           )
 
           create_action_log!(
@@ -261,6 +267,58 @@ module AnticipationRequests
       )
     end
 
+    def create_fdic_funding_outbox_event!(anticipation_request:)
+      provider = Integrations::Fdic::ProviderConfig.default_provider(tenant_id: @tenant_id)
+      receivable = anticipation_request.receivable
+      funding_amount = decimal_as_string(anticipation_request.net_amount)
+      funding_idempotency_key = "#{anticipation_request.id}:#{FDIC_FUNDING_OUTBOX_IDEMPOTENCY_SUFFIX}"
+      receivable_origin = receivable_origin_payload(receivable)
+      payload_hash = fdic_funding_payload_hash(
+        anticipation_request: anticipation_request,
+        provider: provider,
+        amount: funding_amount,
+        receivable_origin: receivable_origin
+      )
+
+      OutboxEvent.create!(
+        tenant_id: @tenant_id,
+        aggregate_type: TARGET_TYPE,
+        aggregate_id: anticipation_request.id,
+        event_type: FDIC_FUNDING_OUTBOX_EVENT_TYPE,
+        status: "PENDING",
+        idempotency_key: funding_idempotency_key,
+        payload: {
+          "payload_hash" => payload_hash,
+          "anticipation_request_id" => anticipation_request.id,
+          "receivable_id" => anticipation_request.receivable_id,
+          "receivable_allocation_id" => anticipation_request.receivable_allocation_id,
+          "requester_party_id" => anticipation_request.requester_party_id,
+          "amount" => funding_amount,
+          "currency" => "BRL",
+          "provider" => provider,
+          "operation_kind" => "FUNDING_REQUEST",
+          "operation_idempotency_key" => funding_idempotency_key,
+          "provider_request_control_key" => funding_idempotency_key,
+          "requested_amount" => decimal_as_string(anticipation_request.requested_amount),
+          "discount_amount" => decimal_as_string(anticipation_request.discount_amount),
+          "net_amount" => funding_amount,
+          "receivable_origin" => receivable_origin
+        }
+      )
+    rescue ActiveRecord::RecordNotUnique
+      existing = OutboxEvent.find_by!(
+        tenant_id: @tenant_id,
+        idempotency_key: funding_idempotency_key
+      )
+      stored_hash = existing.payload&.dig("payload_hash").to_s
+      return if stored_hash.blank? || stored_hash == payload_hash
+
+      raise IdempotencyConflict.new(
+        code: "fdic_funding_idempotency_conflict",
+        message: "FDIC funding idempotency key was already used with a different payload."
+      )
+    end
+
     def create_failure_log(error:, anticipation_request_id:, actor_party_id:)
       metadata = {
         replayed: false,
@@ -317,6 +375,44 @@ module AnticipationRequests
 
     def canonical_json(value)
       CanonicalJson.encode(value)
+    end
+
+    def decimal_as_string(value)
+      value.to_d.to_s("F")
+    end
+
+    def fdic_funding_payload_hash(anticipation_request:, provider:, amount:, receivable_origin:)
+      Digest::SHA256.hexdigest(
+        canonical_json(
+          anticipation_request_id: anticipation_request.id,
+          receivable_id: anticipation_request.receivable_id,
+          receivable_allocation_id: anticipation_request.receivable_allocation_id,
+          requester_party_id: anticipation_request.requester_party_id,
+          provider: provider,
+          amount: amount,
+          currency: "BRL",
+          operation_kind: "FUNDING_REQUEST",
+          receivable_origin: receivable_origin
+        )
+      )
+    end
+
+    def receivable_origin_payload(receivable)
+      ownership = HospitalOwnership
+        .where(tenant_id: @tenant_id, hospital_party_id: receivable.debtor_party_id, active: true)
+        .includes(:organization_party)
+        .first
+
+      {
+        "receivable_id" => receivable.id,
+        "external_reference" => receivable.external_reference,
+        "hospital_party_id" => receivable.debtor_party_id,
+        "hospital_legal_name" => receivable.debtor_party.legal_name,
+        "hospital_document_number" => receivable.debtor_party.document_number,
+        "organization_party_id" => ownership&.organization_party_id,
+        "organization_legal_name" => ownership&.organization_party&.legal_name,
+        "organization_document_number" => ownership&.organization_party&.document_number
+      }.compact
     end
 
     def normalized_metadata(raw_metadata)

@@ -466,6 +466,19 @@ module Api
 
           assert_equal 1, ActionIpLog.where(action_type: "ANTICIPATION_CONFIRMED", target_id: anticipation_request.id).count
 
+          fdic_outbox = OutboxEvent.find_by!(
+            tenant_id: @tenant.id,
+            aggregate_type: "AnticipationRequest",
+            aggregate_id: anticipation_request.id,
+            event_type: "ANTICIPATION_FIDC_FUNDING_REQUESTED",
+            idempotency_key: "#{anticipation_request.id}:fdic_funding_request"
+          )
+          assert_equal anticipation_request.id, fdic_outbox.payload["anticipation_request_id"]
+          assert_equal anticipation_request.receivable_id, fdic_outbox.payload["receivable_id"]
+          assert_equal anticipation_request.net_amount.to_d, BigDecimal(fdic_outbox.payload["amount"])
+          assert_equal "BRL", fdic_outbox.payload["currency"]
+          assert_equal anticipation_request.receivable.debtor_party_id, fdic_outbox.payload.dig("receivable_origin", "hospital_party_id")
+
           assert_equal 0, OutboxEvent.where(
             tenant_id: @tenant.id,
             aggregate_id: anticipation_request.id,
@@ -507,6 +520,12 @@ module Api
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
           assert_equal 1, ReceivableEvent.where(receivable_id: anticipation_request.receivable_id, event_type: "ANTICIPATION_CONFIRMED").count
           assert_equal 1, ActionIpLog.where(action_type: "ANTICIPATION_CONFIRM_REPLAYED", target_id: anticipation_request.id).count
+          assert_equal 1, OutboxEvent.where(
+            tenant_id: @tenant.id,
+            aggregate_id: anticipation_request.id,
+            event_type: "ANTICIPATION_FIDC_FUNDING_REQUESTED",
+            idempotency_key: "#{anticipation_request.id}:fdic_funding_request"
+          ).count
         end
       end
 

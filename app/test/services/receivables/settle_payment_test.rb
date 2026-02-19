@@ -128,6 +128,19 @@ module Receivables
         assert_equal "EXCESS", escrow_outbox.payload["payout_kind"]
         assert_equal bundle[:receivable].debtor_party_id, escrow_outbox.payload.dig("receivable_origin", "hospital_party_id")
 
+        fdic_outbox = OutboxEvent.find_by!(
+          tenant_id: @tenant.id,
+          aggregate_type: "ReceivablePaymentSettlement",
+          aggregate_id: settlement.id,
+          event_type: "RECEIVABLE_FIDC_SETTLEMENT_REPORTED",
+          idempotency_key: "#{settlement.id}:fdic_settlement_report"
+        )
+        assert_equal settlement.id, fdic_outbox.payload["settlement_id"]
+        assert_equal bundle[:receivable].id, fdic_outbox.payload["receivable_id"]
+        assert_equal settlement.fdic_amount.to_d, BigDecimal(fdic_outbox.payload["amount"])
+        assert_equal "SETTLEMENT_REPORT", fdic_outbox.payload["operation_kind"]
+        assert_equal bundle[:receivable].debtor_party_id, fdic_outbox.payload.dig("receivable_origin", "hospital_party_id")
+
         anticipation_request.reload
         assert_equal "SETTLED", anticipation_request.status
       end
@@ -161,6 +174,11 @@ module Receivables
           tenant_id: @tenant.id,
           aggregate_id: settlement.id,
           event_type: "RECEIVABLE_ESCROW_EXCESS_PAYOUT_REQUESTED"
+        ).count
+        assert_equal 1, OutboxEvent.where(
+          tenant_id: @tenant.id,
+          aggregate_id: settlement.id,
+          event_type: "RECEIVABLE_FIDC_SETTLEMENT_REPORTED"
         ).count
       end
     end

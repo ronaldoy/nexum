@@ -19,6 +19,7 @@ class AnticipationRequest < ApplicationRecord
   has_many :anticipation_request_events, dependent: :restrict_with_exception
   has_many :assignment_contracts, dependent: :restrict_with_exception
   has_many :escrow_payouts, dependent: :restrict_with_exception
+  has_many :fdic_operations, dependent: :restrict_with_exception
 
   validates :idempotency_key, presence: true
   validates :idempotency_key, uniqueness: { scope: :tenant_id }
