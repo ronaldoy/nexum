@@ -35,7 +35,11 @@ module ApplicationHelper
     "revoked" => "Revogado"
   }.freeze
 
-  def role_label(role)
+  def role_label(role, party: Current.user&.party)
+    return "FDIC" if party&.kind == "FIDC"
+    return "Organização Hospitalar" if hospital_organization_party?(party)
+    return "Hospital" if party&.kind == "HOSPITAL"
+
     ROLE_LABELS.fetch(role.to_s, role.to_s.humanize)
   end
 
@@ -56,5 +60,18 @@ module ApplicationHelper
   def status_label(value)
     key = value.to_s.downcase.strip.tr(" -", "__")
     STATUS_LABELS.fetch(key, key.tr("_", " ").capitalize)
+  end
+
+  private
+
+  def hospital_organization_party?(party)
+    return false if party.blank?
+    return false unless %w[LEGAL_ENTITY_PJ PLATFORM].include?(party.kind)
+
+    HospitalOwnership.where(
+      tenant_id: party.tenant_id,
+      organization_party_id: party.id,
+      active: true
+    ).exists?
   end
 end

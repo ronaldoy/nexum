@@ -70,6 +70,9 @@ module Api
         assert_equal "5.00", body.dig("data", "discount_amount")
         assert_equal "95.00", body.dig("data", "net_amount")
         assert_equal idempotency_key, body.dig("data", "idempotency_key")
+        provenance = body.dig("data", "receivable_provenance")
+        assert_equal @tenant_bundle[:debtor].legal_name, provenance.dig("hospital", "legal_name")
+        assert_equal @tenant_bundle[:creditor].legal_name, provenance.dig("owning_organization", "legal_name")
 
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
           created = AnticipationRequest.find(body.dig("data", "id"))
@@ -77,6 +80,42 @@ module Api
           assert_equal 1, ReceivableEvent.where(receivable_id: created.receivable_id, event_type: "ANTICIPATION_REQUESTED").count
           assert_equal 1, ActionIpLog.where(target_id: created.id, action_type: "ANTICIPATION_REQUEST_CREATED").count
         end
+      end
+
+      test "exposes hospital ownership provenance for fdic funding visibility" do
+        custom_bundle = nil
+        owning_org = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          custom_bundle = create_receivable_bundle!(tenant: @tenant, suffix: "owned-provenance")
+          owning_org = Party.create!(
+            tenant: @tenant,
+            kind: "LEGAL_ENTITY_PJ",
+            legal_name: "Grupo Hospitalar Provenance",
+            document_number: valid_cnpj_from_seed("owned-provenance-org")
+          )
+          HospitalOwnership.create!(
+            tenant: @tenant,
+            organization_party: owning_org,
+            hospital_party: custom_bundle[:debtor]
+          )
+        end
+
+        payload = create_payload(
+          receivable_id: custom_bundle[:receivable].id,
+          receivable_allocation_id: custom_bundle[:allocation].id,
+          requester_party_id: custom_bundle[:beneficiary].id
+        )
+
+        post api_v1_anticipation_requests_path,
+          headers: authorization_headers(@write_token, idempotency_key: "idem-owned-provenance-001"),
+          params: payload,
+          as: :json
+
+        assert_response :created
+        provenance = response.parsed_body.dig("data", "receivable_provenance")
+        assert_equal custom_bundle[:debtor].legal_name, provenance.dig("hospital", "legal_name")
+        assert_equal owning_org.legal_name, provenance.dig("owning_organization", "legal_name")
       end
 
       test "replays same idempotency key with same payload safely" do

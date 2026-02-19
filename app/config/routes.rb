@@ -9,6 +9,7 @@ Rails.application.routes.draw do
 
   namespace :api do
     namespace :v1 do
+      resources :hospital_organizations, only: %i[index]
       resources :receivables, only: %i[index show] do
         get :history, on: :member
         post :settle_payment, on: :member

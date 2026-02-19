@@ -1,4 +1,6 @@
 class DashboardController < ApplicationController
+  include ReceivableProvenancePayload
+
   STAGE_DEFINITIONS = [
     { key: :performed, label: "Recebível performado" },
     { key: :requested, label: "Antecipação solicitada" },
@@ -80,6 +82,7 @@ class DashboardController < ApplicationController
 
   def resolve_persona
     return :fdic if Current.user&.party&.kind == "FIDC"
+    return :hospital if hospital_actor_party?
 
     case Current.user&.role
     when "hospital_admin"
@@ -108,7 +111,10 @@ class DashboardController < ApplicationController
 
     case @persona
     when :hospital
-      base.where(debtor_party_id: current_party_id)
+      managed_hospital_ids = managed_hospital_party_ids
+      return base.none if managed_hospital_ids.empty?
+
+      base.where(debtor_party_id: managed_hospital_ids)
     when :supplier
       base.where(
         "creditor_party_id = :party_id OR beneficiary_party_id = :party_id",
@@ -334,11 +340,14 @@ class DashboardController < ApplicationController
     @anticipation_requests.map do |anticipation|
       receivable = anticipation.receivable
       exposure_metrics = calculator.call(anticipation_request: anticipation, due_at: receivable&.due_at)
+      provenance = receivable_provenance_payload(receivable)
 
       {
         anticipation: anticipation,
         receivable: receivable,
         requester: anticipation.requester_party,
+        source_hospital_name: provenance&.dig(:hospital, :legal_name),
+        source_organization_name: provenance&.dig(:owning_organization, :legal_name),
         obligation: exposure_metrics.contractual_obligation,
         exposure: exposure_metrics.effective_contractual_exposure,
         term_days: exposure_metrics.term_business_days,
@@ -349,6 +358,34 @@ class DashboardController < ApplicationController
                     end
       }
     end
+  end
+
+  def managed_hospital_party_ids
+    return [] if current_party_id.blank?
+
+    own_hospital_party_ids = Party.where(
+      tenant_id: current_tenant_id,
+      id: current_party_id,
+      kind: "HOSPITAL"
+    ).pluck(:id)
+    owned_hospital_party_ids = HospitalOwnership.where(
+      tenant_id: current_tenant_id,
+      organization_party_id: current_party_id,
+      active: true
+    ).pluck(:hospital_party_id)
+
+    (own_hospital_party_ids + owned_hospital_party_ids).uniq
+  end
+
+  def hospital_actor_party?
+    return false if current_party_id.blank?
+    return true if Party.where(tenant_id: current_tenant_id, id: current_party_id, kind: "HOSPITAL").exists?
+
+    HospitalOwnership.where(
+      tenant_id: current_tenant_id,
+      organization_party_id: current_party_id,
+      active: true
+    ).exists?
   end
 
   def load_daily_statistics

@@ -14,6 +14,9 @@ class Tenant < ApplicationRecord
   has_many :user_roles, dependent: :restrict_with_exception
   has_many :api_access_tokens, dependent: :restrict_with_exception
   has_many :assignment_contracts, dependent: :restrict_with_exception
+  has_many :hospital_ownerships, dependent: :restrict_with_exception
+  has_many :hospital_parties, -> { where(kind: "HOSPITAL") }, class_name: "Party"
+  has_many :organization_parties, -> { where(kind: "LEGAL_ENTITY_PJ") }, class_name: "Party"
 
   validates :slug, presence: true, uniqueness: true
   validates :name, presence: true

@@ -15,7 +15,12 @@ class ApiAccessTokenTest < ActiveSupport::TestCase
         tenant: @tenant,
         user: @user,
         name: "Test Integration",
-        scopes: %w[receivables:read receivables:history]
+        scopes: %w[receivables:read receivables:history],
+        audit_context: {
+          actor_party_id: @user.party_id,
+          channel: "API",
+          request_id: "token-issue-test-request-id"
+        }
       )
     end
 
@@ -25,6 +30,16 @@ class ApiAccessTokenTest < ActiveSupport::TestCase
 
     assert_equal token_record.id, authenticated.id
     assert_equal %w[receivables:history receivables:read], token_record.scopes
+
+    with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+      assert_equal 1, ActionIpLog.where(
+        tenant_id: @tenant.id,
+        action_type: "API_ACCESS_TOKEN_ISSUED",
+        target_type: "ApiAccessToken",
+        target_id: token_record.id,
+        success: true
+      ).count
+    end
   end
 
   test "revoked token cannot authenticate" do
@@ -33,7 +48,13 @@ class ApiAccessTokenTest < ActiveSupport::TestCase
 
     with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
       token_record, raw_token = ApiAccessToken.issue!(tenant: @tenant, user: @user, name: "Revoked Token")
-      token_record.revoke!
+      token_record.revoke!(
+        audit_context: {
+          actor_party_id: @user.party_id,
+          channel: "API",
+          request_id: "token-revoke-test-request-id"
+        }
+      )
     end
 
     authenticated = with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
@@ -41,6 +62,16 @@ class ApiAccessTokenTest < ActiveSupport::TestCase
     end
 
     assert_nil authenticated
+
+    with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+      assert_equal 1, ActionIpLog.where(
+        tenant_id: @tenant.id,
+        action_type: "API_ACCESS_TOKEN_REVOKED",
+        target_type: "ApiAccessToken",
+        target_id: token_record.id,
+        success: true
+      ).count
+    end
   end
 
   test "rejects token when tenant prefix is tampered" do

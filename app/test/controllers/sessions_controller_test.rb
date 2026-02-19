@@ -16,6 +16,14 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to root_path
     assert cookies[:session_id]
     assert cookies[:session_tenant_id]
+
+    with_tenant_db_context(tenant_id: @user.tenant_id, actor_id: @user.id, role: @user.role) do
+      assert_equal 1, ActionIpLog.where(
+        tenant_id: @user.tenant_id,
+        action_type: "SESSION_AUTHENTICATED",
+        success: true
+      ).count
+    end
   end
 
   test "create sets hardened session cookie attributes" do
@@ -32,6 +40,14 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :redirect
     assert_nil cookies[:session_id]
+
+    with_tenant_db_context(tenant_id: @user.tenant_id, actor_id: @user.id, role: @user.role) do
+      assert_equal 1, ActionIpLog.where(
+        tenant_id: @user.tenant_id,
+        action_type: "SESSION_AUTHENTICATION_FAILED",
+        success: false
+      ).count
+    end
   end
 
   test "create with invalid tenant slug" do
@@ -70,6 +86,14 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :redirect
     assert_nil cookies[:session_id]
 
+    with_tenant_db_context(tenant_id: @user.tenant_id, actor_id: @user.id, role: @user.role) do
+      assert_equal 1, ActionIpLog.where(
+        tenant_id: @user.tenant_id,
+        action_type: "SESSION_MFA_FAILED",
+        success: false
+      ).count
+    end
+
     post session_path, params: { tenant_slug: @user.tenant.slug, email_address: ops_user.email_address, password: "password", otp_code: mfa_code }
 
     assert_redirected_to root_path
@@ -83,6 +107,14 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to new_session_path
     assert_empty cookies[:session_id]
+
+    with_tenant_db_context(tenant_id: @user.tenant_id, actor_id: @user.id, role: @user.role) do
+      assert_equal 1, ActionIpLog.where(
+        tenant_id: @user.tenant_id,
+        action_type: "SESSION_TERMINATED",
+        success: true
+      ).count
+    end
   end
 
   test "create accepts same-origin request when forgery protection is enabled" do

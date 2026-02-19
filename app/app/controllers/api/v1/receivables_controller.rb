@@ -9,9 +9,14 @@ module Api
         attach_document: "receivables:documents:write"
       )
 
+      include ReceivableProvenancePayload
+
       def index
         limit = params.fetch(:limit, 50).to_i.clamp(1, 200)
-        receivables = tenant_receivables.includes(:receivable_kind).order(due_at: :asc).limit(limit)
+        receivables = apply_hospital_filter(tenant_receivables)
+          .includes(:receivable_kind, :debtor_party, :creditor_party)
+          .order(due_at: :asc)
+          .limit(limit)
 
         render json: {
           data: receivables.map { |receivable| receivable_payload(receivable) },
@@ -23,13 +28,17 @@ module Api
       end
 
       def show
-        receivable = tenant_receivables.includes(:receivable_kind).find(params[:id])
+        receivable = tenant_receivables
+          .includes(:receivable_kind, :debtor_party, :creditor_party)
+          .find(params[:id])
 
         render json: { data: receivable_payload(receivable) }
       end
 
       def history
-        receivable = tenant_receivables.find(params[:id])
+        receivable = tenant_receivables
+          .includes(:receivable_kind, :debtor_party, :creditor_party)
+          .find(params[:id])
         events = receivable.receivable_events.order(sequence: :asc)
         documents = receivable.documents.includes(:document_events).order(signed_at: :asc)
         settlements = receivable.receivable_payment_settlements.includes(:anticipation_settlement_entries).order(paid_at: :asc)
@@ -108,7 +117,8 @@ module Api
           currency: receivable.currency,
           performed_at: receivable.performed_at&.iso8601,
           due_at: receivable.due_at&.iso8601,
-          cutoff_at: receivable.cutoff_at&.iso8601
+          cutoff_at: receivable.cutoff_at&.iso8601,
+          provenance: receivable_provenance_payload(receivable)
         }
       end
 
@@ -251,6 +261,14 @@ module Api
           OR receivables.beneficiary_party_id = :actor_party_id
           OR EXISTS (
             SELECT 1
+            FROM hospital_ownerships
+            WHERE hospital_ownerships.tenant_id = receivables.tenant_id
+              AND hospital_ownerships.organization_party_id = :actor_party_id
+              AND hospital_ownerships.hospital_party_id = receivables.debtor_party_id
+              AND hospital_ownerships.active = TRUE
+          )
+          OR EXISTS (
+            SELECT 1
             FROM receivable_allocations
             WHERE receivable_allocations.tenant_id = receivables.tenant_id
               AND receivable_allocations.receivable_id = receivables.id
@@ -262,6 +280,13 @@ module Api
         SQL
 
         scope.where(visibility_sql, actor_party_id: actor_party_id)
+      end
+
+      def apply_hospital_filter(scope)
+        hospital_party_id = params[:hospital_party_id].presence
+        return scope if hospital_party_id.blank?
+
+        scope.where(debtor_party_id: hospital_party_id)
       end
 
       def enforce_string_payload_type!(payload, key)

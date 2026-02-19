@@ -2,6 +2,8 @@
 
 Rails application for receivables anticipation platform.
 
+For full architecture, domain flow, and demo walkthrough see root `README.md`.
+
 ## Stack
 - Rails 8.2 edge during build (pin stable 8.2.x before launch)
 - PostgreSQL 18.1
@@ -14,11 +16,11 @@ Rails application for receivables anticipation platform.
 2. Ensure local databases exist:
    - `./bin/db-bootstrap`
 3. Install gems:
-   - `cd app && rv bundle install`
+   - `cd app && rv clean-install`
 4. Run migrations:
-   - `cd app && rv bundle exec bin/rails db:migrate`
+   - `cd app && rv ruby run -- -S bin/rails db:migrate`
 5. Start app:
-   - `cd app && rv bundle exec bin/rails server`
+   - `cd app && rv ruby run -- -S bin/rails server`
 
 ## Key Architecture Rules
 - Financial amounts/rates:
@@ -39,10 +41,19 @@ Rails application for receivables anticipation platform.
 - `GET /health` liveness check.
 - `GET /ready` readiness check (database connectivity).
 - `GET /api/v1/receivables` list receivables scoped by tenant context.
+- `GET /api/v1/hospital_organizations` list organizations and managed hospitals.
 - `GET /api/v1/receivables/:id` fetch single receivable.
 - `GET /api/v1/receivables/:id/history` full append-only timeline (events + document events).
 - `GET /docs/openapi/v1` serves OpenAPI v1 contract.
 - OpenAPI source file: `../docs/openapi/v1.yaml`.
+- Generated API reference: `../docs/api_reference.md`.
+- Generated DB model docs: `../docs/database_model.md`.
+
+## Docs Generation
+
+From `app/`:
+
+- `rv ruby run -- script/generate_documentation.rb`
 
 ## Document Storage (ActiveStorage + GCS)
 - Document evidence uses ActiveStorage attachments on `Document` and `KycDocument`.

@@ -12,6 +12,7 @@ servers:
 tags:
   - name: Health
   - name: Receivables
+  - name: Organizations
   - name: Anticipation
   - name: KYC
 paths:
@@ -50,6 +51,9 @@ paths:
       tags: [Receivables]
       summary: List receivables
       operationId: listReceivables
+      parameters:
+        - $ref: "#/components/parameters/ReceivablesLimit"
+        - $ref: "#/components/parameters/HospitalPartyId"
       responses:
         "200":
           description: Receivable collection.
@@ -63,6 +67,43 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/Receivable"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+  /api/v1/hospital_organizations:
+    get:
+      tags: [Organizations]
+      summary: List hospital organizations and managed hospitals
+      operationId: listHospitalOrganizations
+      responses:
+        "200":
+          description: Hospital organization links visible to current actor.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [organization, hospitals]
+                      properties:
+                        organization:
+                          $ref: "#/components/schemas/PartyReference"
+                        hospitals:
+                          type: array
+                          items:
+                            $ref: "#/components/schemas/PartyReference"
+                  meta:
+                    type: object
+                    required: [count]
+                    properties:
+                      count:
+                        type: integer
+                        minimum: 0
         "401":
           $ref: "#/components/responses/UnauthorizedError"
         "403":
@@ -213,6 +254,13 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      receivable_provenance:
+                        $ref: "#/components/schemas/ReceivableProvenance"
+                    additionalProperties: true
                 additionalProperties: true
         "400":
           $ref: "#/components/responses/BadRequestError"
@@ -281,6 +329,13 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      receivable_provenance:
+                        $ref: "#/components/schemas/ReceivableProvenance"
+                    additionalProperties: true
                 additionalProperties: true
         "400":
           $ref: "#/components/responses/BadRequestError"
@@ -407,6 +462,23 @@ components:
       schema:
         type: string
         format: uuid
+    ReceivablesLimit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+      description: Maximum number of receivables returned. Defaults to 50.
+    HospitalPartyId:
+      name: hospital_party_id
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: Optional debtor hospital filter for multi-hospital organization views.
   responses:
     BadRequestError:
       description: Request syntax or payload shape is invalid.
@@ -491,6 +563,34 @@ components:
         currency:
           type: string
           enum: [BRL]
+        provenance:
+          $ref: "#/components/schemas/ReceivableProvenance"
+    PartyReference:
+      type: object
+      required: [id, kind, legal_name, document_type, document_number]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [HOSPITAL, SUPPLIER, PHYSICIAN_PF, LEGAL_ENTITY_PJ, FIDC, PLATFORM]
+        legal_name:
+          type: string
+        document_type:
+          type: string
+          enum: [CPF, CNPJ]
+        document_number:
+          type: string
+        external_reference:
+          type: string
+    ReceivableProvenance:
+      type: object
+      properties:
+        hospital:
+          $ref: "#/components/schemas/PartyReference"
+        owning_organization:
+          $ref: "#/components/schemas/PartyReference"
     HistoryItem:
       type: object
       required: [event_type, occurred_at]

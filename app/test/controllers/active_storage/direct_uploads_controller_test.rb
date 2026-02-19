@@ -26,7 +26,7 @@ class ActiveStorage::DirectUploadsControllerTest < ActionDispatch::IntegrationTe
 
   test "creates direct upload with bearer token and tenant metadata" do
     post rails_direct_uploads_path,
-      headers: { "Authorization" => "Bearer #{@token}" },
+      headers: authorization_headers("direct-upload-001"),
       params: valid_blob_payload,
       as: :json
 
@@ -45,7 +45,7 @@ class ActiveStorage::DirectUploadsControllerTest < ActionDispatch::IntegrationTe
     }
 
     post rails_direct_uploads_path,
-      headers: { "Authorization" => "Bearer #{@token}" },
+      headers: authorization_headers("direct-upload-tenant-spoof-001"),
       params: payload,
       as: :json
 
@@ -60,12 +60,60 @@ class ActiveStorage::DirectUploadsControllerTest < ActionDispatch::IntegrationTe
     oversized[:blob][:byte_size] = 50.megabytes
 
     post rails_direct_uploads_path,
-      headers: { "Authorization" => "Bearer #{@token}" },
+      headers: authorization_headers("direct-upload-oversized-001"),
       params: oversized,
       as: :json
 
     assert_response :content_too_large
     assert_equal "file_too_large", response.parsed_body.dig("error", "code")
+  end
+
+  test "requires idempotency key for direct uploads" do
+    post rails_direct_uploads_path,
+      headers: { "Authorization" => "Bearer #{@token}" },
+      params: valid_blob_payload,
+      as: :json
+
+    assert_response :unprocessable_entity
+    assert_equal "missing_idempotency_key", response.parsed_body.dig("error", "code")
+  end
+
+  test "replays direct upload creation with same idempotency key and payload" do
+    post rails_direct_uploads_path,
+      headers: authorization_headers("direct-upload-replay-001"),
+      params: valid_blob_payload,
+      as: :json
+    assert_response :success
+    first_signed_id = response.parsed_body["signed_id"]
+    assert_equal false, response.parsed_body["replayed"]
+
+    post rails_direct_uploads_path,
+      headers: authorization_headers("direct-upload-replay-001"),
+      params: valid_blob_payload,
+      as: :json
+
+    assert_response :success
+    assert_equal true, response.parsed_body["replayed"]
+    assert_equal first_signed_id, response.parsed_body["signed_id"]
+  end
+
+  test "rejects same idempotency key with different payload" do
+    post rails_direct_uploads_path,
+      headers: authorization_headers("direct-upload-conflict-001"),
+      params: valid_blob_payload,
+      as: :json
+    assert_response :success
+
+    changed_payload = valid_blob_payload.deep_dup
+    changed_payload[:blob][:byte_size] = 2048
+
+    post rails_direct_uploads_path,
+      headers: authorization_headers("direct-upload-conflict-001"),
+      params: changed_payload,
+      as: :json
+
+    assert_response :conflict
+    assert_equal "idempotency_key_reused_with_different_payload", response.parsed_body.dig("error", "code")
   end
 
   private
@@ -80,5 +128,11 @@ class ActiveStorage::DirectUploadsControllerTest < ActionDispatch::IntegrationTe
         metadata: {}
       }
     }
+  end
+
+  def authorization_headers(idempotency_key = nil)
+    headers = { "Authorization" => "Bearer #{@token}" }
+    headers["Idempotency-Key"] = idempotency_key if idempotency_key.present?
+    headers
   end
 end

@@ -6,6 +6,7 @@ module DemoSeeds
   module_function
 
   PASSWORD = "Nexum@2026"
+  SEED_VERSION = "v2"
 
   def run!
     puts "== Nexum Capital demo seed =="
@@ -23,7 +24,7 @@ module DemoSeeds
     seed_secondary_tenant!(secondary_tenant)
 
     puts "Dados de demonstração prontos."
-    puts "Login Hospital: hospital_admin@demo.nexum.capital"
+    puts "Login Organização Hospitalar: hospital_org_user@demo.nexum.capital"
     puts "Login Fornecedor: supplier_user@demo.nexum.capital"
     puts "Login Médico: physician_user@demo.nexum.capital"
     puts "Login FDIC: fdic_user@demo.nexum.capital"
@@ -33,6 +34,7 @@ module DemoSeeds
   def seed_tenant!(tenant)
     with_tenant_context(tenant_id: tenant.id, role: "seed_runner") do
       parties = seed_parties!(tenant)
+      seed_hospital_organizations!(tenant, parties)
       kinds = seed_receivable_kinds!(tenant)
       seed_physicians!(tenant, parties)
       seed_physician_memberships!(tenant, parties)
@@ -109,14 +111,41 @@ module DemoSeeds
   end
 
   def seed_parties!(tenant)
+    hospital_main = upsert_party!(
+      tenant: tenant,
+      kind: "HOSPITAL",
+      legal_name: "Hospital Santa Aurora",
+      display_name: "Hospital Santa Aurora",
+      seed_key: "hospital-main"
+    )
+    hospital_leste = upsert_party!(
+      tenant: tenant,
+      kind: "HOSPITAL",
+      legal_name: "Hospital Santa Aurora Unidade Leste",
+      display_name: "Hospital Aurora Leste",
+      seed_key: "hospital-east"
+    )
+    hospital_oeste = upsert_party!(
+      tenant: tenant,
+      kind: "HOSPITAL",
+      legal_name: "Hospital Santa Aurora Unidade Oeste",
+      display_name: "Hospital Aurora Oeste",
+      seed_key: "hospital-west"
+    )
+    hospital_org = upsert_party!(
+      tenant: tenant,
+      kind: "LEGAL_ENTITY_PJ",
+      legal_name: "Grupo Hospitalar Santa Aurora S.A.",
+      display_name: "Grupo Hospitalar Santa Aurora",
+      seed_key: "hospital-organization-main"
+    )
+
     {
-      hospital: upsert_party!(
-        tenant: tenant,
-        kind: "HOSPITAL",
-        legal_name: "Hospital Santa Aurora",
-        display_name: "Hospital Santa Aurora",
-        seed_key: "hospital-main"
-      ),
+      hospital: hospital_main,
+      hospital_main: hospital_main,
+      hospital_leste: hospital_leste,
+      hospital_oeste: hospital_oeste,
+      hospital_org: hospital_org,
       supplier_alpha: upsert_party!(
         tenant: tenant,
         kind: "SUPPLIER",
@@ -184,6 +213,25 @@ module DemoSeeds
     }
   end
 
+  def seed_hospital_organizations!(tenant, parties)
+    organization = parties.fetch(:hospital_org)
+    [ :hospital_main, :hospital_leste, :hospital_oeste ].each do |hospital_key|
+      ownership = HospitalOwnership.find_or_initialize_by(
+        tenant: tenant,
+        organization_party: organization,
+        hospital_party: parties.fetch(hospital_key)
+      )
+      ownership.assign_attributes(
+        active: true,
+        metadata: {
+          "seed" => true,
+          "seed_key" => "hospital-org-#{hospital_key}"
+        }
+      )
+      ownership.save!
+    end
+  end
+
   def seed_physicians!(tenant, parties)
     [
       [ parties.fetch(:physician_ana), "Dra. Ana Carolina Mendes", "ana.mendes@demo.nexum.capital", "11987650001", "12345", "SP" ],
@@ -241,10 +289,11 @@ module DemoSeeds
 
   def seed_users!(tenant, parties)
     [
-      [ "hospital_admin@demo.nexum.capital", "hospital_admin", parties.fetch(:hospital) ],
+      [ "hospital_org_user@demo.nexum.capital", "supplier_user", parties.fetch(:hospital_org) ],
+      [ "hospital_unit_user@demo.nexum.capital", "supplier_user", parties.fetch(:hospital_main) ],
       [ "supplier_user@demo.nexum.capital", "supplier_user", parties.fetch(:supplier_alpha) ],
       [ "physician_user@demo.nexum.capital", "physician_pf_user", parties.fetch(:physician_ana) ],
-      [ "fdic_user@demo.nexum.capital", "ops_admin", parties.fetch(:fdic) ]
+      [ "fdic_user@demo.nexum.capital", "supplier_user", parties.fetch(:fdic) ]
     ].each do |email, role, party|
       user = User.find_or_initialize_by(email_address: email)
       user.tenant = tenant
@@ -258,18 +307,18 @@ module DemoSeeds
 
   def build_receivable_scenarios!(tenant, parties, kinds)
     scenarios = [
-      { code: "SUP-001", kind: :supplier, owner: :supplier_alpha, gross: "18250.25", receivable_status: "PERFORMED" },
-      { code: "SUP-002", kind: :supplier, owner: :supplier_beta, gross: "23690.40", receivable_status: "ANTICIPATION_REQUESTED", anticipation_status: "REQUESTED" },
-      { code: "SUP-003", kind: :supplier, owner: :supplier_alpha, gross: "31420.10", receivable_status: "FUNDED", anticipation_status: "FUNDED" },
-      { code: "SUP-004", kind: :supplier, owner: :supplier_beta, gross: "17490.90", receivable_status: "SETTLED", anticipation_status: "SETTLED" },
-      { code: "SUP-005", kind: :supplier, owner: :supplier_alpha, gross: "40220.75", receivable_status: "ANTICIPATION_REQUESTED", anticipation_status: "APPROVED" },
-      { code: "SUP-006", kind: :supplier, owner: :supplier_beta, gross: "12990.15", receivable_status: "SETTLED", anticipation_status: "SETTLED" },
-      { code: "PHY-001", kind: :physician, physician: :physician_ana, gross: "9880.40", receivable_status: "ANTICIPATION_REQUESTED", anticipation_status: "REQUESTED" },
-      { code: "PHY-002", kind: :physician, physician: :physician_rafael, gross: "14330.55", receivable_status: "FUNDED", anticipation_status: "FUNDED" },
-      { code: "PHY-003", kind: :physician, physician: :physician_ana, gross: "11110.10", receivable_status: "SETTLED", anticipation_status: "SETTLED" },
-      { code: "PHY-004", kind: :physician, physician: :physician_rafael, gross: "20540.90", receivable_status: "SETTLED", anticipation_status: "SETTLED" },
-      { code: "PHY-005", kind: :physician, physician: :physician_ana, gross: "12320.60", receivable_status: "PERFORMED" },
-      { code: "PHY-006", kind: :physician, physician: :physician_rafael, gross: "16880.00", receivable_status: "ANTICIPATION_REQUESTED", anticipation_status: "APPROVED" }
+      { code: "SUP-001", kind: :supplier, hospital: :hospital_main, owner: :supplier_alpha, gross: "18250.25", receivable_status: "PERFORMED" },
+      { code: "SUP-002", kind: :supplier, hospital: :hospital_leste, owner: :supplier_beta, gross: "23690.40", receivable_status: "ANTICIPATION_REQUESTED", anticipation_status: "REQUESTED" },
+      { code: "SUP-003", kind: :supplier, hospital: :hospital_oeste, owner: :supplier_alpha, gross: "31420.10", receivable_status: "FUNDED", anticipation_status: "FUNDED" },
+      { code: "SUP-004", kind: :supplier, hospital: :hospital_main, owner: :supplier_beta, gross: "17490.90", receivable_status: "SETTLED", anticipation_status: "SETTLED" },
+      { code: "SUP-005", kind: :supplier, hospital: :hospital_leste, owner: :supplier_alpha, gross: "40220.75", receivable_status: "ANTICIPATION_REQUESTED", anticipation_status: "APPROVED" },
+      { code: "SUP-006", kind: :supplier, hospital: :hospital_oeste, owner: :supplier_beta, gross: "12990.15", receivable_status: "SETTLED", anticipation_status: "SETTLED" },
+      { code: "PHY-001", kind: :physician, hospital: :hospital_main, physician: :physician_ana, gross: "9880.40", receivable_status: "ANTICIPATION_REQUESTED", anticipation_status: "REQUESTED" },
+      { code: "PHY-002", kind: :physician, hospital: :hospital_leste, physician: :physician_rafael, gross: "14330.55", receivable_status: "FUNDED", anticipation_status: "FUNDED" },
+      { code: "PHY-003", kind: :physician, hospital: :hospital_oeste, physician: :physician_ana, gross: "11110.10", receivable_status: "SETTLED", anticipation_status: "SETTLED" },
+      { code: "PHY-004", kind: :physician, hospital: :hospital_main, physician: :physician_rafael, gross: "20540.90", receivable_status: "SETTLED", anticipation_status: "SETTLED" },
+      { code: "PHY-005", kind: :physician, hospital: :hospital_leste, physician: :physician_ana, gross: "12320.60", receivable_status: "PERFORMED" },
+      { code: "PHY-006", kind: :physician, hospital: :hospital_oeste, physician: :physician_rafael, gross: "16880.00", receivable_status: "ANTICIPATION_REQUESTED", anticipation_status: "APPROVED" }
     ]
 
     scenarios.each_with_index do |scenario, index|
@@ -291,6 +340,7 @@ module DemoSeeds
     performed_at = BusinessCalendar.time_zone.now - (28 - index).days + 9.hours
     due_at = performed_at + (18 + (index % 7)).days
     cutoff_at = BusinessCalendar.cutoff_at(performed_at.to_date)
+    debtor_party = parties.fetch(scenario.fetch(:hospital, :hospital_main))
 
     if kind_type == :supplier
       creditor_party = parties.fetch(scenario.fetch(:owner))
@@ -310,7 +360,7 @@ module DemoSeeds
     )
     receivable.assign_attributes(
       receivable_kind: kind,
-      debtor_party: parties.fetch(:hospital),
+      debtor_party: debtor_party,
       creditor_party: creditor_party,
       beneficiary_party: beneficiary_party,
       gross_amount: gross_amount,
@@ -375,19 +425,21 @@ module DemoSeeds
   end
 
   def build_anticipation!(tenant:, receivable:, allocation:, requester_party:, scenario_code:, requested_at:, status:)
+    idempotency_key = versioned_seed_key("seed-anticipation-#{scenario_code.downcase}")
+    existing = AnticipationRequest.find_by(tenant: tenant, idempotency_key: idempotency_key)
+    return existing if existing.present?
+
     requested_amount = money(receivable.gross_amount.to_d * BigDecimal("0.82"))
     discount_rate = rate(BigDecimal("0.0385") + BigDecimal((scenario_code.hash % 7).to_s) / BigDecimal("1000"))
     discount_amount = money(requested_amount * discount_rate)
     net_amount = money(requested_amount - discount_amount)
 
-    anticipation = AnticipationRequest.find_or_initialize_by(
-      tenant: tenant,
-      idempotency_key: "seed-anticipation-#{scenario_code.downcase}"
-    )
-    anticipation.assign_attributes(
+    anticipation = AnticipationRequest.create!(
       receivable: receivable,
       receivable_allocation: allocation,
       requester_party: requester_party,
+      tenant: tenant,
+      idempotency_key: idempotency_key,
       requested_amount: requested_amount,
       discount_rate: discount_rate,
       discount_amount: discount_amount,
@@ -400,10 +452,10 @@ module DemoSeeds
       settled_at: status == "SETTLED" ? requested_at + 2.days : nil,
       metadata: {
         "seed_scenario" => scenario_code,
-        "requested_by" => requester_party.kind
+        "requested_by" => requester_party.kind,
+        "seed_version" => SEED_VERSION
       }
     )
-    anticipation.save!
     anticipation
   end
 
@@ -440,7 +492,8 @@ module DemoSeeds
   end
 
   def build_signed_document!(tenant:, receivable:, actor_party:, scenario_code:, signed_at:)
-    document = Document.find_or_initialize_by(id: seed_uuid("document-#{scenario_code.downcase}"))
+    document_id = seed_uuid(versioned_seed_key("document-#{scenario_code.downcase}"))
+    document = Document.find_or_initialize_by(id: document_id)
     document.assign_attributes(
       tenant: tenant,
       receivable: receivable,
@@ -448,18 +501,22 @@ module DemoSeeds
       document_type: "ASSIGNMENT_CONTRACT",
       signature_method: "OWN_PLATFORM_CONFIRMATION",
       status: "SIGNED",
-      sha256: Digest::SHA256.hexdigest("document-#{scenario_code.downcase}"),
-      storage_key: "contracts/#{scenario_code.downcase}.pdf",
+      sha256: Digest::SHA256.hexdigest(versioned_seed_key("document-#{scenario_code.downcase}")),
+      storage_key: "contracts/#{versioned_seed_key(scenario_code.downcase)}.pdf",
       signed_at: signed_at,
       metadata: {
         "seed_scenario" => scenario_code,
-        "language" => "pt-BR"
+        "language" => "pt-BR",
+        "seed_version" => SEED_VERSION
       }
     )
     document.save!
 
-    event = DocumentEvent.find_or_initialize_by(id: seed_uuid("document-event-#{scenario_code.downcase}"))
-    event.assign_attributes(
+    event_id = seed_uuid(versioned_seed_key("document-event-#{scenario_code.downcase}"))
+    return if DocumentEvent.exists?(id: event_id)
+
+    DocumentEvent.create!(
+      id: event_id,
       tenant: tenant,
       document: document,
       receivable: receivable,
@@ -469,13 +526,18 @@ module DemoSeeds
       request_id: "seed-doc-#{scenario_code.downcase}",
       payload: {
         "seed_scenario" => scenario_code,
-        "document_type" => document.document_type
+        "document_type" => document.document_type,
+        "seed_version" => SEED_VERSION
       }
     )
-    event.save!
   end
 
   def build_settlement!(tenant:, receivable:, allocation:, anticipation:, scenario_code:)
+    idempotency_key = versioned_seed_key("seed-settlement-#{scenario_code.downcase}")
+    payment_reference = versioned_seed_key("seed-payment-#{scenario_code.downcase}")
+    existing = ReceivablePaymentSettlement.find_by(tenant: tenant, idempotency_key: idempotency_key)
+    return existing if existing.present?
+
     paid_at = receivable.due_at - 1.day
     paid_amount = receivable.gross_amount.to_d
 
@@ -489,13 +551,11 @@ module DemoSeeds
     beneficiary_amount = money(beneficiary_pool.to_d - fdic_amount.to_d)
     fdic_after = money(fdic_before.to_d - fdic_amount.to_d)
 
-    settlement = ReceivablePaymentSettlement.find_or_initialize_by(
-      tenant: tenant,
-      payment_reference: "seed-payment-#{scenario_code.downcase}"
-    )
-    settlement.assign_attributes(
+    settlement = ReceivablePaymentSettlement.create!(
       receivable: receivable,
       receivable_allocation: allocation,
+      tenant: tenant,
+      payment_reference: payment_reference,
       paid_amount: money(paid_amount),
       cnpj_amount: cnpj_amount,
       fdic_amount: fdic_amount,
@@ -504,12 +564,12 @@ module DemoSeeds
       fdic_balance_after: fdic_after,
       paid_at: paid_at,
       request_id: "seed-settlement-#{scenario_code.downcase}",
-      idempotency_key: "seed-settlement-#{scenario_code.downcase}",
+      idempotency_key: idempotency_key,
       metadata: {
-        "seed_scenario" => scenario_code
+        "seed_scenario" => scenario_code,
+        "seed_version" => SEED_VERSION
       }
     )
-    settlement.save!
 
     if anticipation && fdic_amount.to_d.positive?
       entry = AnticipationSettlementEntry.find_or_initialize_by(id: seed_uuid("settlement-entry-#{scenario_code.downcase}"))
@@ -698,6 +758,10 @@ module DemoSeeds
       hex[16, 4],
       hex[20, 12]
     ].join("-")
+  end
+
+  def versioned_seed_key(key)
+    "#{key}-#{SEED_VERSION}"
   end
 
   def with_tenant_context(tenant_id:, actor_id: nil, role: nil)

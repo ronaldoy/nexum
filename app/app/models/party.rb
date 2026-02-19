@@ -21,6 +21,18 @@ class Party < ApplicationRecord
   has_many :users, dependent: :restrict_with_exception
   has_many :assignment_contracts_as_assignor, class_name: "AssignmentContract", foreign_key: :assignor_party_id, dependent: :restrict_with_exception
   has_many :assignment_contracts_as_assignee, class_name: "AssignmentContract", foreign_key: :assignee_party_id, dependent: :restrict_with_exception
+  has_many :owned_hospital_ownerships,
+    class_name: "HospitalOwnership",
+    foreign_key: :organization_party_id,
+    inverse_of: :organization_party,
+    dependent: :restrict_with_exception
+  has_many :hospital_ownerships,
+    class_name: "HospitalOwnership",
+    foreign_key: :hospital_party_id,
+    inverse_of: :hospital_party,
+    dependent: :restrict_with_exception
+  has_many :owned_hospitals, through: :owned_hospital_ownerships, source: :hospital_party
+  has_many :owning_organizations, through: :hospital_ownerships, source: :organization_party
 
   before_validation :normalize_document_number
   before_validation :normalize_document_type

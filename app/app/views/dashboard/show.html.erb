@@ -59,6 +59,7 @@
         <thead>
           <tr>
             <th>Referência</th>
+            <th>Hospital de origem</th>
             <th>Tipo</th>
             <th>Valor bruto</th>
             <th>Status atual</th>
@@ -73,6 +74,7 @@
             <% receivable = row[:receivable] %>
             <tr>
               <td><%= receivable.external_reference || receivable.id.first(8) %></td>
+              <td><%= receivable.debtor_party&.legal_name %></td>
               <td><%= receivable.receivable_kind&.name %></td>
               <td><%= format_brl(receivable.gross_amount) %></td>
               <td><span class="status-pill"><%= status_label(receivable.status) %></span></td>
@@ -152,6 +154,8 @@
             <th>Desconto</th>
             <th>Líquido</th>
             <% if fdic_persona? %>
+              <th>Hospital de origem</th>
+              <th>Organização de origem</th>
               <th>Exposição FDIC</th>
               <th>Prazo útil</th>
               <th>Retorno</th>
@@ -170,6 +174,8 @@
                 <td><%= format_brl(anticipation.requested_amount) %></td>
                 <td><%= format_brl(anticipation.discount_amount) %></td>
                 <td><%= format_brl(anticipation.net_amount) %></td>
+                <td><%= row[:source_hospital_name] || "Não informado" %></td>
+                <td><%= row[:source_organization_name] || "Não informado" %></td>
                 <td><%= format_brl(row[:exposure]) %></td>
                 <td><%= row[:term_days] %> dias úteis</td>
                 <td><%= format_percentage(row[:yield_rate]) %></td>

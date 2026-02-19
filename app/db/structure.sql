@@ -669,6 +669,25 @@ ALTER TABLE ONLY public.documents FORCE ROW LEVEL SECURITY;
 
 
 --
+-- Name: hospital_ownerships; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.hospital_ownerships (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    organization_party_id uuid NOT NULL,
+    hospital_party_id uuid NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT hospital_ownerships_distinct_parties_check CHECK ((organization_party_id <> hospital_party_id))
+);
+
+ALTER TABLE ONLY public.hospital_ownerships FORCE ROW LEVEL SECURITY;
+
+
+--
 -- Name: kyc_documents; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -810,6 +829,30 @@ CREATE TABLE public.ledger_transactions (
 );
 
 ALTER TABLE ONLY public.ledger_transactions FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: outbox_dispatch_attempts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.outbox_dispatch_attempts (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    outbox_event_id uuid NOT NULL,
+    attempt_number integer NOT NULL,
+    status character varying NOT NULL,
+    occurred_at timestamp(6) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    next_attempt_at timestamp(6) without time zone,
+    error_code character varying,
+    error_message character varying,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT outbox_dispatch_attempts_attempt_number_check CHECK ((attempt_number > 0)),
+    CONSTRAINT outbox_dispatch_attempts_status_check CHECK (((status)::text = ANY ((ARRAY['SENT'::character varying, 'RETRY_SCHEDULED'::character varying, 'DEAD_LETTER'::character varying])::text[])))
+);
+
+ALTER TABLE ONLY public.outbox_dispatch_attempts FORCE ROW LEVEL SECURITY;
 
 
 --
@@ -1401,6 +1444,14 @@ ALTER TABLE ONLY public.documents
 
 
 --
+-- Name: hospital_ownerships hospital_ownerships_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.hospital_ownerships
+    ADD CONSTRAINT hospital_ownerships_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: kyc_documents kyc_documents_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1438,6 +1489,14 @@ ALTER TABLE ONLY public.ledger_entries
 
 ALTER TABLE ONLY public.ledger_transactions
     ADD CONSTRAINT ledger_transactions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: outbox_dispatch_attempts outbox_dispatch_attempts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.outbox_dispatch_attempts
+    ADD CONSTRAINT outbox_dispatch_attempts_pkey PRIMARY KEY (id);
 
 
 --
@@ -1851,6 +1910,13 @@ CREATE UNIQUE INDEX index_active_storage_blobs_on_key ON public.active_storage_b
 
 
 --
+-- Name: index_active_storage_blobs_on_tenant_direct_upload_idempotency; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_active_storage_blobs_on_tenant_direct_upload_idempotency ON public.active_storage_blobs USING btree (public.app_active_storage_blob_tenant_id(metadata), ((public.app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_idempotency_key'::text))) WHERE ((public.app_active_storage_blob_tenant_id(metadata) IS NOT NULL) AND (COALESCE((public.app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_idempotency_key'::text), ''::text) <> ''::text));
+
+
+--
 -- Name: index_active_storage_variant_records_uniqueness; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2103,6 +2169,41 @@ CREATE INDEX index_documents_on_tenant_receivable ON public.documents USING btre
 
 
 --
+-- Name: index_hospital_ownerships_on_hospital_party_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_hospital_ownerships_on_hospital_party_id ON public.hospital_ownerships USING btree (hospital_party_id);
+
+
+--
+-- Name: index_hospital_ownerships_on_organization_party_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_hospital_ownerships_on_organization_party_id ON public.hospital_ownerships USING btree (organization_party_id);
+
+
+--
+-- Name: index_hospital_ownerships_on_tenant_active_hospital; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_hospital_ownerships_on_tenant_active_hospital ON public.hospital_ownerships USING btree (tenant_id, hospital_party_id) WHERE (active = true);
+
+
+--
+-- Name: index_hospital_ownerships_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_hospital_ownerships_on_tenant_id ON public.hospital_ownerships USING btree (tenant_id);
+
+
+--
+-- Name: index_hospital_ownerships_on_tenant_org_hospital; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_hospital_ownerships_on_tenant_org_hospital ON public.hospital_ownerships USING btree (tenant_id, organization_party_id, hospital_party_id);
+
+
+--
 -- Name: index_kyc_documents_on_kyc_profile_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2212,6 +2313,41 @@ CREATE INDEX index_ledger_transactions_on_receivable_id ON public.ledger_transac
 --
 
 CREATE INDEX index_ledger_transactions_on_tenant_id ON public.ledger_transactions USING btree (tenant_id);
+
+
+--
+-- Name: index_outbox_dispatch_attempts_lookup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_outbox_dispatch_attempts_lookup ON public.outbox_dispatch_attempts USING btree (tenant_id, outbox_event_id, occurred_at);
+
+
+--
+-- Name: index_outbox_dispatch_attempts_on_outbox_event_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_outbox_dispatch_attempts_on_outbox_event_id ON public.outbox_dispatch_attempts USING btree (outbox_event_id);
+
+
+--
+-- Name: index_outbox_dispatch_attempts_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_outbox_dispatch_attempts_on_tenant_id ON public.outbox_dispatch_attempts USING btree (tenant_id);
+
+
+--
+-- Name: index_outbox_dispatch_attempts_retry_scan; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_outbox_dispatch_attempts_retry_scan ON public.outbox_dispatch_attempts USING btree (tenant_id, status, next_attempt_at);
+
+
+--
+-- Name: index_outbox_dispatch_attempts_unique_attempt; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_outbox_dispatch_attempts_unique_attempt ON public.outbox_dispatch_attempts USING btree (tenant_id, outbox_event_id, attempt_number);
 
 
 --
@@ -2691,6 +2827,13 @@ CREATE TRIGGER ledger_transactions_no_update_delete BEFORE DELETE OR UPDATE ON p
 
 
 --
+-- Name: outbox_dispatch_attempts outbox_dispatch_attempts_no_update_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER outbox_dispatch_attempts_no_update_delete BEFORE DELETE OR UPDATE ON public.outbox_dispatch_attempts FOR EACH ROW EXECUTE FUNCTION public.app_forbid_mutation();
+
+
+--
 -- Name: outbox_events outbox_events_no_update_delete; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3064,6 +3207,14 @@ ALTER TABLE ONLY public.ledger_entries
 
 
 --
+-- Name: hospital_ownerships fk_rails_78d7de9ce4; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.hospital_ownerships
+    ADD CONSTRAINT fk_rails_78d7de9ce4 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
 -- Name: documents fk_rails_7b301b6135; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3109,6 +3260,14 @@ ALTER TABLE ONLY public.receivable_allocations
 
 ALTER TABLE ONLY public.physicians
     ADD CONSTRAINT fk_rails_8df6e967db FOREIGN KEY (party_id) REFERENCES public.parties(id);
+
+
+--
+-- Name: outbox_dispatch_attempts fk_rails_8f3b2f527d; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.outbox_dispatch_attempts
+    ADD CONSTRAINT fk_rails_8f3b2f527d FOREIGN KEY (outbox_event_id) REFERENCES public.outbox_events(id);
 
 
 --
@@ -3320,6 +3479,14 @@ ALTER TABLE ONLY public.ledger_transactions
 
 
 --
+-- Name: hospital_ownerships fk_rails_dfbe05a360; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.hospital_ownerships
+    ADD CONSTRAINT fk_rails_dfbe05a360 FOREIGN KEY (organization_party_id) REFERENCES public.parties(id);
+
+
+--
 -- Name: receivable_payment_settlements fk_rails_e00f64e3bb; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3376,6 +3543,14 @@ ALTER TABLE ONLY public.kyc_events
 
 
 --
+-- Name: outbox_dispatch_attempts fk_rails_ec88541833; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.outbox_dispatch_attempts
+    ADD CONSTRAINT fk_rails_ec88541833 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
 -- Name: action_ip_logs fk_rails_f0fed210ec; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3397,6 +3572,14 @@ ALTER TABLE ONLY public.api_access_tokens
 
 ALTER TABLE ONLY public.api_access_tokens
     ADD CONSTRAINT fk_rails_f4c304228b FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
+-- Name: hospital_ownerships fk_rails_f6aaec8d46; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.hospital_ownerships
+    ADD CONSTRAINT fk_rails_f6aaec8d46 FOREIGN KEY (hospital_party_id) REFERENCES public.parties(id);
 
 
 --
@@ -3580,6 +3763,19 @@ CREATE POLICY documents_tenant_policy ON public.documents USING ((tenant_id = pu
 
 
 --
+-- Name: hospital_ownerships; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.hospital_ownerships ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: hospital_ownerships hospital_ownerships_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY hospital_ownerships_tenant_policy ON public.hospital_ownerships USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
 -- Name: kyc_documents; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -3642,6 +3838,19 @@ ALTER TABLE public.ledger_transactions ENABLE ROW LEVEL SECURITY;
 --
 
 CREATE POLICY ledger_transactions_tenant_policy ON public.ledger_transactions USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
+-- Name: outbox_dispatch_attempts; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.outbox_dispatch_attempts ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: outbox_dispatch_attempts outbox_dispatch_attempts_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY outbox_dispatch_attempts_tenant_policy ON public.outbox_dispatch_attempts USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
 
 
 --
@@ -3879,6 +4088,9 @@ CREATE POLICY users_tenant_policy ON public.users USING ((tenant_id = public.app
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260219124000'),
+('20260219123000'),
+('20260219110000'),
 ('20260214152000'),
 ('20260214151000'),
 ('20260214145000'),

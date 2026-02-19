@@ -1,6 +1,8 @@
 class ApiAccessToken < ApplicationRecord
   TOKEN_TENANT_DELIMITER = ":".freeze
   TOKEN_DELIMITER = ".".freeze
+  TOKEN_ISSUED_ACTION = "API_ACCESS_TOKEN_ISSUED".freeze
+  TOKEN_REVOKED_ACTION = "API_ACCESS_TOKEN_REVOKED".freeze
 
   belongs_to :tenant
   belongs_to :user, optional: true
@@ -12,19 +14,23 @@ class ApiAccessToken < ApplicationRecord
 
   before_validation :normalize_scopes
 
-  def self.issue!(tenant:, name:, scopes: [], user: nil, expires_at: nil)
+  def self.issue!(tenant:, name:, scopes: [], user: nil, expires_at: nil, audit_context: {})
     secret = SecureRandom.hex(32)
     identifier = SecureRandom.uuid
 
-    record = create!(
-      tenant: tenant,
-      user: user,
-      name: name,
-      scopes: normalize_scope_values(scopes),
-      token_identifier: identifier,
-      token_digest: digest(secret),
-      expires_at: expires_at
-    )
+    record = nil
+    transaction do
+      record = create!(
+        tenant: tenant,
+        user: user,
+        name: name,
+        scopes: normalize_scope_values(scopes),
+        token_identifier: identifier,
+        token_digest: digest(secret),
+        expires_at: expires_at
+      )
+      record.audit_issue!(audit_context: audit_context)
+    end
 
     [ record, build_raw_token(tenant_id: tenant.id, identifier: identifier, secret: secret) ]
   end
@@ -91,13 +97,64 @@ class ApiAccessToken < ApplicationRecord
     update_columns(last_used_at: Time.current, updated_at: Time.current)
   end
 
-  def revoke!
-    update!(revoked_at: Time.current)
+  def revoke!(audit_context: {})
+    transaction do
+      update!(revoked_at: Time.current)
+      audit_revoke!(audit_context: audit_context)
+    end
+  end
+
+  def audit_issue!(audit_context: {})
+    log_token_lifecycle_action!(
+      action_type: TOKEN_ISSUED_ACTION,
+      success: true,
+      audit_context: audit_context
+    )
+  end
+
+  def audit_revoke!(audit_context: {})
+    log_token_lifecycle_action!(
+      action_type: TOKEN_REVOKED_ACTION,
+      success: true,
+      audit_context: audit_context
+    )
   end
 
   private
 
   def normalize_scopes
     self.scopes = self.class.normalize_scope_values(scopes)
+  end
+
+  def log_token_lifecycle_action!(action_type:, success:, audit_context:)
+    metadata = (audit_context[:metadata].is_a?(Hash) ? audit_context[:metadata].dup : {})
+    metadata.merge!(
+      "token_name" => name,
+      "scopes" => Array(scopes),
+      "expires_at" => expires_at&.utc&.iso8601(6)
+    )
+
+    ActionIpLog.create!(
+      tenant_id: tenant_id,
+      actor_party_id: audit_context[:actor_party_id] || user&.party_id,
+      action_type: action_type,
+      ip_address: audit_context[:ip_address].presence || "0.0.0.0",
+      user_agent: audit_context[:user_agent],
+      request_id: audit_context[:request_id],
+      endpoint_path: audit_context[:endpoint_path],
+      http_method: audit_context[:http_method],
+      channel: audit_context[:channel].presence || "ADMIN",
+      target_type: "ApiAccessToken",
+      target_id: id,
+      success: success,
+      occurred_at: Time.current,
+      metadata: metadata
+    )
+  rescue ActiveRecord::RecordInvalid, ActiveRecord::StatementInvalid => error
+    Rails.logger.error(
+      "api_access_token_audit_log_write_error " \
+      "token_id=#{id} action_type=#{action_type} error_class=#{error.class.name} error_message=#{error.message}"
+    )
+    raise
   end
 end

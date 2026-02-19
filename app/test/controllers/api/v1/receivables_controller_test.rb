@@ -70,6 +70,128 @@ module Api
         assert_equal 1, response.parsed_body.dig("meta", "count")
         assert_equal @receivable.id, response.parsed_body.dig("data", 0, "id")
         assert_equal "123.45", response.parsed_body.dig("data", 0, "gross_amount")
+        @receivable.reload
+        provenance = response.parsed_body.dig("data", 0, "provenance")
+        assert_equal @receivable.debtor_party.legal_name, provenance.dig("hospital", "legal_name")
+        assert_equal @receivable.creditor_party.legal_name, provenance.dig("owning_organization", "legal_name")
+      end
+
+      test "allows organization users to manage receivables from owned hospitals" do
+        owner_token = nil
+        receivable_a = nil
+        receivable_b = nil
+        receivable_unowned = nil
+        hospital_b = nil
+        owning_org = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          owning_org = Party.create!(
+            tenant: @tenant,
+            kind: "LEGAL_ENTITY_PJ",
+            legal_name: "Grupo Hospitalar Alpha",
+            document_number: valid_cnpj_from_seed("org-owner")
+          )
+          operational_creditor = Party.create!(
+            tenant: @tenant,
+            kind: "SUPPLIER",
+            legal_name: "Credor Operacional",
+            document_number: valid_cnpj_from_seed("org-owner-creditor")
+          )
+          operational_beneficiary = Party.create!(
+            tenant: @tenant,
+            kind: "SUPPLIER",
+            legal_name: "Beneficiario Operacional",
+            document_number: valid_cnpj_from_seed("org-owner-beneficiary")
+          )
+
+          hospital_a = Party.create!(
+            tenant: @tenant,
+            kind: "HOSPITAL",
+            legal_name: "Hospital Alpha Unidade A",
+            document_number: valid_cnpj_from_seed("org-owner-hospital-a")
+          )
+          hospital_b = Party.create!(
+            tenant: @tenant,
+            kind: "HOSPITAL",
+            legal_name: "Hospital Alpha Unidade B",
+            document_number: valid_cnpj_from_seed("org-owner-hospital-b")
+          )
+          hospital_unowned = Party.create!(
+            tenant: @tenant,
+            kind: "HOSPITAL",
+            legal_name: "Hospital Sem Vinculo",
+            document_number: valid_cnpj_from_seed("org-owner-hospital-unowned")
+          )
+
+          HospitalOwnership.create!(
+            tenant: @tenant,
+            organization_party: owning_org,
+            hospital_party: hospital_a
+          )
+          HospitalOwnership.create!(
+            tenant: @tenant,
+            organization_party: owning_org,
+            hospital_party: hospital_b
+          )
+
+          owner_user = User.create!(
+            tenant: @tenant,
+            party: owning_org,
+            email_address: "org-owner-reader@example.com",
+            password: "password",
+            password_confirmation: "password",
+            role: "supplier_user"
+          )
+          _, owner_token = ApiAccessToken.issue!(
+            tenant: @tenant,
+            user: owner_user,
+            name: "Owned Hospitals Reader",
+            scopes: %w[receivables:read]
+          )
+
+          receivable_a = create_receivable_for_hospital!(
+            tenant: @tenant,
+            suffix: "owned-hospital-a",
+            hospital: hospital_a,
+            creditor: operational_creditor,
+            beneficiary: operational_beneficiary
+          )
+          receivable_b = create_receivable_for_hospital!(
+            tenant: @tenant,
+            suffix: "owned-hospital-b",
+            hospital: hospital_b,
+            creditor: operational_creditor,
+            beneficiary: operational_beneficiary
+          )
+          receivable_unowned = create_receivable_for_hospital!(
+            tenant: @tenant,
+            suffix: "unowned-hospital",
+            hospital: hospital_unowned,
+            creditor: operational_creditor,
+            beneficiary: operational_beneficiary
+          )
+        end
+
+        get api_v1_receivables_path, headers: authorization_headers(owner_token), as: :json
+
+        assert_response :success
+        returned_ids = response.parsed_body.fetch("data").map { |entry| entry.fetch("id") }
+        assert_includes returned_ids, receivable_a.id
+        assert_includes returned_ids, receivable_b.id
+        refute_includes returned_ids, receivable_unowned.id
+
+        payload_by_receivable_id = response.parsed_body.fetch("data").index_by { |entry| entry.fetch("id") }
+        assert_equal owning_org.legal_name, payload_by_receivable_id.fetch(receivable_a.id).dig("provenance", "owning_organization", "legal_name")
+        assert_equal owning_org.legal_name, payload_by_receivable_id.fetch(receivable_b.id).dig("provenance", "owning_organization", "legal_name")
+
+        get api_v1_receivables_path,
+          params: { hospital_party_id: hospital_b.id },
+          headers: authorization_headers(owner_token),
+          as: :json
+
+        assert_response :success
+        assert_equal 1, response.parsed_body.dig("meta", "count")
+        assert_equal receivable_b.id, response.parsed_body.dig("data", 0, "id")
       end
 
       test "returns append-only history timeline" do
@@ -634,6 +756,41 @@ module Api
           receivable: receivable,
           allocation: allocation
         }
+      end
+
+      def create_receivable_for_hospital!(tenant:, suffix:, hospital:, creditor:, beneficiary:)
+        kind = ReceivableKind.create!(
+          tenant: tenant,
+          code: "hospital_invoice_#{suffix}",
+          name: "Hospital Invoice #{suffix}",
+          source_family: "SUPPLIER"
+        )
+
+        receivable = Receivable.create!(
+          tenant: tenant,
+          receivable_kind: kind,
+          debtor_party: hospital,
+          creditor_party: creditor,
+          beneficiary_party: beneficiary,
+          external_reference: "external-#{suffix}",
+          gross_amount: "180.00",
+          currency: "BRL",
+          performed_at: Time.current,
+          due_at: 5.days.from_now,
+          cutoff_at: BusinessCalendar.cutoff_at(Time.current.in_time_zone.to_date)
+        )
+
+        ReceivableAllocation.create!(
+          tenant: tenant,
+          receivable: receivable,
+          sequence: 1,
+          allocated_party: beneficiary,
+          gross_amount: receivable.gross_amount,
+          tax_reserve_amount: "0.00",
+          status: "OPEN"
+        )
+
+        receivable
       end
 
       def create_shared_cnpj_physician_bundle_for_tenant!(tenant, suffix:)

@@ -7,6 +7,8 @@ module Api
         confirm: "anticipation_requests:confirm"
       )
 
+      include ReceivableProvenancePayload
+
       def create
         authorize_party_access!(create_params[:requester_party_id]) if create_params[:requester_party_id].present?
         return unless enforce_string_payload_type!(create_params, :requested_amount)
@@ -158,6 +160,7 @@ module Api
           requested_at: record.requested_at&.iso8601,
           confirmed_at: record.metadata&.dig("confirmed_at"),
           confirmation_channels: Array(record.metadata&.dig("confirmation_channels")),
+          receivable_provenance: receivable_provenance_payload(record.receivable),
           replayed: replayed
         }
       end

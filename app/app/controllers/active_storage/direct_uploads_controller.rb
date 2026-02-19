@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
+require "digest"
+
 class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   ALLOWED_SCOPES = %w[receivables:documents:write kyc:write documents:upload].freeze
   DEFAULT_ACTOR_ROLE = "integration_api".freeze
+  IDEMPOTENCY_KEY_HEADER = "Idempotency-Key".freeze
   DEFAULT_ALLOWED_CONTENT_TYPES = %w[
     application/pdf
     image/jpeg
@@ -11,17 +14,32 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   DEFAULT_MAX_UPLOAD_BYTES = 25.megabytes
 
   before_action :authenticate_direct_upload_actor!
+  before_action :require_idempotency_key!
   before_action :enforce_upload_limits!
   skip_forgery_protection
 
   def create
+    payload_hash = direct_upload_payload_hash
+
     with_database_context(
       tenant_id: @current_tenant_id,
       actor_id: @current_actor_party_id,
       role: @current_actor_role
     ) do
-      blob = ActiveStorage::Blob.create_before_direct_upload!(**blob_args)
-      render json: direct_upload_json(blob)
+      existing_blob = find_idempotent_blob
+      if existing_blob.present?
+        return render_existing_idempotent_blob(existing_blob, payload_hash)
+      end
+
+      blob = ActiveStorage::Blob.create_before_direct_upload!(
+        **blob_args(payload_hash: payload_hash)
+      )
+      render json: direct_upload_json(blob).merge("replayed" => false)
+    rescue ActiveRecord::RecordNotUnique
+      existing_blob = find_idempotent_blob
+      raise ActiveRecord::RecordNotFound, "idempotent blob not found after unique violation" if existing_blob.blank?
+
+      render_existing_idempotent_blob(existing_blob, payload_hash)
     end
   rescue ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid
     render_context_unavailable
@@ -101,7 +119,35 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
     end
   end
 
-  def blob_args
+  def require_idempotency_key!
+    @idempotency_key = request.headers[IDEMPOTENCY_KEY_HEADER].to_s.strip
+    return if @idempotency_key.present?
+
+    render json: {
+      error: {
+        code: "missing_idempotency_key",
+        message: "Idempotency-Key header is required for mutating requests."
+      }
+    }, status: :unprocessable_entity
+  end
+
+  def direct_upload_payload_hash
+    digest_payload = normalized_digest_payload
+    Digest::SHA256.hexdigest(digest_payload.to_json)
+  end
+
+  def normalized_digest_payload
+    blob = params.expect(blob: [ :filename, :byte_size, :checksum, :content_type, metadata: {} ])
+
+    {
+      filename: blob[:filename].to_s,
+      byte_size: blob[:byte_size].to_i,
+      checksum: blob[:checksum].to_s,
+      content_type: blob[:content_type].to_s.downcase
+    }
+  end
+
+  def blob_args(payload_hash:)
     args = params.expect(blob: [ :filename, :byte_size, :checksum, :content_type, metadata: {} ]).to_h.symbolize_keys
     metadata = args[:metadata].is_a?(Hash) ? args[:metadata] : {}
 
@@ -109,9 +155,36 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
       metadata: metadata.merge(
         "tenant_id" => @current_tenant_id.to_s,
         "actor_party_id" => @current_actor_party_id.to_s,
+        "direct_upload_idempotency_key" => @idempotency_key,
+        "direct_upload_payload_hash" => payload_hash,
         "uploaded_at" => Time.current.utc.iso8601(6)
       )
     )
+  end
+
+  def find_idempotent_blob
+    ActiveStorage::Blob
+      .where(
+        "app_active_storage_blob_tenant_id(metadata) = CAST(:tenant_id AS uuid) AND app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_idempotency_key' = :idempotency_key",
+        tenant_id: @current_tenant_id.to_s,
+        idempotency_key: @idempotency_key
+      )
+      .order(created_at: :desc)
+      .first
+  end
+
+  def render_existing_idempotent_blob(existing_blob, payload_hash)
+    existing_payload_hash = existing_blob.metadata&.dig("direct_upload_payload_hash").to_s
+    if existing_payload_hash.present? && existing_payload_hash != payload_hash
+      return render json: {
+        error: {
+          code: "idempotency_key_reused_with_different_payload",
+          message: "Idempotency-Key was already used with a different direct upload payload."
+        }
+      }, status: :conflict
+    end
+
+    render json: direct_upload_json(existing_blob).merge("replayed" => true)
   end
 
   def direct_upload_json(blob)

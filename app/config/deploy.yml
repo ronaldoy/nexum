@@ -1,0 +1,43 @@
+service: nexum
+image: ghcr.io/nexum-capital/nexum
+
+servers:
+  web:
+    - <%= ENV.fetch("KAMAL_WEB_HOST", "203.0.113.10") %>
+  job:
+    hosts:
+      - <%= ENV.fetch("KAMAL_JOB_HOST", ENV.fetch("KAMAL_WEB_HOST", "203.0.113.10")) %>
+    cmd: bundle exec bin/jobs
+
+proxy:
+  ssl: true
+  host: <%= ENV.fetch("KAMAL_APP_HOST", "app.nexum.capital") %>
+  app_port: 3000
+  healthcheck:
+    path: /ready
+    interval: 10
+    timeout: 5
+
+registry:
+  server: ghcr.io
+  username: <%= ENV.fetch("KAMAL_REGISTRY_USERNAME", "github-user") %>
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+builder:
+  arch: amd64
+
+env:
+  clear:
+    RAILS_ENV: production
+    TZ: America/Sao_Paulo
+    RAILS_LOG_TO_STDOUT: "1"
+    RAILS_SERVE_STATIC_FILES: "1"
+    ACTIVE_STORAGE_SERVICE: google
+  secret:
+    - RAILS_MASTER_KEY
+    - POSTGRES_PRODUCTION_HOST
+    - POSTGRES_PRODUCTION_PORT
+    - POSTGRES_PRODUCTION_DB
+    - POSTGRES_PRODUCTION_USER
+    - POSTGRES_PRODUCTION_PASSWORD
