@@ -115,8 +115,53 @@ module Receivables
         assert_equal BigDecimal("45.00"), settlement.beneficiary_amount.to_d
         assert_equal 1, result.settlement_entries.size
 
+        escrow_outbox = OutboxEvent.find_by!(
+          tenant_id: @tenant.id,
+          aggregate_type: "ReceivablePaymentSettlement",
+          aggregate_id: settlement.id,
+          event_type: "RECEIVABLE_ESCROW_EXCESS_PAYOUT_REQUESTED",
+          idempotency_key: "#{settlement.id}:escrow_excess_payout"
+        )
+        assert_equal settlement.id, escrow_outbox.payload["settlement_id"]
+        assert_equal bundle[:supplier].id, escrow_outbox.payload["recipient_party_id"]
+        assert_equal BigDecimal("45.00"), BigDecimal(escrow_outbox.payload["amount"])
+        assert_equal "EXCESS", escrow_outbox.payload["payout_kind"]
+        assert_equal bundle[:receivable].debtor_party_id, escrow_outbox.payload.dig("receivable_origin", "hospital_party_id")
+
         anticipation_request.reload
         assert_equal "SETTLED", anticipation_request.status
+      end
+    end
+
+    test "does not enqueue escrow excess payout when beneficiary amount is zero" do
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
+        bundle = create_supplier_bundle!("supplier-zero-excess")
+        create_direct_anticipation_request!(
+          tenant_bundle: bundle,
+          idempotency_key: "settle-supplier-zero-excess",
+          requested_amount: "100.00",
+          discount_rate: "0.00000000",
+          discount_amount: "0.00",
+          net_amount: "100.00",
+          status: "APPROVED"
+        )
+
+        result = service.call(
+          receivable_id: bundle[:receivable].id,
+          receivable_allocation_id: bundle[:allocation].id,
+          paid_amount: "100.00",
+          paid_at: Time.current,
+          payment_reference: "hospital-payment-supplier-zero-excess-001"
+        )
+
+        settlement = result.settlement
+        assert_equal BigDecimal("100.00"), settlement.fdic_amount.to_d
+        assert_equal BigDecimal("0.00"), settlement.beneficiary_amount.to_d
+        assert_equal 0, OutboxEvent.where(
+          tenant_id: @tenant.id,
+          aggregate_id: settlement.id,
+          event_type: "RECEIVABLE_ESCROW_EXCESS_PAYOUT_REQUESTED"
+        ).count
       end
     end
 

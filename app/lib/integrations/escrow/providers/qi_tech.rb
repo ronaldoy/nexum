@@ -77,7 +77,7 @@ module Integrations
           raise ValidationError.new(code: "unsupported_currency", message: "Only BRL is supported for escrow payouts.") unless currency.to_s.upcase == "BRL"
 
           source_account_key = configured_source_account_key
-          target_account = target_account_from(escrow_account:, recipient_party:)
+          target_account = target_account_from(escrow_account:, recipient_party:, metadata:)
 
           path = PIX_TRANSFER_PATH_TEMPLATE % { source_account_key: source_account_key }
           response = client.post(
@@ -146,36 +146,38 @@ module Integrations
           party.kind == "PHYSICIAN_PF" ? "NATURAL_PERSON" : "LEGAL_PERSON"
         end
 
-        def target_account_from(escrow_account:, recipient_party:)
-          account_info = normalized_hash(escrow_account.metadata&.dig("account_info"))
-          raw = normalized_hash(escrow_account.metadata&.dig("raw"))
-          account_info = normalized_hash(raw["account_info"]) if account_info.blank?
+        def target_account_from(escrow_account:, recipient_party:, metadata:)
+          escrow_account_info = escrow_account_info_for(escrow_account)
+          destination_account = payout_destination_account_for(recipient_party:, metadata:)
+          payout_kind = metadata["payout_kind"].to_s.upcase
 
-          branch_number = account_info["branch_number"].presence || account_info["branch"].presence
-          account_number = account_info["account_number"].presence || account_info["number"].presence
-          account_digit = account_info["account_digit"].presence || account_info["digit"].presence
-          account_type = account_info["account_type"].presence || "payment_account"
-
-          taxpayer_id = account_info["taxpayer_id"].presence || recipient_party.document_number.to_s
-          name = account_info["name"].presence || recipient_party.legal_name.to_s
-
-          if branch_number.blank? || account_number.blank? || account_digit.blank?
+          if payout_kind == "EXCESS" && destination_account.blank?
             raise ValidationError.new(
-              code: "qitech_target_account_incomplete",
-              message: "Escrow account is missing QI Tech target account fields.",
+              code: "qitech_payout_destination_account_missing",
+              message: "EXCESS payouts require a destination account.",
               details: {
-                escrow_account_id: escrow_account.id,
-                required_fields: %w[branch_number account_number account_digit]
+                party_id: recipient_party.id,
+                hint: "Provide integrations.qitech.payout_destination_account in party metadata."
               }
             )
           end
 
+          account_info = destination_account.presence || escrow_account_info
+          ensure_target_account_complete!(account_info:, escrow_account:)
+          ensure_destination_differs_from_escrow!(
+            destination_account: destination_account,
+            escrow_account_info: escrow_account_info
+          )
+
+          taxpayer_id = account_info["taxpayer_id"].presence || recipient_party.document_number.to_s
+          validate_target_taxpayer!(recipient_party:, taxpayer_id:)
+
           {
-            "branch_number" => branch_number,
-            "account_number" => account_number,
-            "account_digit" => account_digit,
-            "account_type" => account_type,
-            "name" => name,
+            "branch_number" => account_info["branch_number"],
+            "account_number" => account_info["account_number"],
+            "account_digit" => account_info["account_digit"],
+            "account_type" => account_info["account_type"].presence || "payment_account",
+            "name" => account_info["name"].presence || recipient_party.legal_name.to_s,
             "taxpayer_id" => taxpayer_id
           }
         end
@@ -202,6 +204,82 @@ module Integrations
           return "SENT" if status.in?(%w[SENT SUCCESS SUCCESSFUL CREATED PROCESSING PROCESSING_PAYMENT])
 
           "SENT"
+        end
+
+        def escrow_account_info_for(escrow_account)
+          account_info = normalized_hash(escrow_account.metadata&.dig("account_info"))
+          raw = normalized_hash(escrow_account.metadata&.dig("raw"))
+          account_info = normalized_hash(raw["account_info"]) if account_info.blank?
+          normalize_account_info(account_info)
+        end
+
+        def payout_destination_account_for(recipient_party:, metadata:)
+          raw = normalized_hash(
+            metadata["qitech_payout_destination_account"] ||
+            metadata["payout_destination_account"] ||
+            recipient_party.metadata&.dig("integrations", "qitech", "payout_destination_account")
+          )
+          return {} if raw.blank?
+
+          normalize_account_info(raw)
+        end
+
+        def normalize_account_info(raw_info)
+          info = normalized_hash(raw_info)
+          {
+            "branch_number" => info["branch_number"].presence || info["branch"].presence,
+            "account_number" => info["account_number"].presence || info["number"].presence,
+            "account_digit" => info["account_digit"].presence || info["digit"].presence,
+            "account_type" => info["account_type"],
+            "name" => info["name"],
+            "taxpayer_id" => info["taxpayer_id"]
+          }.compact
+        end
+
+        def ensure_target_account_complete!(account_info:, escrow_account:)
+          return if account_info["branch_number"].present? && account_info["account_number"].present? && account_info["account_digit"].present?
+
+          raise ValidationError.new(
+            code: "qitech_target_account_incomplete",
+            message: "Escrow payout target account is incomplete.",
+            details: {
+              escrow_account_id: escrow_account.id,
+              required_fields: %w[branch_number account_number account_digit]
+            }
+          )
+        end
+
+        def ensure_destination_differs_from_escrow!(destination_account:, escrow_account_info:)
+          return if destination_account.blank?
+          return unless destination_account["branch_number"] == escrow_account_info["branch_number"]
+          return unless destination_account["account_number"] == escrow_account_info["account_number"]
+          return unless destination_account["account_digit"] == escrow_account_info["account_digit"]
+
+          raise ValidationError.new(
+            code: "qitech_destination_account_must_differ",
+            message: "Destination account must be different from the escrow account for EXCESS payout."
+          )
+        end
+
+        def validate_target_taxpayer!(recipient_party:, taxpayer_id:)
+          expected_taxpayer_id = normalize_document(recipient_party.document_number)
+          received_taxpayer_id = normalize_document(taxpayer_id)
+
+          if received_taxpayer_id.blank? || expected_taxpayer_id.blank? || received_taxpayer_id != expected_taxpayer_id
+            raise ValidationError.new(
+              code: "qitech_target_taxpayer_mismatch",
+              message: "Destination account taxpayer_id must match recipient party document number.",
+              details: {
+                party_id: recipient_party.id,
+                expected_taxpayer_id: expected_taxpayer_id,
+                received_taxpayer_id: received_taxpayer_id
+              }
+            )
+          end
+        end
+
+        def normalize_document(value)
+          value.to_s.gsub(/\D+/, "")
         end
 
         def configured_base_url

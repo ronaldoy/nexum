@@ -62,7 +62,7 @@ The system supports:
 - Current provider implementation: `QITECH`.
 - Future provider stub already wired: `STARKBANK`.
 - Trigger point:
-  - On anticipation confirmation (`REQUESTED -> APPROVED`), the system emits `ANTICIPATION_ESCROW_PAYOUT_REQUESTED` into `outbox_events`.
+  - On receivable settlement (`POST /api/v1/receivables/:id/settle_payment`), the system computes `beneficiary_amount` (excedente after anticipated/FIDC repayment) and emits `RECEIVABLE_ESCROW_EXCESS_PAYOUT_REQUESTED` into `outbox_events`.
 - Worker dispatch:
   - `Outbox::DispatchEvent` routes the event through `Outbox::EventRouter` and executes escrow provisioning/payout with retry/dead-letter semantics.
 - Persistence:
@@ -71,6 +71,8 @@ The system supports:
 - Receivable provenance included in payout payload:
   - hospital (`debtor_party`)
   - owning organization (when mapped in `hospital_ownerships`)
+- Destination account validation:
+  - EXCESS payout destination must belong to the same CPF/CNPJ as the recipient party (hard validation before transfer).
 
 ### QI Tech setup
 
@@ -90,6 +92,8 @@ For account opening, provide provider-specific payload in party metadata:
 - `party.metadata.integrations.qitech.account_request_payload`
 - Optional pre-provisioned account shortcut:
   - `party.metadata.integrations.qitech.escrow_account`
+- EXCESS payout destination account:
+  - `party.metadata.integrations.qitech.payout_destination_account`
 
 ## Main API endpoints
 

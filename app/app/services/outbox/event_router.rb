@@ -10,7 +10,8 @@ module Outbox
     end
 
     HANDLERS = {
-      "ANTICIPATION_ESCROW_PAYOUT_REQUESTED" => Integrations::Escrow::DispatchPayout
+      "ANTICIPATION_ESCROW_PAYOUT_REQUESTED" => Integrations::Escrow::DispatchPayout,
+      "RECEIVABLE_ESCROW_EXCESS_PAYOUT_REQUESTED" => Integrations::Escrow::DispatchPayout
     }.freeze
 
     def call(outbox_event:)

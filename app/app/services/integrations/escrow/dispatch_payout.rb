@@ -8,6 +8,7 @@ module Integrations
       def call(outbox_event:)
         payload = {}
         anticipation_request = nil
+        settlement = nil
         recipient_party = nil
         amount = BigDecimal("0")
         provider_code = nil
@@ -15,15 +16,24 @@ module Integrations
         payout_idempotency_key = nil
 
         payload = normalize_metadata(outbox_event.payload || {})
-        anticipation_request_id = payload.fetch("anticipation_request_id").to_s
-        recipient_party_id = payload.fetch("recipient_party_id").to_s
+        anticipation_request_id = payload["anticipation_request_id"].to_s.presence
+        settlement_id = payload["settlement_id"].to_s.presence
+        ensure_source_reference_present!(anticipation_request_id:, settlement_id:)
+        recipient_party_id = payload["recipient_party_id"].to_s.presence
 
-        anticipation_request = AnticipationRequest.where(tenant_id: outbox_event.tenant_id).lock.find(anticipation_request_id)
+        anticipation_request = load_anticipation_request(tenant_id: outbox_event.tenant_id, anticipation_request_id:)
+        settlement = load_settlement(tenant_id: outbox_event.tenant_id, settlement_id:)
+
+        recipient_party_id ||= anticipation_request&.requester_party_id
+        recipient_party_id ||= settlement&.receivable&.beneficiary_party_id
+        raise ValidationError.new(code: "recipient_party_missing", message: "recipient_party_id is required.") if recipient_party_id.blank?
+
         recipient_party = Party.where(tenant_id: outbox_event.tenant_id).lock.find(recipient_party_id)
         ensure_party_payable!(recipient_party)
 
         amount = round_money(parse_decimal(payload.fetch("amount"), field: "amount"))
         raise ValidationError.new(code: "invalid_amount", message: "amount must be greater than zero.") if amount <= 0
+        ensure_excess_amount_matches_settlement!(payload:, settlement:, amount:)
 
         provider_code = ProviderConfig.normalize_provider(
           payload["provider"].presence || ProviderConfig.default_provider(tenant_id: outbox_event.tenant_id)
@@ -31,7 +41,7 @@ module Integrations
         provider = ProviderRegistry.fetch(provider_code: provider_code)
 
         payout_idempotency_key = payload["payout_idempotency_key"].to_s.presence || outbox_event.idempotency_key.to_s.presence || "#{outbox_event.id}:escrow_payout"
-        account_idempotency_key = payload["account_idempotency_key"].to_s.presence || "#{anticipation_request.id}:#{recipient_party.id}:escrow_account"
+        account_idempotency_key = payload["account_idempotency_key"].to_s.presence || "#{recipient_party.id}:escrow_account"
 
         payout = EscrowPayout.lock.find_or_initialize_by(
           tenant_id: outbox_event.tenant_id,
@@ -49,7 +59,8 @@ module Integrations
 
         payout.assign_attributes(
           tenant_id: outbox_event.tenant_id,
-          anticipation_request_id: anticipation_request.id,
+          anticipation_request_id: anticipation_request&.id,
+          receivable_payment_settlement_id: settlement&.id,
           party_id: recipient_party.id,
           escrow_account_id: escrow_account.id,
           provider: provider_code,
@@ -79,6 +90,7 @@ module Integrations
           payout: payout,
           outbox_event: outbox_event,
           anticipation_request: anticipation_request,
+          settlement: settlement,
           recipient_party: recipient_party,
           escrow_account: escrow_account,
           provider_code: provider_code,
@@ -101,7 +113,8 @@ module Integrations
           success: true,
           target_id: persisted.id,
           metadata: {
-            "anticipation_request_id" => anticipation_request.id,
+            "anticipation_request_id" => anticipation_request&.id,
+            "settlement_id" => settlement&.id,
             "recipient_party_id" => recipient_party.id,
             "provider" => provider_code,
             "amount" => amount.to_s("F"),
@@ -117,6 +130,7 @@ module Integrations
           payout: payout,
           outbox_event: outbox_event,
           anticipation_request: anticipation_request,
+          settlement: settlement,
           recipient_party: recipient_party,
           provider_code: provider_code,
           amount: amount,
@@ -223,12 +237,13 @@ module Integrations
         account
       end
 
-      def persist_payout_success!(payout:, outbox_event:, anticipation_request:, recipient_party:, escrow_account:, provider_code:, amount:, payout_result:, payload:)
+      def persist_payout_success!(payout:, outbox_event:, anticipation_request:, settlement:, recipient_party:, escrow_account:, provider_code:, amount:, payout_result:, payload:)
         now = Time.current
 
         payout.assign_attributes(
           tenant_id: outbox_event.tenant_id,
-          anticipation_request_id: anticipation_request.id,
+          anticipation_request_id: anticipation_request&.id,
+          receivable_payment_settlement_id: settlement&.id,
           party_id: recipient_party.id,
           escrow_account_id: escrow_account.id,
           provider: provider_code,
@@ -250,12 +265,13 @@ module Integrations
         payout
       end
 
-      def persist_payout_failure!(payout:, outbox_event:, anticipation_request:, recipient_party:, provider_code:, amount:, payload:, error:)
+      def persist_payout_failure!(payout:, outbox_event:, anticipation_request:, settlement:, recipient_party:, provider_code:, amount:, payload:, error:)
         return if payout.blank?
 
         payout.assign_attributes(
           tenant_id: outbox_event.tenant_id,
           anticipation_request_id: anticipation_request&.id,
+          receivable_payment_settlement_id: settlement&.id,
           party_id: recipient_party&.id,
           provider: provider_code.to_s.presence || payout.provider || ProviderConfig::DEFAULT_PROVIDER,
           amount: amount.to_d.positive? ? amount : payout.amount,
@@ -316,6 +332,45 @@ module Integrations
           code: "escrow_party_kind_not_supported",
           message: "Escrow payouts are only supported for physicians and suppliers.",
           details: { party_id: party.id, kind: party.kind }
+        )
+      end
+
+      def ensure_source_reference_present!(anticipation_request_id:, settlement_id:)
+        return if anticipation_request_id.present? || settlement_id.present?
+
+        raise ValidationError.new(
+          code: "escrow_payload_source_missing",
+          message: "Escrow payload must include anticipation_request_id or settlement_id."
+        )
+      end
+
+      def load_anticipation_request(tenant_id:, anticipation_request_id:)
+        return nil if anticipation_request_id.blank?
+
+        AnticipationRequest.where(tenant_id: tenant_id).lock.find(anticipation_request_id)
+      end
+
+      def load_settlement(tenant_id:, settlement_id:)
+        return nil if settlement_id.blank?
+
+        ReceivablePaymentSettlement.where(tenant_id: tenant_id).lock.find(settlement_id)
+      end
+
+      def ensure_excess_amount_matches_settlement!(payload:, settlement:, amount:)
+        return unless payload["payout_kind"].to_s.upcase == "EXCESS"
+        return if settlement.blank?
+
+        expected_amount = round_money(settlement.beneficiary_amount.to_d)
+        return if amount == expected_amount
+
+        raise ValidationError.new(
+          code: "escrow_excess_amount_mismatch",
+          message: "Excess payout amount must match settlement beneficiary amount.",
+          details: {
+            settlement_id: settlement.id,
+            expected_amount: expected_amount.to_s("F"),
+            provided_amount: amount.to_s("F")
+          }
         )
       end
 

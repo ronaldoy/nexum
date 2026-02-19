@@ -1,6 +1,6 @@
 # Database Model Documentation
 
-Generated at: 2026-02-19T16:30:35-03:00
+Generated at: 2026-02-19T16:43:26-03:00
 Source schema: `app/db/structure.sql`
 
 ## Summary
@@ -526,7 +526,7 @@ Source schema: `app/db/structure.sql`
 | --- | --- | --- | --- | --- |
 | `id` | `uuid` | false | `` | - |
 | `tenant_id` | `uuid` | false | `` | `tenants.id` |
-| `anticipation_request_id` | `uuid` | false | `` | `anticipation_requests.id` |
+| `anticipation_request_id` | `uuid` | true | `` | `anticipation_requests.id` |
 | `party_id` | `uuid` | false | `` | `parties.id` |
 | `escrow_account_id` | `uuid` | false | `` | `escrow_accounts.id` |
 | `provider` | `character varying` | false | `` | - |
@@ -542,6 +542,7 @@ Source schema: `app/db/structure.sql`
 | `metadata` | `jsonb` | false | `{}` | - |
 | `created_at` | `timestamp(6) without time zone` | false | `` | - |
 | `updated_at` | `timestamp(6) without time zone` | false | `` | - |
+| `receivable_payment_settlement_id` | `uuid` | true | `` | `receivable_payment_settlements.id` |
 
 ### Check Constraints
 
@@ -550,16 +551,19 @@ Source schema: `app/db/structure.sql`
 - `escrow_payouts_amount_positive_check`: `amount > 0::numeric`
 - `escrow_payouts_currency_brl_check`: `currency::text = 'BRL'::text`
 - `escrow_payouts_idempotency_key_present_check`: `btrim(idempotency_key::text) <> ''::text`
+- `escrow_payouts_source_reference_check`: `anticipation_request_id IS NOT NULL OR receivable_payment_settlement_id IS NOT NULL`
 
 ### Indexes
 
 - `index_escrow_payouts_on_anticipation_request_id` (non-unique): `anticipation_request_id`
 - `index_escrow_payouts_on_escrow_account_id` (non-unique): `escrow_account_id`
 - `index_escrow_payouts_on_party_id` (non-unique): `party_id`
-- `index_escrow_payouts_on_tenant_anticipation_party` (unique): `tenant_id, anticipation_request_id, party_id`
+- `index_escrow_payouts_on_receivable_payment_settlement_id` (non-unique): `receivable_payment_settlement_id`
+- `index_escrow_payouts_on_tenant_anticipation_party` (unique): `tenant_id, anticipation_request_id, party_id` WHERE (anticipation_request_id IS NOT NULL)
 - `index_escrow_payouts_on_tenant_id` (non-unique): `tenant_id`
 - `index_escrow_payouts_on_tenant_idempotency_key` (unique): `tenant_id, idempotency_key`
 - `index_escrow_payouts_on_tenant_provider_transfer` (unique): `tenant_id, provider, provider_transfer_id` WHERE (provider_transfer_id IS NOT NULL)
+- `index_escrow_payouts_on_tenant_settlement_party` (unique): `tenant_id, receivable_payment_settlement_id, party_id` WHERE (receivable_payment_settlement_id IS NOT NULL)
 - `index_escrow_payouts_on_tenant_status_requested_at` (non-unique): `tenant_id, status, requested_at`
 
 ## `hospital_ownerships`

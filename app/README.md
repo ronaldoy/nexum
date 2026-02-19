@@ -52,11 +52,13 @@ For full architecture, domain flow, and demo walkthrough see root `README.md`.
 
 ## Escrow Integrations (QI Tech / StarkBank-ready)
 - Provider abstraction: `Integrations::Escrow`.
-- Event trigger: `ANTICIPATION_ESCROW_PAYOUT_REQUESTED` on anticipation confirmation.
+- Event trigger: `RECEIVABLE_ESCROW_EXCESS_PAYOUT_REQUESTED` after receivable settlement computes positive `beneficiary_amount` (excess).
 - Outbox routing: `Outbox::EventRouter` -> `Integrations::Escrow::DispatchPayout`.
 - Persisted state:
   - `escrow_accounts`
   - `escrow_payouts`
+- Destination account guardrail:
+  - EXCESS payout destination `taxpayer_id` must match recipient party CPF/CNPJ.
 
 ### Provider configuration
 - `ESCROW_DEFAULT_PROVIDER` (`QITECH` or `STARKBANK`)
@@ -74,6 +76,8 @@ For full architecture, domain flow, and demo walkthrough see root `README.md`.
   - `party.metadata.integrations.qitech.account_request_payload`
 - Optional pre-provisioned escrow account:
   - `party.metadata.integrations.qitech.escrow_account`
+- Destination account for EXCESS payout:
+  - `party.metadata.integrations.qitech.payout_destination_account`
 
 ## Docs Generation
 

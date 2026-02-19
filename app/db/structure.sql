@@ -700,7 +700,7 @@ ALTER TABLE ONLY public.escrow_accounts FORCE ROW LEVEL SECURITY;
 CREATE TABLE public.escrow_payouts (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     tenant_id uuid NOT NULL,
-    anticipation_request_id uuid NOT NULL,
+    anticipation_request_id uuid,
     party_id uuid NOT NULL,
     escrow_account_id uuid NOT NULL,
     provider character varying NOT NULL,
@@ -716,10 +716,12 @@ CREATE TABLE public.escrow_payouts (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
+    receivable_payment_settlement_id uuid,
     CONSTRAINT escrow_payouts_amount_positive_check CHECK ((amount > (0)::numeric)),
     CONSTRAINT escrow_payouts_currency_brl_check CHECK (((currency)::text = 'BRL'::text)),
     CONSTRAINT escrow_payouts_idempotency_key_present_check CHECK ((btrim((idempotency_key)::text) <> ''::text)),
     CONSTRAINT escrow_payouts_provider_check CHECK (((provider)::text = ANY ((ARRAY['QITECH'::character varying, 'STARKBANK'::character varying])::text[]))),
+    CONSTRAINT escrow_payouts_source_reference_check CHECK (((anticipation_request_id IS NOT NULL) OR (receivable_payment_settlement_id IS NOT NULL))),
     CONSTRAINT escrow_payouts_status_check CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying])::text[])))
 );
 
@@ -2331,10 +2333,17 @@ CREATE INDEX index_escrow_payouts_on_party_id ON public.escrow_payouts USING btr
 
 
 --
+-- Name: index_escrow_payouts_on_receivable_payment_settlement_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_escrow_payouts_on_receivable_payment_settlement_id ON public.escrow_payouts USING btree (receivable_payment_settlement_id);
+
+
+--
 -- Name: index_escrow_payouts_on_tenant_anticipation_party; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX index_escrow_payouts_on_tenant_anticipation_party ON public.escrow_payouts USING btree (tenant_id, anticipation_request_id, party_id);
+CREATE UNIQUE INDEX index_escrow_payouts_on_tenant_anticipation_party ON public.escrow_payouts USING btree (tenant_id, anticipation_request_id, party_id) WHERE (anticipation_request_id IS NOT NULL);
 
 
 --
@@ -2356,6 +2365,13 @@ CREATE UNIQUE INDEX index_escrow_payouts_on_tenant_idempotency_key ON public.esc
 --
 
 CREATE UNIQUE INDEX index_escrow_payouts_on_tenant_provider_transfer ON public.escrow_payouts USING btree (tenant_id, provider, provider_transfer_id) WHERE (provider_transfer_id IS NOT NULL);
+
+
+--
+-- Name: index_escrow_payouts_on_tenant_settlement_party; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_escrow_payouts_on_tenant_settlement_party ON public.escrow_payouts USING btree (tenant_id, receivable_payment_settlement_id, party_id) WHERE (receivable_payment_settlement_id IS NOT NULL);
 
 
 --
@@ -3767,6 +3783,14 @@ ALTER TABLE ONLY public.ledger_transactions
 
 
 --
+-- Name: escrow_payouts fk_rails_dac8141e84; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.escrow_payouts
+    ADD CONSTRAINT fk_rails_dac8141e84 FOREIGN KEY (receivable_payment_settlement_id) REFERENCES public.receivable_payment_settlements(id);
+
+
+--
 -- Name: ledger_transactions fk_rails_dae13efe9e; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4430,6 +4454,7 @@ CREATE POLICY webauthn_credentials_tenant_policy ON public.webauthn_credentials 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260219174000'),
 ('20260219170000'),
 ('20260219160000'),
 ('20260219153000'),

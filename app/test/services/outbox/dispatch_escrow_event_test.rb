@@ -10,9 +10,15 @@ module Outbox
     test "dispatches escrow payout event and persists account and payout" do
       with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "worker") do
         bundle = create_supplier_bundle!("escrow-dispatch-success")
-        anticipation_request = create_anticipation_request!(bundle: bundle, suffix: "escrow-dispatch-success")
+        settlement = create_settlement!(
+          bundle: bundle,
+          suffix: "escrow-dispatch-success",
+          cnpj_amount: "0.00",
+          fdic_amount: "5.00",
+          beneficiary_amount: "95.00"
+        )
         outbox_event = create_escrow_outbox_event!(
-          anticipation_request: anticipation_request,
+          settlement: settlement,
           recipient_party: bundle[:supplier],
           idempotency_key: "idem-escrow-dispatch-success"
         )
@@ -23,9 +29,9 @@ module Outbox
 
           assert_equal "SENT", result.status
           assert_equal 1, EscrowAccount.where(tenant_id: @tenant.id, party_id: bundle[:supplier].id, provider: "QITECH").count
-          assert_equal 1, EscrowPayout.where(tenant_id: @tenant.id, anticipation_request_id: anticipation_request.id, status: "SENT").count
+          assert_equal 1, EscrowPayout.where(tenant_id: @tenant.id, receivable_payment_settlement_id: settlement.id, status: "SENT").count
 
-          payout = EscrowPayout.find_by!(tenant_id: @tenant.id, anticipation_request_id: anticipation_request.id)
+          payout = EscrowPayout.find_by!(tenant_id: @tenant.id, receivable_payment_settlement_id: settlement.id)
           assert_equal BigDecimal("95.00"), payout.amount.to_d
           assert_equal "provider-transfer-123", payout.provider_transfer_id
         end
@@ -35,9 +41,15 @@ module Outbox
     test "retries and dead-letters escrow payout dispatch on provider failure" do
       with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "worker") do
         bundle = create_supplier_bundle!("escrow-dispatch-failure")
-        anticipation_request = create_anticipation_request!(bundle: bundle, suffix: "escrow-dispatch-failure")
+        settlement = create_settlement!(
+          bundle: bundle,
+          suffix: "escrow-dispatch-failure",
+          cnpj_amount: "0.00",
+          fdic_amount: "5.00",
+          beneficiary_amount: "95.00"
+        )
         outbox_event = create_escrow_outbox_event!(
-          anticipation_request: anticipation_request,
+          settlement: settlement,
           recipient_party: bundle[:supplier],
           idempotency_key: "idem-escrow-dispatch-failure"
         )
@@ -68,23 +80,25 @@ module Outbox
 
     private
 
-    def create_escrow_outbox_event!(anticipation_request:, recipient_party:, idempotency_key:)
+    def create_escrow_outbox_event!(settlement:, recipient_party:, idempotency_key:)
       OutboxEvent.create!(
         tenant: @tenant,
-        aggregate_type: "AnticipationRequest",
-        aggregate_id: anticipation_request.id,
-        event_type: "ANTICIPATION_ESCROW_PAYOUT_REQUESTED",
+        aggregate_type: "ReceivablePaymentSettlement",
+        aggregate_id: settlement.id,
+        event_type: "RECEIVABLE_ESCROW_EXCESS_PAYOUT_REQUESTED",
         status: "PENDING",
         idempotency_key: idempotency_key,
         payload: {
-          "anticipation_request_id" => anticipation_request.id,
+          "settlement_id" => settlement.id,
+          "receivable_id" => settlement.receivable_id,
           "recipient_party_id" => recipient_party.id,
-          "amount" => "95.00",
+          "amount" => settlement.beneficiary_amount.to_d.to_s("F"),
           "currency" => "BRL",
           "provider" => "QITECH",
+          "payout_kind" => "EXCESS",
           "payout_idempotency_key" => idempotency_key,
-          "account_idempotency_key" => "#{anticipation_request.id}:#{recipient_party.id}:escrow_account",
-          "provider_request_control_key" => SecureRandom.uuid
+          "account_idempotency_key" => "#{recipient_party.id}:escrow_account",
+          "provider_request_control_key" => idempotency_key
         }
       )
     end
@@ -139,21 +153,21 @@ module Outbox
       }
     end
 
-    def create_anticipation_request!(bundle:, suffix:)
-      AnticipationRequest.create!(
+    def create_settlement!(bundle:, suffix:, cnpj_amount:, fdic_amount:, beneficiary_amount:)
+      ReceivablePaymentSettlement.create!(
         tenant: @tenant,
         receivable: bundle[:receivable],
         receivable_allocation: bundle[:allocation],
-        requester_party: bundle[:supplier],
-        idempotency_key: "idem-anticipation-#{suffix}",
-        requested_amount: "100.00",
-        discount_rate: "0.05000000",
-        discount_amount: "5.00",
-        net_amount: "95.00",
-        status: "APPROVED",
-        channel: "API",
-        requested_at: Time.current,
-        settlement_target_date: BusinessCalendar.next_business_day(from: Time.current),
+        paid_amount: "100.00",
+        cnpj_amount: cnpj_amount,
+        fdic_amount: fdic_amount,
+        beneficiary_amount: beneficiary_amount,
+        fdic_balance_before: fdic_amount,
+        fdic_balance_after: "0.00",
+        paid_at: Time.current,
+        payment_reference: "hospital-payment-#{suffix}",
+        idempotency_key: "idem-settlement-#{suffix}",
+        request_id: SecureRandom.uuid,
         metadata: {}
       )
     end
