@@ -465,6 +465,17 @@ module Api
           assert_equal "VERIFIED", whatsapp_challenge.status
 
           assert_equal 1, ActionIpLog.where(action_type: "ANTICIPATION_CONFIRMED", target_id: anticipation_request.id).count
+
+          escrow_outbox = OutboxEvent.find_by!(
+            tenant_id: @tenant.id,
+            aggregate_id: anticipation_request.id,
+            event_type: "ANTICIPATION_ESCROW_PAYOUT_REQUESTED",
+            idempotency_key: "idem-confirm-001:escrow_payout"
+          )
+          assert_equal anticipation_request.requester_party_id, escrow_outbox.payload["recipient_party_id"]
+          assert_equal anticipation_request.net_amount.to_d.to_s("F"), escrow_outbox.payload["amount"]
+          assert_equal "QITECH", escrow_outbox.payload["provider"]
+          assert_equal anticipation_request.receivable.debtor_party_id, escrow_outbox.payload.dig("receivable_origin", "hospital_party_id")
         end
       end
 

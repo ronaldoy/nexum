@@ -120,12 +120,16 @@ module Outbox
       simulate_failure = ActiveModel::Type::Boolean.new.cast(
         outbox_event.payload&.dig("simulate_dispatch_failure")
       )
-      return unless simulate_failure
+      if simulate_failure
+        raise DeliveryError.new(
+          code: "simulated_dispatch_failure",
+          message: "Simulated dispatch failure."
+        )
+      end
 
-      raise DeliveryError.new(
-        code: "simulated_dispatch_failure",
-        message: "Simulated dispatch failure."
-      )
+      Outbox::EventRouter.new.call(outbox_event: outbox_event)
+    rescue Outbox::EventRouter::DeliveryError => error
+      raise DeliveryError.new(code: error.code, message: error.message)
     end
 
     def handle_delivery_error!(outbox_event:, attempt_number:, occurred_at:, error:)

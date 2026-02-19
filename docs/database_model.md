@@ -1,11 +1,11 @@
 # Database Model Documentation
 
-Generated at: 2026-02-19T16:02:33-03:00
+Generated at: 2026-02-19T16:30:35-03:00
 Source schema: `app/db/structure.sql`
 
 ## Summary
 
-- Total tables documented: 37
+- Total tables documented: 39
 - Tables with append-only mutation guard: 11
 - Business timezone: `America/Sao_Paulo`
 
@@ -468,6 +468,99 @@ Source schema: `app/db/structure.sql`
 - `index_documents_on_tenant_id` (non-unique): `tenant_id`
 - `index_documents_on_tenant_id_and_sha256` (unique): `tenant_id, sha256`
 - `index_documents_on_tenant_receivable` (non-unique): `tenant_id, receivable_id`
+
+## `escrow_accounts`
+
+- Primary key: `id`
+- RLS enabled: `true`
+- RLS forced: `true`
+- Append-only guard: `false`
+
+- Policies:
+  - `escrow_accounts_tenant_policy`
+
+### Columns
+
+| Column | SQL Type | Null | Default | FK |
+| --- | --- | --- | --- | --- |
+| `id` | `uuid` | false | `` | - |
+| `tenant_id` | `uuid` | false | `` | `tenants.id` |
+| `party_id` | `uuid` | false | `` | `parties.id` |
+| `provider` | `character varying` | false | `` | - |
+| `account_type` | `character varying` | false | `ESCROW` | - |
+| `status` | `character varying` | false | `PENDING` | - |
+| `provider_account_id` | `character varying` | true | `` | - |
+| `provider_request_id` | `character varying` | true | `` | - |
+| `last_synced_at` | `timestamp(6) without time zone` | true | `` | - |
+| `metadata` | `jsonb` | false | `{}` | - |
+| `created_at` | `timestamp(6) without time zone` | false | `` | - |
+| `updated_at` | `timestamp(6) without time zone` | false | `` | - |
+
+### Check Constraints
+
+- `escrow_accounts_account_type_check`: `account_type::text = 'ESCROW'::text`
+- `escrow_accounts_provider_check`: `provider::text = ANY (ARRAY['QITECH'::character varying, 'STARKBANK'::character varying]::text[])`
+- `escrow_accounts_status_check`: `status::text = ANY (ARRAY['PENDING'::character varying, 'ACTIVE'::character varying, 'REJECTED'::character varying, 'FAILED'::character varying, 'CLOSED'::character varying]::text[])`
+
+### Indexes
+
+- `index_escrow_accounts_on_party_id` (non-unique): `party_id`
+- `index_escrow_accounts_on_tenant_id` (non-unique): `tenant_id`
+- `index_escrow_accounts_on_tenant_party_provider` (unique): `tenant_id, party_id, provider`
+- `index_escrow_accounts_on_tenant_provider_account` (unique): `tenant_id, provider, provider_account_id` WHERE (provider_account_id IS NOT NULL)
+- `index_escrow_accounts_on_tenant_status` (non-unique): `tenant_id, status`
+
+## `escrow_payouts`
+
+- Primary key: `id`
+- RLS enabled: `true`
+- RLS forced: `true`
+- Append-only guard: `false`
+
+- Policies:
+  - `escrow_payouts_tenant_policy`
+
+### Columns
+
+| Column | SQL Type | Null | Default | FK |
+| --- | --- | --- | --- | --- |
+| `id` | `uuid` | false | `` | - |
+| `tenant_id` | `uuid` | false | `` | `tenants.id` |
+| `anticipation_request_id` | `uuid` | false | `` | `anticipation_requests.id` |
+| `party_id` | `uuid` | false | `` | `parties.id` |
+| `escrow_account_id` | `uuid` | false | `` | `escrow_accounts.id` |
+| `provider` | `character varying` | false | `` | - |
+| `status` | `character varying` | false | `PENDING` | - |
+| `amount` | `numeric(18,2)` | false | `` | - |
+| `currency` | `character varying(3)` | false | `BRL` | - |
+| `idempotency_key` | `character varying` | false | `` | - |
+| `provider_transfer_id` | `character varying` | true | `` | - |
+| `requested_at` | `timestamp(6) without time zone` | false | `` | - |
+| `processed_at` | `timestamp(6) without time zone` | true | `` | - |
+| `last_error_code` | `character varying` | true | `` | - |
+| `last_error_message` | `character varying` | true | `` | - |
+| `metadata` | `jsonb` | false | `{}` | - |
+| `created_at` | `timestamp(6) without time zone` | false | `` | - |
+| `updated_at` | `timestamp(6) without time zone` | false | `` | - |
+
+### Check Constraints
+
+- `escrow_payouts_provider_check`: `provider::text = ANY (ARRAY['QITECH'::character varying, 'STARKBANK'::character varying]::text[])`
+- `escrow_payouts_status_check`: `status::text = ANY (ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying]::text[])`
+- `escrow_payouts_amount_positive_check`: `amount > 0::numeric`
+- `escrow_payouts_currency_brl_check`: `currency::text = 'BRL'::text`
+- `escrow_payouts_idempotency_key_present_check`: `btrim(idempotency_key::text) <> ''::text`
+
+### Indexes
+
+- `index_escrow_payouts_on_anticipation_request_id` (non-unique): `anticipation_request_id`
+- `index_escrow_payouts_on_escrow_account_id` (non-unique): `escrow_account_id`
+- `index_escrow_payouts_on_party_id` (non-unique): `party_id`
+- `index_escrow_payouts_on_tenant_anticipation_party` (unique): `tenant_id, anticipation_request_id, party_id`
+- `index_escrow_payouts_on_tenant_id` (non-unique): `tenant_id`
+- `index_escrow_payouts_on_tenant_idempotency_key` (unique): `tenant_id, idempotency_key`
+- `index_escrow_payouts_on_tenant_provider_transfer` (unique): `tenant_id, provider, provider_transfer_id` WHERE (provider_transfer_id IS NOT NULL)
+- `index_escrow_payouts_on_tenant_status_requested_at` (non-unique): `tenant_id, status, requested_at`
 
 ## `hospital_ownerships`
 

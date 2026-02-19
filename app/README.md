@@ -50,6 +50,31 @@ For full architecture, domain flow, and demo walkthrough see root `README.md`.
 - Generated API reference: `../docs/api_reference.md`.
 - Generated DB model docs: `../docs/database_model.md`.
 
+## Escrow Integrations (QI Tech / StarkBank-ready)
+- Provider abstraction: `Integrations::Escrow`.
+- Event trigger: `ANTICIPATION_ESCROW_PAYOUT_REQUESTED` on anticipation confirmation.
+- Outbox routing: `Outbox::EventRouter` -> `Integrations::Escrow::DispatchPayout`.
+- Persisted state:
+  - `escrow_accounts`
+  - `escrow_payouts`
+
+### Provider configuration
+- `ESCROW_DEFAULT_PROVIDER` (`QITECH` or `STARKBANK`)
+- QI Tech:
+  - `QITECH_BASE_URL`
+  - `QITECH_API_CLIENT_KEY`
+  - `QITECH_PRIVATE_KEY`
+  - `QITECH_KEY_ID`
+  - `QITECH_SOURCE_ACCOUNT_KEY`
+  - `QITECH_OPEN_TIMEOUT_SECONDS`
+  - `QITECH_READ_TIMEOUT_SECONDS`
+
+### Party onboarding metadata
+- Account opening payload:
+  - `party.metadata.integrations.qitech.account_request_payload`
+- Optional pre-provisioned escrow account:
+  - `party.metadata.integrations.qitech.escrow_account`
+
 ## Docs Generation
 
 From `app/`:

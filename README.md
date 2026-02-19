@@ -56,6 +56,41 @@ The system supports:
 - New endpoint:
   - `GET /api/v1/hospital_organizations`
 
+## Escrow payout integrations
+
+- Escrow disbursement is provider-agnostic (`Integrations::Escrow` abstraction).
+- Current provider implementation: `QITECH`.
+- Future provider stub already wired: `STARKBANK`.
+- Trigger point:
+  - On anticipation confirmation (`REQUESTED -> APPROVED`), the system emits `ANTICIPATION_ESCROW_PAYOUT_REQUESTED` into `outbox_events`.
+- Worker dispatch:
+  - `Outbox::DispatchEvent` routes the event through `Outbox::EventRouter` and executes escrow provisioning/payout with retry/dead-letter semantics.
+- Persistence:
+  - `escrow_accounts`: provider account linkage per party.
+  - `escrow_payouts`: idempotent payout attempts and provider references.
+- Receivable provenance included in payout payload:
+  - hospital (`debtor_party`)
+  - owning organization (when mapped in `hospital_ownerships`)
+
+### QI Tech setup
+
+Configure via Rails credentials (`integrations.qitech.*`) or environment:
+
+- `QITECH_BASE_URL`
+- `QITECH_API_CLIENT_KEY`
+- `QITECH_PRIVATE_KEY`
+- `QITECH_KEY_ID`
+- `QITECH_SOURCE_ACCOUNT_KEY`
+- `QITECH_OPEN_TIMEOUT_SECONDS`
+- `QITECH_READ_TIMEOUT_SECONDS`
+- `ESCROW_DEFAULT_PROVIDER` (`QITECH` or `STARKBANK`)
+
+For account opening, provide provider-specific payload in party metadata:
+
+- `party.metadata.integrations.qitech.account_request_payload`
+- Optional pre-provisioned account shortcut:
+  - `party.metadata.integrations.qitech.escrow_account`
+
 ## Main API endpoints
 
 - `GET /health`

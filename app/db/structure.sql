@@ -669,6 +669,64 @@ ALTER TABLE ONLY public.documents FORCE ROW LEVEL SECURITY;
 
 
 --
+-- Name: escrow_accounts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.escrow_accounts (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    party_id uuid NOT NULL,
+    provider character varying NOT NULL,
+    account_type character varying DEFAULT 'ESCROW'::character varying NOT NULL,
+    status character varying DEFAULT 'PENDING'::character varying NOT NULL,
+    provider_account_id character varying,
+    provider_request_id character varying,
+    last_synced_at timestamp(6) without time zone,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT escrow_accounts_account_type_check CHECK (((account_type)::text = 'ESCROW'::text)),
+    CONSTRAINT escrow_accounts_provider_check CHECK (((provider)::text = ANY ((ARRAY['QITECH'::character varying, 'STARKBANK'::character varying])::text[]))),
+    CONSTRAINT escrow_accounts_status_check CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'ACTIVE'::character varying, 'REJECTED'::character varying, 'FAILED'::character varying, 'CLOSED'::character varying])::text[])))
+);
+
+ALTER TABLE ONLY public.escrow_accounts FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: escrow_payouts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.escrow_payouts (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    anticipation_request_id uuid NOT NULL,
+    party_id uuid NOT NULL,
+    escrow_account_id uuid NOT NULL,
+    provider character varying NOT NULL,
+    status character varying DEFAULT 'PENDING'::character varying NOT NULL,
+    amount numeric(18,2) NOT NULL,
+    currency character varying(3) DEFAULT 'BRL'::character varying NOT NULL,
+    idempotency_key character varying NOT NULL,
+    provider_transfer_id character varying,
+    requested_at timestamp(6) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    processed_at timestamp(6) without time zone,
+    last_error_code character varying,
+    last_error_message character varying,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT escrow_payouts_amount_positive_check CHECK ((amount > (0)::numeric)),
+    CONSTRAINT escrow_payouts_currency_brl_check CHECK (((currency)::text = 'BRL'::text)),
+    CONSTRAINT escrow_payouts_idempotency_key_present_check CHECK ((btrim((idempotency_key)::text) <> ''::text)),
+    CONSTRAINT escrow_payouts_provider_check CHECK (((provider)::text = ANY ((ARRAY['QITECH'::character varying, 'STARKBANK'::character varying])::text[]))),
+    CONSTRAINT escrow_payouts_status_check CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying])::text[])))
+);
+
+ALTER TABLE ONLY public.escrow_payouts FORCE ROW LEVEL SECURITY;
+
+
+--
 -- Name: hospital_ownerships; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1468,6 +1526,22 @@ ALTER TABLE ONLY public.documents
 
 
 --
+-- Name: escrow_accounts escrow_accounts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.escrow_accounts
+    ADD CONSTRAINT escrow_accounts_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: escrow_payouts escrow_payouts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.escrow_payouts
+    ADD CONSTRAINT escrow_payouts_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: hospital_ownerships hospital_ownerships_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2198,6 +2272,97 @@ CREATE UNIQUE INDEX index_documents_on_tenant_id_and_sha256 ON public.documents 
 --
 
 CREATE INDEX index_documents_on_tenant_receivable ON public.documents USING btree (tenant_id, receivable_id);
+
+
+--
+-- Name: index_escrow_accounts_on_party_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_escrow_accounts_on_party_id ON public.escrow_accounts USING btree (party_id);
+
+
+--
+-- Name: index_escrow_accounts_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_escrow_accounts_on_tenant_id ON public.escrow_accounts USING btree (tenant_id);
+
+
+--
+-- Name: index_escrow_accounts_on_tenant_party_provider; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_escrow_accounts_on_tenant_party_provider ON public.escrow_accounts USING btree (tenant_id, party_id, provider);
+
+
+--
+-- Name: index_escrow_accounts_on_tenant_provider_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_escrow_accounts_on_tenant_provider_account ON public.escrow_accounts USING btree (tenant_id, provider, provider_account_id) WHERE (provider_account_id IS NOT NULL);
+
+
+--
+-- Name: index_escrow_accounts_on_tenant_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_escrow_accounts_on_tenant_status ON public.escrow_accounts USING btree (tenant_id, status);
+
+
+--
+-- Name: index_escrow_payouts_on_anticipation_request_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_escrow_payouts_on_anticipation_request_id ON public.escrow_payouts USING btree (anticipation_request_id);
+
+
+--
+-- Name: index_escrow_payouts_on_escrow_account_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_escrow_payouts_on_escrow_account_id ON public.escrow_payouts USING btree (escrow_account_id);
+
+
+--
+-- Name: index_escrow_payouts_on_party_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_escrow_payouts_on_party_id ON public.escrow_payouts USING btree (party_id);
+
+
+--
+-- Name: index_escrow_payouts_on_tenant_anticipation_party; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_escrow_payouts_on_tenant_anticipation_party ON public.escrow_payouts USING btree (tenant_id, anticipation_request_id, party_id);
+
+
+--
+-- Name: index_escrow_payouts_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_escrow_payouts_on_tenant_id ON public.escrow_payouts USING btree (tenant_id);
+
+
+--
+-- Name: index_escrow_payouts_on_tenant_idempotency_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_escrow_payouts_on_tenant_idempotency_key ON public.escrow_payouts USING btree (tenant_id, idempotency_key);
+
+
+--
+-- Name: index_escrow_payouts_on_tenant_provider_transfer; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_escrow_payouts_on_tenant_provider_transfer ON public.escrow_payouts USING btree (tenant_id, provider, provider_transfer_id) WHERE (provider_transfer_id IS NOT NULL);
+
+
+--
+-- Name: index_escrow_payouts_on_tenant_status_requested_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_escrow_payouts_on_tenant_status_requested_at ON public.escrow_payouts USING btree (tenant_id, status, requested_at);
 
 
 --
@@ -3050,6 +3215,14 @@ ALTER TABLE ONLY public.anticipation_request_events
 
 
 --
+-- Name: escrow_payouts fk_rails_2101940f83; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.escrow_payouts
+    ADD CONSTRAINT fk_rails_2101940f83 FOREIGN KEY (escrow_account_id) REFERENCES public.escrow_accounts(id);
+
+
+--
 -- Name: anticipation_request_events fk_rails_213b4b1aba; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3087,6 +3260,14 @@ ALTER TABLE ONLY public.kyc_events
 
 ALTER TABLE ONLY public.anticipation_request_events
     ADD CONSTRAINT fk_rails_273612e857 FOREIGN KEY (actor_party_id) REFERENCES public.parties(id);
+
+
+--
+-- Name: escrow_payouts fk_rails_2bba004179; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.escrow_payouts
+    ADD CONSTRAINT fk_rails_2bba004179 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 
 --
@@ -3202,6 +3383,14 @@ ALTER TABLE ONLY public.documents
 
 
 --
+-- Name: escrow_accounts fk_rails_51e876299d; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.escrow_accounts
+    ADD CONSTRAINT fk_rails_51e876299d FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
 -- Name: assignment_contracts fk_rails_5b862aa1fb; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3247,6 +3436,14 @@ ALTER TABLE ONLY public.receivables
 
 ALTER TABLE ONLY public.receivables
     ADD CONSTRAINT fk_rails_6f135ab793 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
+-- Name: escrow_payouts fk_rails_70a8223ad9; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.escrow_payouts
+    ADD CONSTRAINT fk_rails_70a8223ad9 FOREIGN KEY (anticipation_request_id) REFERENCES public.anticipation_requests(id);
 
 
 --
@@ -3359,6 +3556,14 @@ ALTER TABLE ONLY public.physician_cnpj_split_policies
 
 ALTER TABLE ONLY public.receivable_statistics_daily
     ADD CONSTRAINT fk_rails_9402cb82a3 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
+-- Name: escrow_payouts fk_rails_953aa6c15d; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.escrow_payouts
+    ADD CONSTRAINT fk_rails_953aa6c15d FOREIGN KEY (party_id) REFERENCES public.parties(id);
 
 
 --
@@ -3519,6 +3724,14 @@ ALTER TABLE ONLY public.auth_challenges
 
 ALTER TABLE ONLY public.receivable_statistics_daily
     ADD CONSTRAINT fk_rails_d1268622c3 FOREIGN KEY (receivable_kind_id) REFERENCES public.receivable_kinds(id);
+
+
+--
+-- Name: escrow_accounts fk_rails_d20f9dda89; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.escrow_accounts
+    ADD CONSTRAINT fk_rails_d20f9dda89 FOREIGN KEY (party_id) REFERENCES public.parties(id);
 
 
 --
@@ -3843,6 +4056,32 @@ ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
 --
 
 CREATE POLICY documents_tenant_policy ON public.documents USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
+-- Name: escrow_accounts; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.escrow_accounts ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: escrow_accounts escrow_accounts_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY escrow_accounts_tenant_policy ON public.escrow_accounts USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
+-- Name: escrow_payouts; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.escrow_payouts ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: escrow_payouts escrow_payouts_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY escrow_payouts_tenant_policy ON public.escrow_payouts USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
 
 
 --
@@ -4191,6 +4430,7 @@ CREATE POLICY webauthn_credentials_tenant_policy ON public.webauthn_credentials 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260219170000'),
 ('20260219160000'),
 ('20260219153000'),
 ('20260219124000'),

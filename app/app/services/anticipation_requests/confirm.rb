@@ -5,6 +5,8 @@ module AnticipationRequests
     CONFIRMATION_PURPOSE = "ANTICIPATION_CONFIRMATION".freeze
     TARGET_TYPE = "AnticipationRequest".freeze
     PAYLOAD_HASH_METADATA_KEY = "_confirmation_payload_hash".freeze
+    ESCROW_PAYOUT_OUTBOX_EVENT_TYPE = "ANTICIPATION_ESCROW_PAYOUT_REQUESTED".freeze
+    ESCROW_PAYOUT_OUTBOX_IDEMPOTENCY_SUFFIX = "escrow_payout".freeze
 
     Result = Struct.new(:anticipation_request, :replayed, keyword_init: true) do
       def replayed?
@@ -120,6 +122,8 @@ module AnticipationRequests
               confirmation_channels: %w[EMAIL WHATSAPP]
             }
           )
+
+          create_escrow_payout_outbox_event!(anticipation_request: anticipation_request)
 
           result = Result.new(anticipation_request:, replayed: false)
         rescue ValidationError => error
@@ -242,6 +246,53 @@ module AnticipationRequests
       )
     end
 
+    def create_escrow_payout_outbox_event!(anticipation_request:)
+      provider = Integrations::Escrow::ProviderConfig.default_provider(tenant_id: @tenant_id)
+      payout_idempotency_key = "#{@idempotency_key}:#{ESCROW_PAYOUT_OUTBOX_IDEMPOTENCY_SUFFIX}"
+      receivable_origin = receivable_origin_payload(anticipation_request.receivable)
+      amount = anticipation_request.net_amount.to_d.to_s("F")
+      payload_hash = escrow_payout_payload_hash(
+        anticipation_request: anticipation_request,
+        provider: provider,
+        amount: amount,
+        receivable_origin: receivable_origin
+      )
+
+      OutboxEvent.create!(
+        tenant_id: @tenant_id,
+        aggregate_type: TARGET_TYPE,
+        aggregate_id: anticipation_request.id,
+        event_type: ESCROW_PAYOUT_OUTBOX_EVENT_TYPE,
+        status: "PENDING",
+        idempotency_key: payout_idempotency_key,
+        payload: {
+          "payload_hash" => payload_hash,
+          "anticipation_request_id" => anticipation_request.id,
+          "recipient_party_id" => anticipation_request.requester_party_id,
+          "amount" => amount,
+          "currency" => "BRL",
+          "provider" => provider,
+          "payout_idempotency_key" => payout_idempotency_key,
+          "account_idempotency_key" => "#{anticipation_request.id}:#{anticipation_request.requester_party_id}:escrow_account",
+          "provider_request_control_key" => SecureRandom.uuid,
+          "request_id" => @request_id,
+          "receivable_origin" => receivable_origin
+        }
+      )
+    rescue ActiveRecord::RecordNotUnique
+      existing = OutboxEvent.find_by!(
+        tenant_id: @tenant_id,
+        idempotency_key: payout_idempotency_key
+      )
+      stored_hash = existing.payload&.dig("payload_hash").to_s
+      return if stored_hash.blank? || stored_hash == payload_hash
+
+      raise IdempotencyConflict.new(
+        code: "idempotency_key_reused_with_different_payload",
+        message: "Idempotency-Key was already used with a different escrow payout payload."
+      )
+    end
+
     def create_action_log!(action_type:, success:, requester_party_id:, target_id:, metadata:)
       ActionIpLog.create!(
         tenant_id: @tenant_id,
@@ -313,6 +364,37 @@ module AnticipationRequests
       return false unless left.bytesize == right.bytesize
 
       ActiveSupport::SecurityUtils.secure_compare(left, right)
+    end
+
+    def escrow_payout_payload_hash(anticipation_request:, provider:, amount:, receivable_origin:)
+      Digest::SHA256.hexdigest(
+        canonical_json(
+          anticipation_request_id: anticipation_request.id,
+          recipient_party_id: anticipation_request.requester_party_id,
+          provider: provider,
+          amount: amount,
+          currency: "BRL",
+          receivable_origin: receivable_origin
+        )
+      )
+    end
+
+    def receivable_origin_payload(receivable)
+      ownership = HospitalOwnership
+        .where(tenant_id: @tenant_id, hospital_party_id: receivable.debtor_party_id, active: true)
+        .includes(:organization_party)
+        .first
+
+      {
+        "receivable_id" => receivable.id,
+        "external_reference" => receivable.external_reference,
+        "hospital_party_id" => receivable.debtor_party_id,
+        "hospital_legal_name" => receivable.debtor_party.legal_name,
+        "hospital_document_number" => receivable.debtor_party.document_number,
+        "organization_party_id" => ownership&.organization_party_id,
+        "organization_legal_name" => ownership&.organization_party&.legal_name,
+        "organization_document_number" => ownership&.organization_party&.document_number
+      }.compact
     end
 
     def canonical_json(value)
