@@ -13,4 +13,29 @@ class SessionTest < ActiveSupport::TestCase
       users(:one).sessions.create!(tenant: users(:two).tenant, ip_address: "127.0.0.1", user_agent: "test-suite")
     end
   end
+
+  test "syncs user_uuid_id when session is created from user association" do
+    user = users(:one)
+
+    session = user.sessions.create!(
+      tenant: user.tenant,
+      ip_address: "127.0.0.1",
+      user_agent: "test-suite"
+    )
+
+    assert_equal user.uuid_id, session.user_uuid_id
+  end
+
+  test "resolves user from user_uuid_id when user_id is missing" do
+    user = users(:one)
+    session = Session.new(
+      tenant: user.tenant,
+      user_uuid_id: user.uuid_id,
+      ip_address: "127.0.0.1",
+      user_agent: "test-suite"
+    )
+
+    assert session.valid?
+    assert_equal user.id, session.user_id
+  end
 end

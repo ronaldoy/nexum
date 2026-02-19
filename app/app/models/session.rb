@@ -4,7 +4,9 @@ class Session < ApplicationRecord
 
   belongs_to :tenant
   belongs_to :user
+  belongs_to :user_by_uuid, class_name: "User", foreign_key: :user_uuid_id, primary_key: :uuid_id, inverse_of: :sessions_by_uuid, optional: true
 
+  before_validation :sync_user_uuid_reference
   validate :tenant_matches_user
 
   def self.ttl
@@ -45,9 +47,28 @@ class Session < ApplicationRecord
 
   private
 
+  def sync_user_uuid_reference
+    if user.present?
+      self.user_uuid_id ||= user.uuid_id
+      return
+    end
+
+    if user_uuid_id.present? && user_id.blank?
+      self.user = User.find_by(uuid_id: user_uuid_id)
+      return
+    end
+
+    if user_id.present? && user_uuid_id.blank?
+      self.user_uuid_id = User.where(id: user_id).pick(:uuid_id)
+    end
+  end
+
   def tenant_matches_user
-    return if tenant_id.blank? || user_id.blank?
-    return if user&.tenant_id == tenant_id
+    return if tenant_id.blank?
+
+    effective_user = user || user_by_uuid
+    return if effective_user.blank?
+    return if effective_user.tenant_id == tenant_id
 
     errors.add(:tenant_id, "must match user tenant")
   end

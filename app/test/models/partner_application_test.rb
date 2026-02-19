@@ -35,6 +35,8 @@ class PartnerApplicationTest < ActiveSupport::TestCase
         scopes: %w[receivables:read receivables:write]
       )
 
+      assert_equal @ops_user.uuid_id, application.created_by_user_uuid_id
+
       issued = application.issue_access_token!(requested_scopes: "receivables:read")
       token = issued.fetch(:token)
 

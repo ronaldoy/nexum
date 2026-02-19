@@ -1,6 +1,6 @@
 # Database Model Documentation
 
-Generated at: 2026-02-19T18:38:54-03:00
+Generated at: 2026-02-19T18:45:32-03:00
 Source schema: `app/db/structure.sql`
 
 ## Summary
@@ -283,6 +283,7 @@ Source schema: `app/db/structure.sql`
 | `metadata` | `jsonb` | false | `{}` | - |
 | `created_at` | `timestamp(6) without time zone` | false | `` | - |
 | `updated_at` | `timestamp(6) without time zone` | false | `` | - |
+| `user_uuid_id` | `uuid` | true | `` | `users.uuid_id` |
 
 ### Check Constraints
 
@@ -295,6 +296,7 @@ Source schema: `app/db/structure.sql`
 - `index_api_access_tokens_on_tenant_lifecycle` (non-unique): `tenant_id, revoked_at, expires_at`
 - `index_api_access_tokens_on_token_identifier` (unique): `token_identifier`
 - `index_api_access_tokens_on_user_id` (non-unique): `user_id`
+- `index_api_access_tokens_on_user_uuid_id` (non-unique): `user_uuid_id`
 
 ## `assignment_contracts`
 
@@ -1027,6 +1029,7 @@ Source schema: `app/db/structure.sql`
 | `metadata` | `jsonb` | false | `{}` | - |
 | `created_at` | `timestamp(6) without time zone` | false | `` | - |
 | `updated_at` | `timestamp(6) without time zone` | false | `` | - |
+| `created_by_user_uuid_id` | `uuid` | true | `` | `users.uuid_id` |
 
 ### Check Constraints
 
@@ -1039,6 +1042,7 @@ Source schema: `app/db/structure.sql`
 
 - `index_partner_applications_on_client_id` (unique): `client_id`
 - `index_partner_applications_on_created_by_user_id` (non-unique): `created_by_user_id`
+- `index_partner_applications_on_created_by_user_uuid_id` (non-unique): `created_by_user_uuid_id`
 - `index_partner_applications_on_tenant_id` (non-unique): `tenant_id`
 - `index_partner_applications_tenant_active_created` (non-unique): `tenant_id, active, created_at`
 
@@ -1606,12 +1610,14 @@ Source schema: `app/db/structure.sql`
 | `updated_at` | `timestamp(6) without time zone` | false | `` | - |
 | `tenant_id` | `uuid` | false | `` | `tenants.id` |
 | `admin_webauthn_verified_at` | `timestamp(6) without time zone` | true | `` | - |
+| `user_uuid_id` | `uuid` | true | `` | `users.uuid_id` |
 
 ### Indexes
 
 - `index_sessions_on_tenant_id` (non-unique): `tenant_id`
 - `index_sessions_on_tenant_id_and_user_id` (non-unique): `tenant_id, user_id`
 - `index_sessions_on_user_id` (non-unique): `user_id`
+- `index_sessions_on_user_uuid_id` (non-unique): `user_uuid_id`
 
 ## `tenants`
 
@@ -1699,6 +1705,7 @@ Source schema: `app/db/structure.sql`
 | `mfa_secret` | `character varying` | true | `` | - |
 | `mfa_last_otp_at` | `timestamp(6) without time zone` | true | `` | - |
 | `webauthn_id` | `character varying` | true | `` | - |
+| `uuid_id` | `uuid` | false | `` | - |
 
 ### Indexes
 
@@ -1706,6 +1713,7 @@ Source schema: `app/db/structure.sql`
 - `index_users_on_party_id` (non-unique): `party_id`
 - `index_users_on_tenant_id` (non-unique): `tenant_id`
 - `index_users_on_tenant_id_and_webauthn_id` (unique): `tenant_id, webauthn_id` WHERE (webauthn_id IS NOT NULL)
+- `index_users_on_uuid_id` (unique): `uuid_id`
 
 ## `webauthn_credentials`
 

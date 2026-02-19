@@ -10,6 +10,19 @@ class UserTest < ActiveSupport::TestCase
     assert_equal("downcased@example.com", user.email_address)
   end
 
+  test "assigns uuid_id for new users" do
+    user = User.create!(
+      tenant: @tenant,
+      role: "supplier_user",
+      email_address: "uuid-user@example.com",
+      password: "Password@2026",
+      password_confirmation: "Password@2026"
+    )
+
+    assert user.uuid_id.present?
+    assert_match(/\A[0-9a-f-]{36}\z/, user.uuid_id)
+  end
+
   test "encrypts email_address at rest and preserves authentication" do
     user = User.create!(
       tenant: @tenant,

@@ -11,16 +11,20 @@ class User < ApplicationRecord
 
   has_secure_password algorithm: :argon2
   has_many :sessions, dependent: :destroy
+  has_many :sessions_by_uuid, class_name: "Session", foreign_key: :user_uuid_id, primary_key: :uuid_id, inverse_of: :user_by_uuid
   has_many :api_access_tokens, dependent: :destroy
+  has_many :api_access_tokens_by_uuid, class_name: "ApiAccessToken", foreign_key: :user_uuid_id, primary_key: :uuid_id, inverse_of: :user_by_uuid
   has_many :webauthn_credentials, dependent: :destroy
   has_many :user_roles, dependent: :restrict_with_exception
   has_many :roles, through: :user_roles
 
   normalizes :email_address, with: ->(e) { e.strip.downcase }
 
+  before_validation :ensure_uuid_id
   before_validation :normalize_pending_role_code
   after_save :sync_primary_role_assignment!, if: :pending_role_code?
 
+  validates :uuid_id, presence: true, uniqueness: true
   validates :email_address, presence: true, uniqueness: true
   validates :mfa_secret, presence: true, if: :mfa_enabled?
   validate :role_presence
@@ -68,6 +72,10 @@ class User < ApplicationRecord
   end
 
   private
+
+  def ensure_uuid_id
+    self.uuid_id ||= SecureRandom.uuid
+  end
 
   def pending_role_code?
     @pending_role_code.present?

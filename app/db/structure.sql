@@ -538,6 +538,7 @@ CREATE TABLE public.api_access_tokens (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
+    user_uuid_id uuid,
     CONSTRAINT api_access_tokens_token_digest_check CHECK ((char_length((token_digest)::text) > 0)),
     CONSTRAINT api_access_tokens_token_identifier_check CHECK ((char_length((token_identifier)::text) > 0))
 );
@@ -1019,6 +1020,7 @@ CREATE TABLE public.partner_applications (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
+    created_by_user_uuid_id uuid,
     CONSTRAINT partner_applications_client_id_present_check CHECK ((btrim((client_id)::text) <> ''::text)),
     CONSTRAINT partner_applications_client_secret_digest_present_check CHECK ((btrim((client_secret_digest)::text) <> ''::text)),
     CONSTRAINT partner_applications_name_present_check CHECK ((btrim((name)::text) <> ''::text)),
@@ -1394,7 +1396,8 @@ CREATE TABLE public.sessions (
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
     tenant_id uuid NOT NULL,
-    admin_webauthn_verified_at timestamp(6) without time zone
+    admin_webauthn_verified_at timestamp(6) without time zone,
+    user_uuid_id uuid
 );
 
 ALTER TABLE ONLY public.sessions FORCE ROW LEVEL SECURITY;
@@ -1470,7 +1473,8 @@ CREATE TABLE public.users (
     mfa_enabled boolean DEFAULT false NOT NULL,
     mfa_secret character varying,
     mfa_last_otp_at timestamp(6) without time zone,
-    webauthn_id character varying
+    webauthn_id character varying,
+    uuid_id uuid DEFAULT gen_random_uuid() NOT NULL
 );
 
 ALTER TABLE ONLY public.users FORCE ROW LEVEL SECURITY;
@@ -2291,6 +2295,13 @@ CREATE INDEX index_api_access_tokens_on_user_id ON public.api_access_tokens USIN
 
 
 --
+-- Name: index_api_access_tokens_on_user_uuid_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_api_access_tokens_on_user_uuid_id ON public.api_access_tokens USING btree (user_uuid_id);
+
+
+--
 -- Name: index_assignment_contracts_on_anticipation_request_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2830,6 +2841,13 @@ CREATE INDEX index_partner_applications_on_created_by_user_id ON public.partner_
 
 
 --
+-- Name: index_partner_applications_on_created_by_user_uuid_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_partner_applications_on_created_by_user_uuid_id ON public.partner_applications USING btree (created_by_user_uuid_id);
+
+
+--
 -- Name: index_partner_applications_on_tenant_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3194,6 +3212,13 @@ CREATE INDEX index_sessions_on_user_id ON public.sessions USING btree (user_id);
 
 
 --
+-- Name: index_sessions_on_user_uuid_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_sessions_on_user_uuid_id ON public.sessions USING btree (user_uuid_id);
+
+
+--
 -- Name: index_tenants_on_slug; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3268,6 +3293,13 @@ CREATE INDEX index_users_on_tenant_id ON public.users USING btree (tenant_id);
 --
 
 CREATE UNIQUE INDEX index_users_on_tenant_id_and_webauthn_id ON public.users USING btree (tenant_id, webauthn_id) WHERE (webauthn_id IS NOT NULL);
+
+
+--
+-- Name: index_users_on_uuid_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_users_on_uuid_id ON public.users USING btree (uuid_id);
 
 
 --
@@ -3718,6 +3750,14 @@ ALTER TABLE ONLY public.escrow_accounts
 
 
 --
+-- Name: sessions fk_rails_55a0fc2018; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sessions
+    ADD CONSTRAINT fk_rails_55a0fc2018 FOREIGN KEY (user_uuid_id) REFERENCES public.users(uuid_id);
+
+
+--
 -- Name: assignment_contracts fk_rails_5b862aa1fb; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3811,6 +3851,14 @@ ALTER TABLE ONLY public.ledger_entries
 
 ALTER TABLE ONLY public.hospital_ownerships
     ADD CONSTRAINT fk_rails_78d7de9ce4 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
+-- Name: api_access_tokens fk_rails_793e971098; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.api_access_tokens
+    ADD CONSTRAINT fk_rails_793e971098 FOREIGN KEY (user_uuid_id) REFERENCES public.users(uuid_id);
 
 
 --
@@ -3979,6 +4027,14 @@ ALTER TABLE ONLY public.document_events
 
 ALTER TABLE ONLY public.kyc_profiles
     ADD CONSTRAINT fk_rails_aa8110c452 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
+-- Name: partner_applications fk_rails_b39b5fb941; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.partner_applications
+    ADD CONSTRAINT fk_rails_b39b5fb941 FOREIGN KEY (created_by_user_uuid_id) REFERENCES public.users(uuid_id);
 
 
 --
@@ -4857,6 +4913,7 @@ CREATE POLICY webauthn_credentials_tenant_policy ON public.webauthn_credentials 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260219213000'),
 ('20260219203000'),
 ('20260219195500'),
 ('20260219193000'),

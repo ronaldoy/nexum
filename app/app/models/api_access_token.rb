@@ -6,12 +6,14 @@ class ApiAccessToken < ApplicationRecord
 
   belongs_to :tenant
   belongs_to :user, optional: true
+  belongs_to :user_by_uuid, class_name: "User", foreign_key: :user_uuid_id, primary_key: :uuid_id, inverse_of: :api_access_tokens_by_uuid, optional: true
 
   validates :name, :token_identifier, :token_digest, presence: true
   validates :token_identifier, uniqueness: true
 
   scope :active, -> { where(revoked_at: nil).where("expires_at IS NULL OR expires_at > ?", Time.current) }
 
+  before_validation :sync_user_uuid_reference
   before_validation :normalize_scopes
 
   def self.issue!(tenant:, name:, scopes: [], user: nil, expires_at: nil, audit_context: {})
@@ -122,6 +124,22 @@ class ApiAccessToken < ApplicationRecord
 
   private
 
+  def sync_user_uuid_reference
+    if user.present?
+      self.user_uuid_id ||= user.uuid_id
+      return
+    end
+
+    if user_uuid_id.present? && user_id.blank?
+      self.user = User.find_by(uuid_id: user_uuid_id)
+      return
+    end
+
+    if user_id.present? && user_uuid_id.blank?
+      self.user_uuid_id = User.where(id: user_id).pick(:uuid_id)
+    end
+  end
+
   def normalize_scopes
     self.scopes = self.class.normalize_scope_values(scopes)
   end
@@ -136,7 +154,7 @@ class ApiAccessToken < ApplicationRecord
 
     ActionIpLog.create!(
       tenant_id: tenant_id,
-      actor_party_id: audit_context[:actor_party_id] || user&.party_id,
+      actor_party_id: audit_context[:actor_party_id] || effective_user&.party_id,
       action_type: action_type,
       ip_address: audit_context[:ip_address].presence || "0.0.0.0",
       user_agent: audit_context[:user_agent],
@@ -156,5 +174,9 @@ class ApiAccessToken < ApplicationRecord
       "token_id=#{id} action_type=#{action_type} error_class=#{error.class.name} error_message=#{error.message}"
     )
     raise
+  end
+
+  def effective_user
+    user || user_by_uuid
   end
 end

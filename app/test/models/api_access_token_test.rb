@@ -30,6 +30,7 @@ class ApiAccessTokenTest < ActiveSupport::TestCase
 
     assert_equal token_record.id, authenticated.id
     assert_equal %w[receivables:history receivables:read], token_record.scopes
+    assert_equal @user.uuid_id, token_record.user_uuid_id
 
     with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
       assert_equal 1, ActionIpLog.where(

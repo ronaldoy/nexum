@@ -22,6 +22,7 @@ class PartnerApplication < ApplicationRecord
 
   belongs_to :tenant
   belongs_to :created_by_user, class_name: "User", optional: true
+  belongs_to :created_by_user_by_uuid, class_name: "User", foreign_key: :created_by_user_uuid_id, primary_key: :uuid_id, optional: true
 
   validates :name, :client_id, :client_secret_digest, presence: true
   validates :scopes, presence: true
@@ -29,6 +30,7 @@ class PartnerApplication < ApplicationRecord
   validates :token_ttl_minutes, numericality: { only_integer: true, greater_than_or_equal_to: 5, less_than_or_equal_to: 60 }
   validate :scopes_must_be_known
 
+  before_validation :sync_created_by_user_uuid_reference
   before_validation :normalize_scopes
   before_validation :normalize_allowed_origins
 
@@ -191,6 +193,22 @@ class PartnerApplication < ApplicationRecord
 
   private
 
+  def sync_created_by_user_uuid_reference
+    if created_by_user.present?
+      self.created_by_user_uuid_id ||= created_by_user.uuid_id
+      return
+    end
+
+    if created_by_user_uuid_id.present? && created_by_user_id.blank?
+      self.created_by_user = User.find_by(uuid_id: created_by_user_uuid_id)
+      return
+    end
+
+    if created_by_user_id.present? && created_by_user_uuid_id.blank?
+      self.created_by_user_uuid_id = User.where(id: created_by_user_id).pick(:uuid_id)
+    end
+  end
+
   def normalize_scopes
     self.scopes = self.class.normalize_scope_values(scopes)
   end
@@ -268,7 +286,7 @@ class PartnerApplication < ApplicationRecord
 
     ActionIpLog.create!(
       tenant_id: tenant_id,
-      actor_party_id: audit_context[:actor_party_id] || created_by_user&.party_id,
+      actor_party_id: audit_context[:actor_party_id] || effective_created_by_user&.party_id,
       action_type: action_type,
       ip_address: audit_context[:ip_address].presence || "0.0.0.0",
       user_agent: audit_context[:user_agent],
@@ -297,5 +315,9 @@ class PartnerApplication < ApplicationRecord
   def normalize_hash_metadata(raw)
     normalized = normalize_metadata(raw)
     normalized.is_a?(Hash) ? normalized : {}
+  end
+
+  def effective_created_by_user
+    created_by_user || created_by_user_by_uuid
   end
 end
