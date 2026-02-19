@@ -1,0 +1,130 @@
+<main class="dashboard-shell">
+  <section class="hero-panel">
+    <div>
+      <p class="hero-kicker">Integrações de terceiros</p>
+      <h2>Aplicações parceiras OAuth client credentials</h2>
+      <p class="hero-subtitle">
+        Crie credenciais seguras para backend de front-end terceiro emitir tokens de curta duração com escopos mínimos.
+      </p>
+      <p class="hero-subtitle">
+        O segredo da aplicação aparece apenas uma vez após criação/rotação.
+      </p>
+    </div>
+    <div class="hero-meta">
+      <p><strong>Perfil:</strong> <%= role_label(Current.user&.role) %></p>
+      <p><strong>Usuário:</strong> <%= Current.user&.email_address %></p>
+      <p><strong>Tenant selecionado:</strong> <%= @selected_tenant.slug %></p>
+      <%= link_to "Voltar ao painel admin", admin_dashboard_path, class: "button button-outline" %>
+    </div>
+  </section>
+
+  <% if flash[:partner_application_client_id].present? && flash[:partner_application_client_secret].present? %>
+    <section class="panel">
+      <header class="panel-header">
+        <h3>Credencial gerada</h3>
+        <p>Armazene agora. O segredo não será exibido novamente.</p>
+      </header>
+      <div class="receivable-highlight">
+        <p><strong>client_id:</strong> <code><%= flash[:partner_application_client_id] %></code></p>
+        <p><strong>client_secret:</strong> <code><%= flash[:partner_application_client_secret] %></code></p>
+      </div>
+    </section>
+  <% end %>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Nova aplicação parceira</h3>
+      <p>Recomendação: usar backend-for-frontend com `grant_type=client_credentials` e tokens curtos.</p>
+    </header>
+
+    <%= form_with url: admin_partner_applications_path, method: :post, scope: :partner_application, class: "receivable-selector" do |form| %>
+      <div class="field">
+        <%= form.label :tenant_id, "Tenant" %>
+        <%= form.select :tenant_id,
+          options_from_collection_for_select(@tenants, :id, ->(tenant) { "#{tenant.slug} - #{tenant.name}" }, @selected_tenant.id),
+          {},
+          required: true %>
+      </div>
+
+      <div class="field">
+        <%= form.label :name, "Nome da aplicação" %>
+        <%= form.text_field :name, required: true, maxlength: 120, placeholder: "Frontend Parceiro Clínica X" %>
+      </div>
+
+      <div class="field">
+        <%= form.label :scopes_input, "Escopos permitidos" %>
+        <%= form.text_field :scopes_input, required: true, placeholder: "physicians:write receivables:write anticipation_requests:write" %>
+        <p class="field-help">
+          Escopos suportados: <code><%= @supported_scopes.join(" ") %></code>
+        </p>
+      </div>
+
+      <div class="field">
+        <%= form.label :token_ttl_minutes, "TTL do token (minutos)" %>
+        <%= form.number_field :token_ttl_minutes, min: 5, max: 60, value: 15, required: true %>
+      </div>
+
+      <div class="field">
+        <%= form.label :allowed_origins_input, "Origens HTTPS permitidas (opcional)" %>
+        <%= form.text_field :allowed_origins_input, placeholder: "https://app.parceiro.com.br https://portal.parceiro.com.br" %>
+      </div>
+
+      <div>
+        <%= form.submit "Criar aplicação", class: "button button-primary" %>
+      </div>
+    <% end %>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Aplicações cadastradas</h3>
+      <p>Use rotação periódica de segredo e desative integrações não utilizadas.</p>
+    </header>
+
+    <div class="table-wrapper">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Nome</th>
+            <th>Client ID</th>
+            <th>Escopos</th>
+            <th>TTL</th>
+            <th>Status</th>
+            <th>Último uso</th>
+            <th>Ações</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @partner_applications.each do |application| %>
+            <tr>
+              <td><strong><%= application[:name] %></strong></td>
+              <td><code><%= application[:client_id] %></code></td>
+              <td><code><%= application[:scopes].join(" ") %></code></td>
+              <td><%= application[:token_ttl_minutes] %> min</td>
+              <td>
+                <span class="status-pill"><%= application[:active] ? "Ativa" : "Inativa" %></span>
+              </td>
+              <td><%= l(application[:last_used_at], format: :short) if application[:last_used_at].present? %></td>
+              <td>
+                <div class="receivable-selector">
+                  <%= button_to "Rotacionar segredo",
+                    rotate_secret_admin_partner_application_path(application[:id], tenant_id: @selected_tenant.id),
+                    method: :post,
+                    form: { data: { turbo_confirm: "Rotacionar segredo agora?" } },
+                    class: "button button-primary" %>
+                  <% if application[:active] %>
+                    <%= button_to "Desativar",
+                      deactivate_admin_partner_application_path(application[:id], tenant_id: @selected_tenant.id),
+                      method: :patch,
+                      form: { data: { turbo_confirm: "Desativar aplicação?" } },
+                      class: "button button-outline" %>
+                  <% end %>
+                </div>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>

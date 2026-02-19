@@ -10,6 +10,7 @@ module Api
         @user = users(:one)
 
         @read_token = nil
+        @write_token = nil
         @settle_token = nil
         @document_token = nil
         @receivable = nil
@@ -25,6 +26,12 @@ module Api
             user: @user,
             name: "Receivables Read API",
             scopes: %w[receivables:read receivables:history]
+          )
+          _, @write_token = ApiAccessToken.issue!(
+            tenant: @tenant,
+            user: @user,
+            name: "Receivables Write API",
+            scopes: %w[receivables:write]
           )
           _, @settle_token = ApiAccessToken.issue!(
             tenant: @tenant,
@@ -192,6 +199,231 @@ module Api
         assert_response :success
         assert_equal 1, response.parsed_body.dig("meta", "count")
         assert_equal receivable_b.id, response.parsed_body.dig("data", 0, "id")
+      end
+
+      test "creates receivable and primary allocation with idempotency replay" do
+        payload = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          hospital = Party.create!(
+            tenant: @tenant,
+            kind: "HOSPITAL",
+            legal_name: "Hospital API Create",
+            document_number: valid_cnpj_from_seed("api-create-hospital")
+          )
+          supplier = Party.create!(
+            tenant: @tenant,
+            kind: "SUPPLIER",
+            legal_name: "Supplier API Create",
+            document_number: valid_cnpj_from_seed("api-create-supplier")
+          )
+          beneficiary = Party.create!(
+            tenant: @tenant,
+            kind: "SUPPLIER",
+            legal_name: "Beneficiary API Create",
+            document_number: valid_cnpj_from_seed("api-create-beneficiary")
+          )
+          kind = ReceivableKind.create!(
+            tenant: @tenant,
+            code: "supplier_invoice_api_create",
+            name: "Supplier API Create",
+            source_family: "SUPPLIER"
+          )
+
+          payload = {
+            receivable: {
+              external_reference: "external-api-create-001",
+              receivable_kind_code: kind.code,
+              debtor_party_id: hospital.id,
+              creditor_party_id: supplier.id,
+              beneficiary_party_id: beneficiary.id,
+              gross_amount: "150.00",
+              currency: "BRL",
+              due_at: 5.days.from_now.iso8601,
+              allocation: {
+                allocated_party_id: beneficiary.id,
+                gross_amount: "150.00",
+                tax_reserve_amount: "10.00",
+                eligible_for_anticipation: true
+              }
+            }
+          }
+        end
+
+        post api_v1_receivables_path,
+          headers: authorization_headers(@write_token, idempotency_key: "idem-receivable-create-001"),
+          params: payload,
+          as: :json
+
+        assert_response :created
+        body = response.parsed_body.fetch("data")
+        receivable_id = body.fetch("id")
+        assert_equal false, body.fetch("replayed")
+        assert body.fetch("receivable_allocation_id").present?
+        assert_equal "150.0", body.fetch("gross_amount")
+
+        post api_v1_receivables_path,
+          headers: authorization_headers(@write_token, idempotency_key: "idem-receivable-create-001"),
+          params: payload,
+          as: :json
+
+        assert_response :ok
+        assert_equal true, response.parsed_body.dig("data", "replayed")
+        assert_equal receivable_id, response.parsed_body.dig("data", "id")
+      end
+
+      test "allows partner application token to create receivable" do
+        partner_application = nil
+        client_secret = nil
+        payload = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          partner_application, client_secret = PartnerApplication.issue!(
+            tenant: @tenant,
+            created_by_user: @user,
+            name: "Partner Receivables",
+            scopes: %w[receivables:write]
+          )
+
+          hospital = Party.create!(
+            tenant: @tenant,
+            kind: "HOSPITAL",
+            legal_name: "Hospital Partner Receivable",
+            document_number: valid_cnpj_from_seed("api-partner-receivable-hospital")
+          )
+          supplier = Party.create!(
+            tenant: @tenant,
+            kind: "SUPPLIER",
+            legal_name: "Supplier Partner Receivable",
+            document_number: valid_cnpj_from_seed("api-partner-receivable-supplier")
+          )
+          kind = ReceivableKind.create!(
+            tenant: @tenant,
+            code: "supplier_invoice_partner_create",
+            name: "Supplier Partner Create",
+            source_family: "SUPPLIER"
+          )
+
+          payload = {
+            receivable: {
+              external_reference: "external-partner-create-001",
+              receivable_kind_code: kind.code,
+              debtor_party_id: hospital.id,
+              creditor_party_id: supplier.id,
+              beneficiary_party_id: supplier.id,
+              gross_amount: "80.00",
+              currency: "BRL",
+              due_at: 5.days.from_now.iso8601
+            }
+          }
+        end
+
+        post api_v1_oauth_token_path(tenant_slug: @tenant.slug),
+          params: {
+            grant_type: "client_credentials",
+            client_id: partner_application.client_id,
+            client_secret: client_secret,
+            scope: "receivables:write"
+          }
+        assert_response :success
+        partner_bearer_token = response.parsed_body.fetch("access_token")
+
+        post api_v1_receivables_path,
+          headers: authorization_headers(partner_bearer_token, idempotency_key: "idem-partner-receivable-create-001"),
+          params: payload,
+          as: :json
+
+        assert_response :created
+        assert_equal false, response.parsed_body.dig("data", "replayed")
+        assert_equal "external-partner-create-001", response.parsed_body.dig("data", "external_reference")
+      end
+
+      test "returns conflict when receivable payload differs for existing external reference" do
+        payload = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          hospital = Party.create!(
+            tenant: @tenant,
+            kind: "HOSPITAL",
+            legal_name: "Hospital API Conflict",
+            document_number: valid_cnpj_from_seed("api-conflict-hospital")
+          )
+          supplier = Party.create!(
+            tenant: @tenant,
+            kind: "SUPPLIER",
+            legal_name: "Supplier API Conflict",
+            document_number: valid_cnpj_from_seed("api-conflict-supplier")
+          )
+          kind = ReceivableKind.create!(
+            tenant: @tenant,
+            code: "supplier_invoice_api_conflict",
+            name: "Supplier API Conflict",
+            source_family: "SUPPLIER"
+          )
+
+          payload = {
+            receivable: {
+              external_reference: "external-api-conflict-001",
+              receivable_kind_code: kind.code,
+              debtor_party_id: hospital.id,
+              creditor_party_id: supplier.id,
+              beneficiary_party_id: supplier.id,
+              gross_amount: "200.00",
+              currency: "BRL",
+              due_at: 5.days.from_now.iso8601
+            }
+          }
+        end
+
+        post api_v1_receivables_path,
+          headers: authorization_headers(@write_token, idempotency_key: "idem-receivable-conflict-001"),
+          params: payload,
+          as: :json
+        assert_response :created
+
+        payload[:receivable][:gross_amount] = "250.00"
+        post api_v1_receivables_path,
+          headers: authorization_headers(@write_token, idempotency_key: "idem-receivable-conflict-001"),
+          params: payload,
+          as: :json
+
+        assert_response :conflict
+        assert_equal "idempotency_key_reused_with_different_payload", response.parsed_body.dig("error", "code")
+      end
+
+      test "requires write scope for receivable creation" do
+        post api_v1_receivables_path,
+          headers: authorization_headers(@read_token, idempotency_key: "idem-receivable-scope-001"),
+          params: {
+            receivable: {
+              external_reference: "scope-blocked-001",
+              gross_amount: "100.00"
+            }
+          },
+          as: :json
+
+        assert_response :forbidden
+        assert_equal "insufficient_scope", response.parsed_body.dig("error", "code")
+      end
+
+      test "rejects non-string gross amount payload for creation" do
+        post api_v1_receivables_path,
+          headers: authorization_headers(@write_token, idempotency_key: "idem-receivable-type-001"),
+          params: {
+            receivable: {
+              external_reference: "type-receivable-001",
+              receivable_kind_code: "missing",
+              debtor_party_id: SecureRandom.uuid,
+              creditor_party_id: SecureRandom.uuid,
+              beneficiary_party_id: SecureRandom.uuid,
+              gross_amount: 100.0,
+              due_at: 5.days.from_now.iso8601
+            }
+          },
+          as: :json
+
+        assert_response :unprocessable_entity
+        assert_equal "invalid_gross_amount_type", response.parsed_body.dig("error", "code")
       end
 
       test "returns append-only history timeline" do

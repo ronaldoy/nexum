@@ -1,11 +1,11 @@
 # Database Model Documentation
 
-Generated at: 2026-02-19T17:57:38-03:00
+Generated at: 2026-02-19T18:38:54-03:00
 Source schema: `app/db/structure.sql`
 
 ## Summary
 
-- Total tables documented: 41
+- Total tables documented: 43
 - Tables with append-only mutation guard: 11
 - Business timezone: `America/Sao_Paulo`
 
@@ -566,6 +566,59 @@ Source schema: `app/db/structure.sql`
 - `index_escrow_payouts_on_tenant_settlement_party` (unique): `tenant_id, receivable_payment_settlement_id, party_id` WHERE (receivable_payment_settlement_id IS NOT NULL)
 - `index_escrow_payouts_on_tenant_status_requested_at` (non-unique): `tenant_id, status, requested_at`
 
+## `fdic_operations`
+
+- Primary key: `id`
+- RLS enabled: `true`
+- RLS forced: `true`
+- Append-only guard: `false`
+
+- Policies:
+  - `fdic_operations_tenant_policy`
+
+### Columns
+
+| Column | SQL Type | Null | Default | FK |
+| --- | --- | --- | --- | --- |
+| `id` | `uuid` | false | `` | - |
+| `tenant_id` | `uuid` | false | `` | `tenants.id` |
+| `anticipation_request_id` | `uuid` | true | `` | `anticipation_requests.id` |
+| `receivable_payment_settlement_id` | `uuid` | true | `` | `receivable_payment_settlements.id` |
+| `provider` | `character varying` | false | `` | - |
+| `operation_type` | `character varying` | false | `` | - |
+| `status` | `character varying` | false | `PENDING` | - |
+| `amount` | `numeric(18,2)` | false | `` | - |
+| `currency` | `character varying` | false | `BRL` | - |
+| `idempotency_key` | `character varying` | false | `` | - |
+| `provider_reference` | `character varying` | true | `` | - |
+| `requested_at` | `timestamp(6) without time zone` | false | `` | - |
+| `processed_at` | `timestamp(6) without time zone` | true | `` | - |
+| `last_error_code` | `character varying` | true | `` | - |
+| `last_error_message` | `character varying` | true | `` | - |
+| `metadata` | `jsonb` | false | `{}` | - |
+| `created_at` | `timestamp(6) without time zone` | false | `` | - |
+| `updated_at` | `timestamp(6) without time zone` | false | `` | - |
+
+### Check Constraints
+
+- `fdic_operations_amount_positive_check`: `amount > 0::numeric`
+- `fdic_operations_currency_check`: `currency::text = 'BRL'::text`
+- `fdic_operations_idempotency_key_present_check`: `btrim(idempotency_key::text) <> ''::text`
+- `fdic_operations_operation_type_check`: `operation_type::text = ANY (ARRAY['FUNDING_REQUEST'::character varying, 'SETTLEMENT_REPORT'::character varying]::text[])`
+- `fdic_operations_provider_check`: `provider::text = ANY (ARRAY['MOCK'::character varying, 'WEBHOOK'::character varying]::text[])`
+- `fdic_operations_single_source_reference_check`: `anticipation_request_id IS NOT NULL AND receivable_payment_settlement_id IS NULL OR anticipation_request_id IS NULL AND receivable_payment_settlement_id IS NOT NULL`
+- `fdic_operations_status_check`: `status::text = ANY (ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying]::text[])`
+
+### Indexes
+
+- `index_fdic_operations_dispatch_scan` (non-unique): `tenant_id, operation_type, status, requested_at`
+- `index_fdic_operations_on_anticipation_request_id` (non-unique): `anticipation_request_id`
+- `index_fdic_operations_on_receivable_payment_settlement_id` (non-unique): `receivable_payment_settlement_id`
+- `index_fdic_operations_on_tenant_id` (non-unique): `tenant_id`
+- `index_fdic_operations_on_tenant_idempotency_key` (unique): `tenant_id, idempotency_key`
+- `index_fdic_operations_unique_funding_per_request` (unique): `tenant_id, anticipation_request_id, operation_type` WHERE (anticipation_request_id IS NOT NULL)
+- `index_fdic_operations_unique_settlement_per_payment` (unique): `tenant_id, receivable_payment_settlement_id, operation_type` WHERE (receivable_payment_settlement_id IS NOT NULL)
+
 ## `hospital_ownerships`
 
 - Primary key: `id`
@@ -944,6 +997,50 @@ Source schema: `app/db/structure.sql`
 - `index_parties_on_tenant_id` (non-unique): `tenant_id`
 - `index_parties_on_tenant_kind_document` (unique): `tenant_id, kind, document_number` WHERE (document_number IS NOT NULL)
 - `index_parties_on_tenant_kind_external_ref` (unique): `tenant_id, kind, external_ref` WHERE (external_ref IS NOT NULL)
+
+## `partner_applications`
+
+- Primary key: `id`
+- RLS enabled: `true`
+- RLS forced: `true`
+- Append-only guard: `false`
+
+- Policies:
+  - `partner_applications_tenant_policy`
+
+### Columns
+
+| Column | SQL Type | Null | Default | FK |
+| --- | --- | --- | --- | --- |
+| `id` | `uuid` | false | `` | - |
+| `tenant_id` | `uuid` | false | `` | `tenants.id` |
+| `created_by_user_id` | `bigint` | true | `` | `users.id` |
+| `name` | `character varying` | false | `` | - |
+| `client_id` | `character varying` | false | `` | - |
+| `client_secret_digest` | `character varying` | false | `` | - |
+| `scopes` | `text` | false | `{}` | - |
+| `token_ttl_minutes` | `integer` | false | `15` | - |
+| `allowed_origins` | `text` | false | `{}` | - |
+| `active` | `boolean` | false | `true` | - |
+| `last_used_at` | `timestamp(6) without time zone` | true | `` | - |
+| `rotated_at` | `timestamp(6) without time zone` | true | `` | - |
+| `metadata` | `jsonb` | false | `{}` | - |
+| `created_at` | `timestamp(6) without time zone` | false | `` | - |
+| `updated_at` | `timestamp(6) without time zone` | false | `` | - |
+
+### Check Constraints
+
+- `partner_applications_client_id_present_check`: `btrim(client_id::text) <> ''::text`
+- `partner_applications_client_secret_digest_present_check`: `btrim(client_secret_digest::text) <> ''::text`
+- `partner_applications_name_present_check`: `btrim(name::text) <> ''::text`
+- `partner_applications_token_ttl_range_check`: `token_ttl_minutes >= 5 AND token_ttl_minutes <= 60`
+
+### Indexes
+
+- `index_partner_applications_on_client_id` (unique): `client_id`
+- `index_partner_applications_on_created_by_user_id` (non-unique): `created_by_user_id`
+- `index_partner_applications_on_tenant_id` (non-unique): `tenant_id`
+- `index_partner_applications_tenant_active_created` (non-unique): `tenant_id, active, created_at`
 
 ## `physician_anticipation_authorizations`
 

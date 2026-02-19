@@ -46,6 +46,27 @@ The system supports:
 - Privileged actions and money movement are IP-logged.
 - `ops_admin` access to global `/admin/dashboard` requires a WebAuthn passkey step-up (second factor).
 - Signed documents are stored with immutable evidence (`sha256`, `storage_key`, timestamps, actor).
+- Third-party frontend integrations use OAuth 2.0 client credentials with short-lived Bearer tokens and scope allowlists (`partner_applications`).
+
+## Third-party frontend authentication
+
+- Admin creates partner credentials in:
+  - `GET /admin/partner_applications`
+  - `POST /admin/partner_applications`
+- OAuth token issuance endpoint:
+  - `POST /api/v1/oauth/token/:tenant_slug`
+- Token grant supported:
+  - `grant_type=client_credentials`
+- Credential transport:
+  - Standard HTTP Basic (`Authorization: Basic base64(client_id:client_secret)`) or body `client_id/client_secret`
+- Token behavior:
+  - short TTL (5..60 minutes, default 15)
+  - scope subset issuance (`scope=...`)
+  - secret rotation and deactivation revoke active issued tokens for the partner application
+- New partner-facing endpoints for intake:
+  - `POST /api/v1/physicians`
+  - `GET /api/v1/physicians/:id`
+  - `POST /api/v1/receivables`
 
 ## Hospital organizations and multi-hospital management
 
@@ -104,13 +125,21 @@ For account opening, provide provider-specific payload in party metadata:
 
 - `GET /health`
 - `GET /ready`
+- `POST /api/v1/oauth/token/:tenant_slug`
 - `POST /webhooks/escrow/:provider/:tenant_slug`
 - `GET /admin/dashboard`
 - `GET /admin/api_access_tokens`
 - `POST /admin/api_access_tokens`
 - `DELETE /admin/api_access_tokens/:id`
+- `GET /admin/partner_applications`
+- `POST /admin/partner_applications`
+- `POST /admin/partner_applications/:id/rotate_secret`
+- `PATCH /admin/partner_applications/:id/deactivate`
 - `GET /api/v1/hospital_organizations`
+- `POST /api/v1/physicians`
+- `GET /api/v1/physicians/:id`
 - `GET /api/v1/receivables`
+- `POST /api/v1/receivables`
 - `GET /api/v1/receivables/:id`
 - `GET /api/v1/receivables/:id/history`
 - `POST /api/v1/receivables/:id/settle_payment`
@@ -127,6 +156,7 @@ For account opening, provide provider-specific payload in party metadata:
 - OpenAPI contract: `docs/openapi/v1.yaml`
 - Generated API reference: `docs/api_reference.md`
 - Generated DB model docs: `docs/database_model.md`
+- Planned migration strategy for `users.id` UUID transition: `docs/user_id_uuid_migration_plan.md`
 - Changelog and release notes source: `CHANGELOG.md`
 
 Regenerate API and DB docs:

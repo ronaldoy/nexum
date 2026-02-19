@@ -11,7 +11,9 @@ servers:
   - url: /
 tags:
   - name: Health
+  - name: Authentication
   - name: Receivables
+  - name: Physicians
   - name: Organizations
   - name: Anticipation
   - name: KYC
@@ -46,6 +48,53 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReadyResponse"
+  /api/v1/oauth/token/{tenant_slug}:
+    post:
+      tags: [Authentication]
+      summary: Issue OAuth access token with client credentials
+      operationId: issueOAuthToken
+      parameters:
+        - $ref: "#/components/parameters/TenantSlug"
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: "#/components/schemas/OAuthTokenRequest"
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OAuthTokenRequest"
+      responses:
+        "200":
+          description: OAuth access token issued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthTokenResponse"
+        "400":
+          description: OAuth request validation error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthErrorResponse"
+        "401":
+          description: OAuth client authentication failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthErrorResponse"
+        "422":
+          description: OAuth payload could not be processed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthErrorResponse"
+        "503":
+          description: OAuth context unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthErrorResponse"
   /api/v1/receivables:
     get:
       tags: [Receivables]
@@ -71,6 +120,104 @@ paths:
           $ref: "#/components/responses/UnauthorizedError"
         "403":
           $ref: "#/components/responses/ForbiddenError"
+    post:
+      tags: [Receivables]
+      summary: Create receivable
+      operationId: createReceivable
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReceivableRequest"
+      responses:
+        "201":
+          description: Receivable created.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "200":
+          description: Replay of previously created receivable.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/v1/physicians:
+    post:
+      tags: [Physicians]
+      summary: Create physician profile
+      operationId: createPhysician
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePhysicianRequest"
+      responses:
+        "201":
+          description: Physician created.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "200":
+          description: Replay of previously created physician.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/v1/physicians/{id}:
+    get:
+      tags: [Physicians]
+      summary: Fetch physician by id
+      operationId: getPhysician
+      parameters:
+        - $ref: "#/components/parameters/GenericId"
+      responses:
+        "200":
+          description: Physician profile.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
   /api/v1/hospital_organizations:
     get:
       tags: [Organizations]
@@ -439,6 +586,14 @@ paths:
           $ref: "#/components/responses/ValidationError"
 components:
   parameters:
+    TenantSlug:
+      name: tenant_slug
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 2
+      description: Tenant slug used for OAuth token issuance.
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -547,10 +702,141 @@ components:
         timestamp:
           type: string
           format: date-time
+    OAuthTokenRequest:
+      type: object
+      required: [grant_type]
+      properties:
+        grant_type:
+          type: string
+          enum: [client_credentials]
+        client_id:
+          type: string
+          description: Optional when using HTTP Basic credentials.
+        client_secret:
+          type: string
+          description: Optional when using HTTP Basic credentials.
+        scope:
+          type: string
+          description: Space-separated subset of allowed scopes.
+    OAuthTokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in, scope]
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          minimum: 1
+        scope:
+          type: string
+    OAuthErrorResponse:
+      type: object
+      required: [error, error_description]
+      properties:
+        error:
+          type: string
+        error_description:
+          type: string
+        request_id:
+          type: string
     MoneyString:
       type: string
       pattern: '^\d+\.\d{2}$'
       examples: ["100.00", "0.01"]
+    CreatePhysicianRequest:
+      type: object
+      required: [full_name, email, document_number]
+      properties:
+        full_name:
+          type: string
+        display_name:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        document_number:
+          type: string
+          description: CPF digits only or masked input.
+        external_ref:
+          type: string
+        crm_number:
+          type: string
+        crm_state:
+          type: string
+          minLength: 2
+          maxLength: 2
+        metadata:
+          type: object
+          additionalProperties: true
+        party_metadata:
+          type: object
+          additionalProperties: true
+    CreateReceivableRequest:
+      type: object
+      required:
+        - external_reference
+        - receivable_kind_code
+        - debtor_party_id
+        - creditor_party_id
+        - beneficiary_party_id
+        - gross_amount
+        - due_at
+      properties:
+        external_reference:
+          type: string
+        receivable_kind_code:
+          type: string
+        debtor_party_id:
+          type: string
+          format: uuid
+        creditor_party_id:
+          type: string
+          format: uuid
+        beneficiary_party_id:
+          type: string
+          format: uuid
+        gross_amount:
+          $ref: "#/components/schemas/MoneyString"
+        currency:
+          type: string
+          enum: [BRL]
+        performed_at:
+          type: string
+          format: date-time
+        due_at:
+          type: string
+          format: date-time
+        cutoff_at:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties: true
+        allocation:
+          $ref: "#/components/schemas/ReceivableAllocationInput"
+    ReceivableAllocationInput:
+      type: object
+      properties:
+        allocated_party_id:
+          type: string
+          format: uuid
+        physician_party_id:
+          type: string
+          format: uuid
+        gross_amount:
+          $ref: "#/components/schemas/MoneyString"
+        tax_reserve_amount:
+          $ref: "#/components/schemas/MoneyString"
+        eligible_for_anticipation:
+          type: boolean
+        metadata:
+          type: object
+          additionalProperties: true
     Receivable:
       type: object
       required: [id]

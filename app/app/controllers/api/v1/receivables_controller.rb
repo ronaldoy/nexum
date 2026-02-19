@@ -4,6 +4,7 @@ module Api
       require_api_scopes(
         index: "receivables:read",
         show: "receivables:read",
+        create: "receivables:write",
         history: "receivables:history",
         settle_payment: "receivables:settle",
         attach_document: "receivables:documents:write"
@@ -33,6 +34,26 @@ module Api
           .find(params[:id])
 
         render json: { data: receivable_payload(receivable) }
+      end
+
+      def create
+        return unless enforce_string_payload_type!(create_params, :gross_amount)
+        return unless enforce_optional_nested_string_payload_type!(create_params[:allocation], :gross_amount, prefix: "allocation")
+        return unless enforce_optional_nested_string_payload_type!(create_params[:allocation], :tax_reserve_amount, prefix: "allocation")
+
+        result = receivable_create_service.call(create_params.to_h)
+        receivable = result.receivable
+
+        render json: {
+          data: receivable_payload(receivable).merge(
+            replayed: result.replayed?,
+            receivable_allocation_id: result.allocation&.id
+          )
+        }, status: (result.replayed? ? :ok : :created)
+      rescue Receivables::Create::IdempotencyConflict => error
+        render_api_error(code: error.code, message: error.message, status: :conflict)
+      rescue Receivables::Create::ValidationError => error
+        render_api_error(code: error.code, message: error.message, status: :unprocessable_entity)
       end
 
       def history
@@ -204,6 +225,24 @@ module Api
         )
       end
 
+      def create_params
+        payload = params[:receivable].presence || params
+        payload.permit(
+          :external_reference,
+          :receivable_kind_code,
+          :debtor_party_id,
+          :creditor_party_id,
+          :beneficiary_party_id,
+          :gross_amount,
+          :currency,
+          :performed_at,
+          :due_at,
+          :cutoff_at,
+          metadata: {},
+          allocation: [ :allocated_party_id, :physician_party_id, :gross_amount, :tax_reserve_amount, :eligible_for_anticipation, { metadata: {} } ]
+        )
+      end
+
       def attach_document_params
         payload = params[:document].presence || params
         payload.permit(
@@ -225,6 +264,19 @@ module Api
         Receivables::SettlePayment.new(
           tenant_id: Current.tenant_id,
           actor_party_id: current_actor_party_id,
+          actor_role: Current.role,
+          request_id: Current.request_id,
+          idempotency_key: Current.idempotency_key,
+          request_ip: request.remote_ip,
+          user_agent: request.user_agent,
+          endpoint_path: request.fullpath,
+          http_method: request.method
+        )
+      end
+
+      def receivable_create_service
+        Receivables::Create.new(
+          tenant_id: Current.tenant_id,
           actor_role: Current.role,
           request_id: Current.request_id,
           idempotency_key: Current.idempotency_key,
@@ -295,6 +347,20 @@ module Api
         render_api_error(
           code: "invalid_#{key}_type",
           message: "#{key} must be provided as a string.",
+          status: :unprocessable_entity
+        )
+        false
+      end
+
+      def enforce_optional_nested_string_payload_type!(payload, key, prefix:)
+        return true if payload.blank?
+
+        raw_value = payload[key] || payload[key.to_s]
+        return true if raw_value.blank? || raw_value.is_a?(String)
+
+        render_api_error(
+          code: "invalid_#{prefix}_#{key}_type",
+          message: "#{prefix}.#{key} must be provided as a string.",
           status: :unprocessable_entity
         )
         false

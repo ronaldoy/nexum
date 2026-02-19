@@ -10,8 +10,10 @@ Rails.application.routes.draw do
 
   namespace :api do
     namespace :v1 do
+      post "oauth/token/:tenant_slug", to: "oauth/tokens#create", as: :oauth_token
       resources :hospital_organizations, only: %i[index]
-      resources :receivables, only: %i[index show] do
+      resources :physicians, only: %i[create show]
+      resources :receivables, only: %i[index show create] do
         get :history, on: :member
         post :settle_payment, on: :member
         post :attach_document, on: :member
@@ -36,6 +38,10 @@ Rails.application.routes.draw do
 
     get :dashboard, to: "dashboard#show"
     resources :api_access_tokens, only: %i[index create destroy]
+    resources :partner_applications, only: %i[index create] do
+      post :rotate_secret, on: :member
+      patch :deactivate, on: :member
+    end
   end
 
   # Define your application routes per the DSL in https://guides.rubyonrails.org/routing.html

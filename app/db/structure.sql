@@ -1000,6 +1000,35 @@ ALTER TABLE ONLY public.parties FORCE ROW LEVEL SECURITY;
 
 
 --
+-- Name: partner_applications; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.partner_applications (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    created_by_user_id bigint,
+    name character varying NOT NULL,
+    client_id character varying NOT NULL,
+    client_secret_digest character varying NOT NULL,
+    scopes text[] DEFAULT '{}'::text[] NOT NULL,
+    token_ttl_minutes integer DEFAULT 15 NOT NULL,
+    allowed_origins text[] DEFAULT '{}'::text[] NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    last_used_at timestamp(6) without time zone,
+    rotated_at timestamp(6) without time zone,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT partner_applications_client_id_present_check CHECK ((btrim((client_id)::text) <> ''::text)),
+    CONSTRAINT partner_applications_client_secret_digest_present_check CHECK ((btrim((client_secret_digest)::text) <> ''::text)),
+    CONSTRAINT partner_applications_name_present_check CHECK ((btrim((name)::text) <> ''::text)),
+    CONSTRAINT partner_applications_token_ttl_range_check CHECK (((token_ttl_minutes >= 5) AND (token_ttl_minutes <= 60)))
+);
+
+ALTER TABLE ONLY public.partner_applications FORCE ROW LEVEL SECURITY;
+
+
+--
 -- Name: physician_anticipation_authorizations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1721,6 +1750,14 @@ ALTER TABLE ONLY public.outbox_events
 
 ALTER TABLE ONLY public.parties
     ADD CONSTRAINT parties_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: partner_applications partner_applications_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.partner_applications
+    ADD CONSTRAINT partner_applications_pkey PRIMARY KEY (id);
 
 
 --
@@ -2779,6 +2816,34 @@ CREATE UNIQUE INDEX index_parties_on_tenant_kind_external_ref ON public.parties 
 
 
 --
+-- Name: index_partner_applications_on_client_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_partner_applications_on_client_id ON public.partner_applications USING btree (client_id);
+
+
+--
+-- Name: index_partner_applications_on_created_by_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_partner_applications_on_created_by_user_id ON public.partner_applications USING btree (created_by_user_id);
+
+
+--
+-- Name: index_partner_applications_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_partner_applications_on_tenant_id ON public.partner_applications USING btree (tenant_id);
+
+
+--
+-- Name: index_partner_applications_tenant_active_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_partner_applications_tenant_active_created ON public.partner_applications USING btree (tenant_id, active, created_at);
+
+
+--
 -- Name: index_physician_anticipation_authorizations_on_tenant_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3773,6 +3838,14 @@ ALTER TABLE ONLY public.parties
 
 
 --
+-- Name: partner_applications fk_rails_8092ee2601; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.partner_applications
+    ADD CONSTRAINT fk_rails_8092ee2601 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
 -- Name: receivable_events fk_rails_8228e3bde7; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3850,6 +3923,14 @@ ALTER TABLE ONLY public.receivable_allocations
 
 ALTER TABLE ONLY public.active_storage_variant_records
     ADD CONSTRAINT fk_rails_993965df05 FOREIGN KEY (blob_id) REFERENCES public.active_storage_blobs(id);
+
+
+--
+-- Name: partner_applications fk_rails_9b0bbe7b37; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.partner_applications
+    ADD CONSTRAINT fk_rails_9b0bbe7b37 FOREIGN KEY (created_by_user_id) REFERENCES public.users(id);
 
 
 --
@@ -4509,6 +4590,19 @@ CREATE POLICY parties_tenant_policy ON public.parties USING ((tenant_id = public
 
 
 --
+-- Name: partner_applications; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.partner_applications ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: partner_applications partner_applications_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY partner_applications_tenant_policy ON public.partner_applications USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
 -- Name: physician_anticipation_authorizations; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -4763,6 +4857,7 @@ CREATE POLICY webauthn_credentials_tenant_policy ON public.webauthn_credentials 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260219203000'),
 ('20260219195500'),
 ('20260219193000'),
 ('20260219182000'),

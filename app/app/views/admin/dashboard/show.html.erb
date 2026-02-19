@@ -15,6 +15,7 @@
       <p><strong>Usuário:</strong> <%= Current.user&.email_address %></p>
       <p><strong>Tenants ativos:</strong> <%= @totals[:active_tenants_count] %>/<%= @totals[:tenants_count] %></p>
       <%= link_to "Gerenciar tokens API", admin_api_access_tokens_path, class: "button button-primary" %>
+      <%= link_to "Aplicações parceiras", admin_partner_applications_path, class: "button button-primary" %>
       <%= link_to "Voltar ao portal", root_path, class: "button button-outline" %>
     </div>
   </section>

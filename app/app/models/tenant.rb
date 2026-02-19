@@ -13,6 +13,7 @@ class Tenant < ApplicationRecord
   has_many :roles, dependent: :restrict_with_exception
   has_many :user_roles, dependent: :restrict_with_exception
   has_many :api_access_tokens, dependent: :restrict_with_exception
+  has_many :partner_applications, dependent: :restrict_with_exception
   has_many :webauthn_credentials, dependent: :restrict_with_exception
   has_many :assignment_contracts, dependent: :restrict_with_exception
   has_many :hospital_ownerships, dependent: :restrict_with_exception
