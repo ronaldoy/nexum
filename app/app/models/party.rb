@@ -81,7 +81,7 @@ class Party < ApplicationRecord
 
     numbers = digits.chars.map(&:to_i)
     first_check = cpf_check_digit(numbers[0..8], 10)
-    second_check = cpf_check_digit(numbers[0..8] + [first_check], 11)
+    second_check = cpf_check_digit(numbers[0..8] + [ first_check ], 11)
 
     numbers[9] == first_check && numbers[10] == second_check
   end
@@ -97,8 +97,8 @@ class Party < ApplicationRecord
     return false if repeated_digits?(digits)
 
     numbers = digits.chars.map(&:to_i)
-    first_check = cnpj_check_digit(numbers[0..11], [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
-    second_check = cnpj_check_digit(numbers[0..11] + [first_check], [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
+    first_check = cnpj_check_digit(numbers[0..11], [ 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2 ])
+    second_check = cnpj_check_digit(numbers[0..11] + [ first_check ], [ 6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2 ])
 
     numbers[12] == first_check && numbers[13] == second_check
   end

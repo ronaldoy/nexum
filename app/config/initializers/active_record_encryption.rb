@@ -3,13 +3,14 @@ require "base64"
 Rails.application.configure do
   encryption_credentials = Rails.app.creds.option(:active_record_encryption, default: {})
   encryption_credentials = encryption_credentials.to_h.deep_symbolize_keys
+  allow_dev_fallback = Rails.env.development? || Rails.env.test?
 
   primary_key = encryption_credentials[:primary_key].to_s
   deterministic_key = encryption_credentials[:deterministic_key].to_s
   key_derivation_salt = encryption_credentials[:key_derivation_salt].to_s
 
   if [ primary_key, deterministic_key, key_derivation_salt ].any?(&:blank?)
-    if Rails.env.production?
+    unless allow_dev_fallback
       raise "Missing active_record_encryption keys in Rails credentials."
     end
 
@@ -36,6 +37,6 @@ Rails.application.configure do
   config.active_record.encryption.key_derivation_salt = key_derivation_salt
   config.active_record.encryption.hash_digest_class = OpenSSL::Digest::SHA256
   config.active_record.encryption.store_key_references = true
-  config.active_record.encryption.support_unencrypted_data = !Rails.env.production?
+  config.active_record.encryption.support_unencrypted_data = allow_dev_fallback
   config.active_record.encryption.extend_queries = true
 end

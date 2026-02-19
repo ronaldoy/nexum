@@ -46,7 +46,7 @@ Rails.application.configure do
   # Skip http-to-https redirect for health endpoints used by infrastructure probes.
   config.ssl_options = {
     redirect: {
-      exclude: ->(request) { ["/up", "/health", "/ready"].include?(request.path) }
+      exclude: ->(request) { [ "/up", "/health", "/ready" ].include?(request.path) }
     },
     hsts: {
       expires: 2.years,

@@ -6,6 +6,7 @@
 Rails.application.config.filter_parameters += [
   :passw,
   :password,
+  :metadata,
   :email,
   :email_address,
   :phone,
@@ -28,5 +29,6 @@ Rails.application.config.filter_parameters += [
   :otp,
   :ssn,
   :cvv,
-  :cvc
+  :cvc,
+  /cpf|cnpj|document|email|phone|whatsapp|name|nome|rg|cnh|passport|address|endereco|birth|dob|token|secret|password|otp|crm|ssn|cvv|cvc/i
 ]

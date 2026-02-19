@@ -36,6 +36,25 @@ class ActiveStorage::DirectUploadsControllerTest < ActionDispatch::IntegrationTe
     assert_equal @tenant.id.to_s, blob.metadata["tenant_id"]
   end
 
+  test "overwrites spoofed tenant metadata on direct upload" do
+    secondary_tenant = tenants(:secondary)
+    payload = valid_blob_payload.deep_dup
+    payload[:blob][:metadata] = {
+      "tenant_id" => secondary_tenant.id.to_s,
+      "actor_party_id" => "spoofed-actor"
+    }
+
+    post rails_direct_uploads_path,
+      headers: { "Authorization" => "Bearer #{@token}" },
+      params: payload,
+      as: :json
+
+    assert_response :success
+    blob = ActiveStorage::Blob.find_signed!(response.parsed_body["signed_id"])
+    assert_equal @tenant.id.to_s, blob.metadata["tenant_id"]
+    refute_equal secondary_tenant.id.to_s, blob.metadata["tenant_id"]
+  end
+
   test "rejects oversized direct uploads" do
     oversized = valid_blob_payload.deep_dup
     oversized[:blob][:byte_size] = 50.megabytes

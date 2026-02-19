@@ -2,6 +2,7 @@
 
 class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   ALLOWED_SCOPES = %w[receivables:documents:write kyc:write documents:upload].freeze
+  DEFAULT_ACTOR_ROLE = "integration_api".freeze
   DEFAULT_ALLOWED_CONTENT_TYPES = %w[
     application/pdf
     image/jpeg
@@ -14,8 +15,16 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   skip_forgery_protection
 
   def create
-    blob = ActiveStorage::Blob.create_before_direct_upload!(**blob_args)
-    render json: direct_upload_json(blob)
+    with_database_context(
+      tenant_id: @current_tenant_id,
+      actor_id: @current_actor_party_id,
+      role: @current_actor_role
+    ) do
+      blob = ActiveStorage::Blob.create_before_direct_upload!(**blob_args)
+      render json: direct_upload_json(blob)
+    end
+  rescue ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid
+    render_context_unavailable
   end
 
   private
@@ -43,6 +52,7 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
 
       @current_tenant_id = tenant_id.to_s
       @current_actor_party_id = user.party_id&.to_s
+      @current_actor_role = user.role.to_s
       true
     end
   end
@@ -60,6 +70,7 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
       token.touch_last_used!
       @current_tenant_id = token.tenant_id.to_s
       @current_actor_party_id = token.user&.party_id&.to_s
+      @current_actor_role = token.user&.role.to_s.presence || DEFAULT_ACTOR_ROLE
       true
     end
   end
@@ -91,7 +102,7 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   end
 
   def blob_args
-    args = params.expect(blob: [:filename, :byte_size, :checksum, :content_type, metadata: {}]).to_h.symbolize_keys
+    args = params.expect(blob: [ :filename, :byte_size, :checksum, :content_type, metadata: {} ]).to_h.symbolize_keys
     metadata = args[:metadata].is_a?(Hash) ? args[:metadata] : {}
 
     args.merge(
@@ -134,17 +145,38 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
     }, status: :unauthorized
   end
 
-  def with_database_tenant_context(tenant_id)
-    ActiveRecord::Base.connection_pool.with_connection do
-      ActiveRecord::Base.transaction(requires_new: true) do
-        ActiveRecord::Base.connection.raw_connection.exec_params(
-          "SELECT set_config($1, $2, true)",
-          ["app.tenant_id", tenant_id.to_s]
-        )
-        yield
-      end
+  def render_context_unavailable
+    render json: {
+      error: {
+        code: "request_context_unavailable",
+        message: "Authentication context could not be established."
+      }
+    }, status: :service_unavailable
+  end
+
+  def with_database_tenant_context(tenant_id, actor_id: nil, role: nil)
+    with_database_context(tenant_id:, actor_id:, role:) do
+      yield
     end
   rescue ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid
     false
+  end
+
+  def with_database_context(tenant_id:, actor_id: nil, role: nil)
+    ActiveRecord::Base.connection_pool.with_connection do
+      ActiveRecord::Base.transaction(requires_new: true) do
+        set_database_context!("app.tenant_id", tenant_id)
+        set_database_context!("app.actor_id", actor_id)
+        set_database_context!("app.role", role)
+        yield
+      end
+    end
+  end
+
+  def set_database_context!(key, value)
+    ActiveRecord::Base.connection.raw_connection.exec_params(
+      "SELECT set_config($1, $2, true)",
+      [ key.to_s, value.to_s ]
+    )
   end
 end

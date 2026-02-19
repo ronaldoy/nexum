@@ -54,7 +54,7 @@ module RequestContext
     def set_database_context!(key, value)
       ActiveRecord::Base.connection.raw_connection.exec_params(
         "SELECT set_config($1, $2, true)",
-        [key.to_s, value.to_s]
+        [ key.to_s, value.to_s ]
       )
     rescue ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid => error
       raise ContextError, "failed to apply request context #{key}: #{error.message}"

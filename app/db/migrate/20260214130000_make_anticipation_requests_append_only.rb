@@ -19,7 +19,7 @@ class MakeAnticipationRequestsAppendOnly < ActiveRecord::Migration[8.2]
     end
 
     add_index :anticipation_request_events,
-              [:tenant_id, :anticipation_request_id, :sequence],
+              [ :tenant_id, :anticipation_request_id, :sequence ],
               unique: true,
               name: "idx_anticipation_request_events_unique_seq"
 

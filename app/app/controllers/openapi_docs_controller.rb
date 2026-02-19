@@ -29,6 +29,9 @@ class OpenapiDocsController < ActionController::API
     provided_token = request.headers["Authorization"]&.delete_prefix("Bearer ")&.strip
     return if provided_token.present? && ActiveSupport::SecurityUtils.secure_compare(provided_token, expected_token)
 
+    Rails.logger.warn(
+      "openapi_docs_token_invalid request_id=#{request.request_id} remote_ip=#{request.remote_ip}"
+    )
     render_unauthorized
   end
 

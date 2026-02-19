@@ -18,12 +18,12 @@ class CanonicalJsonTest < ActiveSupport::TestCase
   end
 
   test "encodes arrays preserving order" do
-    result = CanonicalJson.encode([3, 1, 2])
+    result = CanonicalJson.encode([ 3, 1, 2 ])
     assert_equal "[3,1,2]", result
   end
 
   test "encodes arrays of hashes" do
-    result = CanonicalJson.encode([{ b: 1, a: 2 }, { d: 3, c: 4 }])
+    result = CanonicalJson.encode([ { b: 1, a: 2 }, { d: 3, c: 4 } ])
     assert_equal '[{"a":2,"b":1},{"c":4,"d":3}]', result
   end
 

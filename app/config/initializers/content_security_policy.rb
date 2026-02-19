@@ -18,8 +18,8 @@ Rails.application.configure do
     policy.script_src :self
     policy.style_src :self
     policy.font_src :self, :data
-    policy.img_src(*([:self, :data, :blob] + img_sources))
-    policy.connect_src(*([:self] + connect_sources))
+    policy.img_src(*([ :self, :data, :blob ] + img_sources))
+    policy.connect_src(*([ :self ] + connect_sources))
     policy.worker_src :self, :blob
     policy.frame_src :none
     policy.manifest_src :self

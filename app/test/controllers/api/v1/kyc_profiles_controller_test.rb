@@ -210,6 +210,48 @@ module Api
         end
       end
 
+      test "filters sensitive metadata when submitting kyc documents" do
+        blob = create_active_storage_blob(filename: "kyc-rg-metadata-001.pdf", content: "kyc metadata content")
+
+        post submit_document_api_v1_kyc_profile_path(@kyc_profile.id),
+          headers: authorization_headers(@write_token, idempotency_key: "idem-kyc-doc-submit-meta-001"),
+          params: {
+            kyc_document: {
+              document_type: "RG",
+              issuing_country: "BR",
+              issuing_state: "SP",
+              is_key_document: false,
+              blob_signed_id: blob.signed_id,
+              sha256: "sha-meta-001",
+              metadata: {
+                source: "portal_upload",
+                source_reference: "rg-front-001",
+                cpf: "123.456.789-09",
+                contact_email: "kyc@example.com",
+                freeform: "custom-untrusted-value"
+              }
+            }
+          },
+          as: :json
+
+        assert_response :created
+        metadata = response.parsed_body.dig("data", "metadata")
+        assert_equal "portal_upload", metadata["source"]
+        assert_equal "rg-front-001", metadata["source_reference"]
+        refute metadata.key?("cpf")
+        refute metadata.key?("contact_email")
+        refute metadata.key?("freeform")
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          persisted = KycDocument.find(response.parsed_body.dig("data", "id"))
+          assert_equal "portal_upload", persisted.metadata["source"]
+          assert_equal "rg-front-001", persisted.metadata["source_reference"]
+          refute persisted.metadata.key?("cpf")
+          refute persisted.metadata.key?("contact_email")
+          refute persisted.metadata.key?("freeform")
+        end
+      end
+
       test "replays kyc document submission with same idempotency key and payload" do
         payload = {
           kyc_document: {

@@ -5,6 +5,13 @@ module KycProfiles
     OUTBOX_EVENT_TYPE = "KYC_DOCUMENT_SUBMITTED".freeze
     TARGET_TYPE = "KycProfile".freeze
     PAYLOAD_HASH_KEY = "payload_hash".freeze
+    DEFAULT_CLIENT_METADATA_KEYS = %w[
+      source
+      source_system
+      source_channel
+      source_reference
+      integration_reference
+    ].freeze
 
     Result = Struct.new(:kyc_document, :replayed, keyword_init: true) do
       def replayed?
@@ -142,10 +149,7 @@ module KycProfiles
     private
 
     def normalize_payload(payload)
-      metadata = normalize_metadata(payload[:metadata] || {})
-      unless metadata.is_a?(Hash)
-        raise_validation_error!("invalid_metadata", "metadata must be a JSON object.")
-      end
+      metadata = sanitize_client_metadata(payload[:metadata] || {})
 
       blob = resolve_blob(raw_signed_id: payload[:blob_signed_id])
       validate_blob_tenant_metadata!(blob:) if blob.present?
@@ -170,6 +174,28 @@ module KycProfiles
         sha256: payload[:sha256].to_s,
         metadata: metadata
       }
+    end
+
+    def sanitize_client_metadata(raw_metadata)
+      metadata = normalize_metadata(raw_metadata)
+      unless metadata.is_a?(Hash)
+        raise_validation_error!("invalid_metadata", "metadata must be a JSON object.")
+      end
+
+      MetadataSanitizer.sanitize(
+        metadata,
+        allowed_keys: allowed_client_metadata_keys
+      )
+    end
+
+    def allowed_client_metadata_keys
+      configured = Rails.app.creds.option(
+        :security,
+        :kyc_document_metadata_allowed_keys,
+        default: ENV["KYC_DOCUMENT_METADATA_ALLOWED_KEYS"]
+      )
+      keys = Array(configured).flat_map { |value| value.to_s.split(",") }.map { |value| value.strip }.reject(&:blank?)
+      keys.presence || DEFAULT_CLIENT_METADATA_KEYS
     end
 
     def parse_date(raw_date, field:)

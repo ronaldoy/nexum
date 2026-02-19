@@ -344,9 +344,9 @@ class DashboardController < ApplicationController
         term_days: exposure_metrics.term_business_days,
         yield_rate: if anticipation.requested_amount.to_d.positive?
           anticipation.discount_amount.to_d / anticipation.requested_amount.to_d
-        else
+                    else
           BigDecimal("0")
-        end
+                    end
       }
     end
   end

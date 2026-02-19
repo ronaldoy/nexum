@@ -26,7 +26,7 @@ class ApiAccessToken < ApplicationRecord
       expires_at: expires_at
     )
 
-    [record, build_raw_token(tenant_id: tenant.id, identifier: identifier, secret: secret)]
+    [ record, build_raw_token(tenant_id: tenant.id, identifier: identifier, secret: secret) ]
   end
 
   def self.authenticate(raw_token)
@@ -70,7 +70,7 @@ class ApiAccessToken < ApplicationRecord
     identifier, secret = credentials_part.to_s.split(TOKEN_DELIMITER, 2)
     tenant_id = normalize_tenant_id(tenant_part)
 
-    [tenant_id, identifier&.strip, secret&.strip]
+    [ tenant_id, identifier&.strip, secret&.strip ]
   end
   private_class_method :parse_raw_token
 

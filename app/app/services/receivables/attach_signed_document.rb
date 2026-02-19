@@ -9,6 +9,15 @@ module Receivables
     DOCUMENT_EVENT_TYPE = "DOCUMENT_SIGNED_METADATA_ATTACHED".freeze
     REQUIRED_SIGNATURE_METHOD = "OWN_PLATFORM_CONFIRMATION".freeze
     SIGNATURE_CONFIRMATION_PURPOSE = "DOCUMENT_SIGNATURE_CONFIRMATION".freeze
+    DEFAULT_CLIENT_METADATA_KEYS = %w[
+      source
+      source_system
+      source_channel
+      source_reference
+      signature_provider
+      signature_workflow
+      integration_reference
+    ].freeze
 
     Result = Struct.new(:document, :replayed, keyword_init: true) do
       def replayed?
@@ -165,11 +174,7 @@ module Receivables
 
     def normalize_payload(raw_payload, default_actor_party_id:, privileged_actor:)
       payload = raw_payload.deep_symbolize_keys
-      metadata = normalize_metadata(payload[:metadata] || {})
-
-      unless metadata.is_a?(Hash)
-        raise_validation_error!("invalid_metadata", "metadata must be a JSON object.")
-      end
+      metadata = sanitize_client_metadata(payload[:metadata] || {})
 
       actor_party_id = payload[:actor_party_id].presence || default_actor_party_id
       raise_validation_error!("actor_party_required", "actor_party_id is required.") if actor_party_id.blank?
@@ -228,6 +233,28 @@ module Receivables
           "idempotency_key" => @idempotency_key
         )
       }
+    end
+
+    def sanitize_client_metadata(raw_metadata)
+      metadata = normalize_metadata(raw_metadata)
+      unless metadata.is_a?(Hash)
+        raise_validation_error!("invalid_metadata", "metadata must be a JSON object.")
+      end
+
+      MetadataSanitizer.sanitize(
+        metadata,
+        allowed_keys: allowed_client_metadata_keys
+      )
+    end
+
+    def allowed_client_metadata_keys
+      configured = Rails.app.creds.option(
+        :security,
+        :signed_document_metadata_allowed_keys,
+        default: ENV["SIGNED_DOCUMENT_METADATA_ALLOWED_KEYS"]
+      )
+      keys = Array(configured).flat_map { |value| value.to_s.split(",") }.map { |value| value.strip }.reject(&:blank?)
+      keys.presence || DEFAULT_CLIENT_METADATA_KEYS
     end
 
     def parse_time(raw_value, field:)

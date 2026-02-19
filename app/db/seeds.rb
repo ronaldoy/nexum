@@ -504,6 +504,7 @@ module DemoSeeds
       fdic_balance_after: fdic_after,
       paid_at: paid_at,
       request_id: "seed-settlement-#{scenario_code.downcase}",
+      idempotency_key: "seed-settlement-#{scenario_code.downcase}",
       metadata: {
         "seed_scenario" => scenario_code
       }

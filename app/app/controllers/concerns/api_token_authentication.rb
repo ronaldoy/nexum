@@ -39,7 +39,6 @@ module ApiTokenAuthentication
     if Current.user && Current.user.tenant_id.to_s != token.tenant_id.to_s
       clear_bootstrap_database_tenant_context!
       render_unauthorized(code: "invalid_token", message: "Authentication token is invalid or expired.")
-      return
     end
   rescue RequestContext::ContextError
     render json: {

@@ -3,22 +3,22 @@ require "digest"
 module BrazilDocumentTestHelper
   def valid_cpf_from_seed(seed)
     base = numeric_seed(seed, size: 9)
-    base = [1, 2, 3, 4, 5, 6, 7, 8, 9] if base.uniq.one?
+    base = [ 1, 2, 3, 4, 5, 6, 7, 8, 9 ] if base.uniq.one?
 
     first_check = cpf_check_digit(base, 10)
-    second_check = cpf_check_digit(base + [first_check], 11)
+    second_check = cpf_check_digit(base + [ first_check ], 11)
 
-    (base + [first_check, second_check]).join
+    (base + [ first_check, second_check ]).join
   end
 
   def valid_cnpj_from_seed(seed)
     base = numeric_seed(seed, size: 12)
-    base = [1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2] if base.uniq.one?
+    base = [ 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2 ] if base.uniq.one?
 
-    first_check = cnpj_check_digit(base, [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
-    second_check = cnpj_check_digit(base + [first_check], [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
+    first_check = cnpj_check_digit(base, [ 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2 ])
+    second_check = cnpj_check_digit(base + [ first_check ], [ 6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2 ])
 
-    (base + [first_check, second_check]).join
+    (base + [ first_check, second_check ]).join
   end
 
   def format_cpf(cpf_digits)

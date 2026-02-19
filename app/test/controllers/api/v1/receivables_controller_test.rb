@@ -170,6 +170,58 @@ module Api
         end
       end
 
+      test "filters sensitive metadata when attaching signed documents" do
+        signed_at = Time.current
+        blob_content = "signed contract metadata filter"
+        blob = create_active_storage_blob(filename: "assignment-contract-metadata.pdf", content: blob_content)
+        challenges = create_document_signature_challenges!(
+          receivable: @receivable,
+          actor_party: @receivable.creditor_party,
+          suffix: "attach-meta-001"
+        )
+
+        post attach_document_api_v1_receivable_path(@receivable.id),
+          headers: authorization_headers(@document_token, idempotency_key: "idem-document-attach-meta-001"),
+          params: {
+            document: {
+              actor_party_id: @receivable.creditor_party_id,
+              document_type: "assignment_contract",
+              sha256: Digest::SHA256.hexdigest(blob_content),
+              blob_signed_id: blob.signed_id,
+              signed_at: signed_at.iso8601,
+              provider_envelope_id: "env-doc-meta-001",
+              email_challenge_id: challenges[:email].id,
+              whatsapp_challenge_id: challenges[:whatsapp].id,
+              metadata: {
+                source: "signature_provider",
+                source_reference: "erp-contract-001",
+                cpf: "123.456.789-09",
+                contact_email: "document@example.com",
+                freeform: "custom-untrusted-value"
+              }
+            }
+          },
+          as: :json
+
+        assert_response :created
+        metadata = response.parsed_body.dig("data", "metadata")
+        assert_equal "signature_provider", metadata["source"]
+        assert_equal "erp-contract-001", metadata["source_reference"]
+        assert_equal "env-doc-meta-001", metadata["provider_envelope_id"]
+        refute metadata.key?("cpf")
+        refute metadata.key?("contact_email")
+        refute metadata.key?("freeform")
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          persisted = Document.find(response.parsed_body.dig("data", "id"))
+          assert_equal "signature_provider", persisted.metadata["source"]
+          assert_equal "erp-contract-001", persisted.metadata["source_reference"]
+          refute persisted.metadata.key?("cpf")
+          refute persisted.metadata.key?("contact_email")
+          refute persisted.metadata.key?("freeform")
+        end
+      end
+
       test "rejects reused signature challenges for a new document attach idempotency key" do
         signed_at = Time.current
         challenges = create_document_signature_challenges!(
