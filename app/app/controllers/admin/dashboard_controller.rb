@@ -10,6 +10,7 @@ module Admin
       @generated_at = snapshot.fetch(:generated_at)
       @totals = snapshot.fetch(:totals)
       @tenant_rows = snapshot.fetch(:tenant_rows)
+      @recent_reconciliation_exceptions = snapshot.fetch(:recent_reconciliation_exceptions)
     end
 
     private

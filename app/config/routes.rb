@@ -4,6 +4,7 @@ Rails.application.routes.draw do
   get "health" => "health#health"
   get "ready" => "health#ready"
   post "security/csp_reports" => "csp_reports#create"
+  post "webhooks/escrow/:provider/:tenant_slug" => "webhooks/escrow#create", as: :webhooks_escrow
   get "docs/openapi/v1" => "openapi_docs#v1"
   get "docs/openapi/v1.yaml" => "openapi_docs#v1"
 
@@ -34,6 +35,7 @@ Rails.application.routes.draw do
     end
 
     get :dashboard, to: "dashboard#show"
+    resources :api_access_tokens, only: %i[index create destroy]
   end
 
   # Define your application routes per the DSL in https://guides.rubyonrails.org/routing.html

@@ -1,11 +1,11 @@
 # Database Model Documentation
 
-Generated at: 2026-02-19T16:43:26-03:00
+Generated at: 2026-02-19T17:57:38-03:00
 Source schema: `app/db/structure.sql`
 
 ## Summary
 
-- Total tables documented: 39
+- Total tables documented: 41
 - Tables with append-only mutation guard: 11
 - Business timezone: `America/Sao_Paulo`
 
@@ -334,9 +334,9 @@ Source schema: `app/db/structure.sql`
 - `assignment_contracts_cancelled_at_required_check`: `status::text <> 'CANCELLED'::text OR cancelled_at IS NOT NULL`
 - `assignment_contracts_cancelled_at_state_check`: `cancelled_at IS NULL OR status::text = 'CANCELLED'::text`
 - `assignment_contracts_currency_brl_check`: `currency::text = 'BRL'::text`
+- `assignment_contracts_idempotency_key_present_check`: `btrim(idempotency_key::text) <> ''::text`
 - `assignment_contracts_signed_at_required_check`: `(status::text = ANY (ARRAY['DRAFT'::character varying::text, 'CANCELLED'::character varying::text])) OR signed_at IS NOT NULL`
 - `assignment_contracts_status_check`: `status::text = ANY (ARRAY['DRAFT'::character varying::text, 'SIGNED'::character varying::text, 'ACTIVE'::character varying::text, 'SETTLED'::character varying::text, 'CANCELLED'::character varying::text])`
-- `assignment_contracts_idempotency_key_present_check`: `btrim(idempotency_key::text) <> ''::text`
 
 ### Indexes
 
@@ -546,12 +546,12 @@ Source schema: `app/db/structure.sql`
 
 ### Check Constraints
 
-- `escrow_payouts_provider_check`: `provider::text = ANY (ARRAY['QITECH'::character varying, 'STARKBANK'::character varying]::text[])`
-- `escrow_payouts_status_check`: `status::text = ANY (ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying]::text[])`
 - `escrow_payouts_amount_positive_check`: `amount > 0::numeric`
 - `escrow_payouts_currency_brl_check`: `currency::text = 'BRL'::text`
 - `escrow_payouts_idempotency_key_present_check`: `btrim(idempotency_key::text) <> ''::text`
+- `escrow_payouts_provider_check`: `provider::text = ANY (ARRAY['QITECH'::character varying, 'STARKBANK'::character varying]::text[])`
 - `escrow_payouts_source_reference_check`: `anticipation_request_id IS NOT NULL OR receivable_payment_settlement_id IS NOT NULL`
+- `escrow_payouts_status_check`: `status::text = ANY (ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying]::text[])`
 
 ### Indexes
 
@@ -1053,8 +1053,8 @@ Source schema: `app/db/structure.sql`
 
 ### Check Constraints
 
-- `physician_membership_status_check`: `status::text = ANY (ARRAY['ACTIVE'::character varying::text, 'INACTIVE'::character varying::text])`
 - `physician_membership_role_check`: `membership_role::text = ANY (ARRAY['ADMIN'::character varying::text, 'MEMBER'::character varying::text])`
+- `physician_membership_status_check`: `status::text = ANY (ARRAY['ACTIVE'::character varying::text, 'INACTIVE'::character varying::text])`
 
 ### Indexes
 
@@ -1102,6 +1102,49 @@ Source schema: `app/db/structure.sql`
 - `index_physicians_on_party_id` (non-unique): `party_id`
 - `index_physicians_on_tenant_id` (non-unique): `tenant_id`
 - `index_physicians_on_tenant_id_and_party_id` (unique): `tenant_id, party_id`
+
+## `provider_webhook_receipts`
+
+- Primary key: `id`
+- RLS enabled: `true`
+- RLS forced: `true`
+- Append-only guard: `false`
+
+- Policies:
+  - `provider_webhook_receipts_tenant_policy`
+
+### Columns
+
+| Column | SQL Type | Null | Default | FK |
+| --- | --- | --- | --- | --- |
+| `id` | `uuid` | false | `` | - |
+| `tenant_id` | `uuid` | false | `` | `tenants.id` |
+| `provider` | `character varying` | false | `` | - |
+| `provider_event_id` | `character varying` | false | `` | - |
+| `event_type` | `character varying` | true | `` | - |
+| `signature` | `character varying` | true | `` | - |
+| `payload_sha256` | `character varying` | false | `` | - |
+| `payload` | `jsonb` | false | `{}` | - |
+| `request_headers` | `jsonb` | false | `{}` | - |
+| `status` | `character varying` | false | `` | - |
+| `error_code` | `character varying` | true | `` | - |
+| `error_message` | `character varying` | true | `` | - |
+| `processed_at` | `timestamp(6) without time zone` | false | `` | - |
+| `created_at` | `timestamp(6) without time zone` | false | `` | - |
+| `updated_at` | `timestamp(6) without time zone` | false | `` | - |
+
+### Check Constraints
+
+- `provider_webhook_receipts_event_id_present_check`: `btrim(provider_event_id::text) <> ''::text`
+- `provider_webhook_receipts_payload_sha256_check`: `payload_sha256::text ~ '^[0-9a-f]{64}$'::text`
+- `provider_webhook_receipts_provider_check`: `provider::text = ANY (ARRAY['QITECH'::character varying, 'STARKBANK'::character varying]::text[])`
+- `provider_webhook_receipts_status_check`: `status::text = ANY (ARRAY['PROCESSED'::character varying, 'IGNORED'::character varying, 'FAILED'::character varying]::text[])`
+
+### Indexes
+
+- `index_provider_webhook_receipts_lookup` (non-unique): `tenant_id, provider, status, processed_at`
+- `index_provider_webhook_receipts_on_tenant_id` (non-unique): `tenant_id`
+- `index_provider_webhook_receipts_unique_event` (unique): `tenant_id, provider, provider_event_id`
 
 ## `receivable_allocations`
 
@@ -1257,10 +1300,10 @@ Source schema: `app/db/structure.sql`
 - `receivable_payment_settlements_fdic_balance_flow_check`: `fdic_balance_before >= fdic_balance_after`
 - `receivable_payment_settlements_fdic_before_non_negative_check`: `fdic_balance_before >= 0::numeric`
 - `receivable_payment_settlements_fdic_non_negative_check`: `fdic_amount >= 0::numeric`
-- `receivable_payment_settlements_paid_positive_check`: `paid_amount > 0::numeric`
-- `receivable_payment_settlements_split_total_check`: `(cnpj_amount + fdic_amount + beneficiary_amount) = paid_amount`
 - `receivable_payment_settlements_idempotency_key_present_check`: `btrim(idempotency_key::text) <> ''::text`
+- `receivable_payment_settlements_paid_positive_check`: `paid_amount > 0::numeric`
 - `receivable_payment_settlements_payment_reference_present_check`: `btrim(payment_reference::text) <> ''::text`
+- `receivable_payment_settlements_split_total_check`: `(cnpj_amount + fdic_amount + beneficiary_amount) = paid_amount`
 
 ### Indexes
 
@@ -1360,6 +1403,57 @@ Source schema: `app/db/structure.sql`
 - `index_receivables_on_tenant_external_reference` (unique): `tenant_id, external_reference` WHERE (external_reference IS NOT NULL)
 - `index_receivables_on_tenant_id` (non-unique): `tenant_id`
 - `index_receivables_on_tenant_status_due_at` (non-unique): `tenant_id, status, due_at`
+
+## `reconciliation_exceptions`
+
+- Primary key: `id`
+- RLS enabled: `true`
+- RLS forced: `true`
+- Append-only guard: `false`
+
+- Policies:
+  - `reconciliation_exceptions_tenant_policy`
+
+### Columns
+
+| Column | SQL Type | Null | Default | FK |
+| --- | --- | --- | --- | --- |
+| `id` | `uuid` | false | `` | - |
+| `tenant_id` | `uuid` | false | `` | `tenants.id` |
+| `resolved_by_party_id` | `uuid` | true | `` | `parties.id` |
+| `source` | `character varying` | false | `` | - |
+| `provider` | `character varying` | false | `` | - |
+| `external_event_id` | `character varying` | false | `` | - |
+| `code` | `character varying` | false | `` | - |
+| `message` | `character varying` | false | `` | - |
+| `payload_sha256` | `character varying` | true | `` | - |
+| `payload` | `jsonb` | false | `{}` | - |
+| `metadata` | `jsonb` | false | `{}` | - |
+| `status` | `character varying` | false | `OPEN` | - |
+| `occurrences_count` | `integer` | false | `1` | - |
+| `first_seen_at` | `timestamp(6) without time zone` | false | `` | - |
+| `last_seen_at` | `timestamp(6) without time zone` | false | `` | - |
+| `resolved_at` | `timestamp(6) without time zone` | true | `` | - |
+| `created_at` | `timestamp(6) without time zone` | false | `` | - |
+| `updated_at` | `timestamp(6) without time zone` | false | `` | - |
+
+### Check Constraints
+
+- `reconciliation_exceptions_code_present_check`: `btrim(code::text) <> ''::text`
+- `reconciliation_exceptions_external_event_id_present_check`: `btrim(external_event_id::text) <> ''::text`
+- `reconciliation_exceptions_message_present_check`: `btrim(message::text) <> ''::text`
+- `reconciliation_exceptions_occurrences_count_positive_check`: `occurrences_count > 0`
+- `reconciliation_exceptions_payload_sha256_check`: `payload_sha256 IS NULL OR payload_sha256::text ~ '^[0-9a-f]{64}$'::text`
+- `reconciliation_exceptions_provider_check`: `provider::text = ANY (ARRAY['QITECH'::character varying, 'STARKBANK'::character varying]::text[])`
+- `reconciliation_exceptions_source_check`: `source::text = 'ESCROW_WEBHOOK'::text`
+- `reconciliation_exceptions_status_check`: `status::text = ANY (ARRAY['OPEN'::character varying, 'RESOLVED'::character varying]::text[])`
+
+### Indexes
+
+- `index_reconciliation_exceptions_on_resolved_by_party_id` (non-unique): `resolved_by_party_id`
+- `index_reconciliation_exceptions_on_tenant_id` (non-unique): `tenant_id`
+- `index_reconciliation_exceptions_open_lookup` (non-unique): `tenant_id, status, last_seen_at`
+- `index_reconciliation_exceptions_unique_signature` (unique): `tenant_id, source, provider, external_event_id, code`
 
 ## `roles`
 

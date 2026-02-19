@@ -149,7 +149,19 @@ module Admin
     end
 
     def public_key_credential_params
-      params.require(:public_key_credential).permit!
+      params.require(:public_key_credential).permit(
+        :id,
+        :type,
+        :rawId,
+        response: %i[
+          attestationObject
+          clientDataJSON
+          authenticatorData
+          signature
+          userHandle
+        ],
+        clientExtensionResults: {}
+      )
     end
 
     def safe_return_to(value)

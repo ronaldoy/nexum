@@ -1062,6 +1062,35 @@ ALTER TABLE ONLY public.physicians FORCE ROW LEVEL SECURITY;
 
 
 --
+-- Name: provider_webhook_receipts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.provider_webhook_receipts (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    provider character varying NOT NULL,
+    provider_event_id character varying NOT NULL,
+    event_type character varying,
+    signature character varying,
+    payload_sha256 character varying NOT NULL,
+    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    request_headers jsonb DEFAULT '{}'::jsonb NOT NULL,
+    status character varying NOT NULL,
+    error_code character varying,
+    error_message character varying,
+    processed_at timestamp(6) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT provider_webhook_receipts_event_id_present_check CHECK ((btrim((provider_event_id)::text) <> ''::text)),
+    CONSTRAINT provider_webhook_receipts_payload_sha256_check CHECK (((payload_sha256)::text ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT provider_webhook_receipts_provider_check CHECK (((provider)::text = ANY ((ARRAY['QITECH'::character varying, 'STARKBANK'::character varying])::text[]))),
+    CONSTRAINT provider_webhook_receipts_status_check CHECK (((status)::text = ANY ((ARRAY['PROCESSED'::character varying, 'IGNORED'::character varying, 'FAILED'::character varying])::text[])))
+);
+
+ALTER TABLE ONLY public.provider_webhook_receipts FORCE ROW LEVEL SECURITY;
+
+
+--
 -- Name: receivable_allocations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1223,6 +1252,42 @@ CREATE TABLE public.receivables (
 );
 
 ALTER TABLE ONLY public.receivables FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: reconciliation_exceptions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.reconciliation_exceptions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    resolved_by_party_id uuid,
+    source character varying NOT NULL,
+    provider character varying NOT NULL,
+    external_event_id character varying NOT NULL,
+    code character varying NOT NULL,
+    message character varying NOT NULL,
+    payload_sha256 character varying,
+    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    status character varying DEFAULT 'OPEN'::character varying NOT NULL,
+    occurrences_count integer DEFAULT 1 NOT NULL,
+    first_seen_at timestamp(6) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    last_seen_at timestamp(6) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    resolved_at timestamp(6) without time zone,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT reconciliation_exceptions_code_present_check CHECK ((btrim((code)::text) <> ''::text)),
+    CONSTRAINT reconciliation_exceptions_external_event_id_present_check CHECK ((btrim((external_event_id)::text) <> ''::text)),
+    CONSTRAINT reconciliation_exceptions_message_present_check CHECK ((btrim((message)::text) <> ''::text)),
+    CONSTRAINT reconciliation_exceptions_occurrences_count_positive_check CHECK ((occurrences_count > 0)),
+    CONSTRAINT reconciliation_exceptions_payload_sha256_check CHECK (((payload_sha256 IS NULL) OR ((payload_sha256)::text ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT reconciliation_exceptions_provider_check CHECK (((provider)::text = ANY ((ARRAY['QITECH'::character varying, 'STARKBANK'::character varying])::text[]))),
+    CONSTRAINT reconciliation_exceptions_source_check CHECK (((source)::text = 'ESCROW_WEBHOOK'::text)),
+    CONSTRAINT reconciliation_exceptions_status_check CHECK (((status)::text = ANY ((ARRAY['OPEN'::character varying, 'RESOLVED'::character varying])::text[])))
+);
+
+ALTER TABLE ONLY public.reconciliation_exceptions FORCE ROW LEVEL SECURITY;
 
 
 --
@@ -1648,6 +1713,14 @@ ALTER TABLE ONLY public.physicians
 
 
 --
+-- Name: provider_webhook_receipts provider_webhook_receipts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.provider_webhook_receipts
+    ADD CONSTRAINT provider_webhook_receipts_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: receivable_allocations receivable_allocations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1693,6 +1766,14 @@ ALTER TABLE ONLY public.receivable_statistics_daily
 
 ALTER TABLE ONLY public.receivables
     ADD CONSTRAINT receivables_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: reconciliation_exceptions reconciliation_exceptions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reconciliation_exceptions
+    ADD CONSTRAINT reconciliation_exceptions_pkey PRIMARY KEY (id);
 
 
 --
@@ -2683,6 +2764,27 @@ CREATE UNIQUE INDEX index_physicians_on_tenant_id_and_party_id ON public.physici
 
 
 --
+-- Name: index_provider_webhook_receipts_lookup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_provider_webhook_receipts_lookup ON public.provider_webhook_receipts USING btree (tenant_id, provider, status, processed_at);
+
+
+--
+-- Name: index_provider_webhook_receipts_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_provider_webhook_receipts_on_tenant_id ON public.provider_webhook_receipts USING btree (tenant_id);
+
+
+--
+-- Name: index_provider_webhook_receipts_unique_event; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_provider_webhook_receipts_unique_event ON public.provider_webhook_receipts USING btree (tenant_id, provider, provider_event_id);
+
+
+--
 -- Name: index_receivable_allocations_on_allocated_party_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2869,6 +2971,34 @@ CREATE INDEX index_receivables_on_tenant_id ON public.receivables USING btree (t
 --
 
 CREATE INDEX index_receivables_on_tenant_status_due_at ON public.receivables USING btree (tenant_id, status, due_at);
+
+
+--
+-- Name: index_reconciliation_exceptions_on_resolved_by_party_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_reconciliation_exceptions_on_resolved_by_party_id ON public.reconciliation_exceptions USING btree (resolved_by_party_id);
+
+
+--
+-- Name: index_reconciliation_exceptions_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_reconciliation_exceptions_on_tenant_id ON public.reconciliation_exceptions USING btree (tenant_id);
+
+
+--
+-- Name: index_reconciliation_exceptions_open_lookup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_reconciliation_exceptions_open_lookup ON public.reconciliation_exceptions USING btree (tenant_id, status, last_seen_at);
+
+
+--
+-- Name: index_reconciliation_exceptions_unique_signature; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_reconciliation_exceptions_unique_signature ON public.reconciliation_exceptions USING btree (tenant_id, source, provider, external_event_id, code);
 
 
 --
@@ -3503,6 +3633,14 @@ ALTER TABLE ONLY public.hospital_ownerships
 
 
 --
+-- Name: provider_webhook_receipts fk_rails_7ac28905bd; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.provider_webhook_receipts
+    ADD CONSTRAINT fk_rails_7ac28905bd FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
 -- Name: documents fk_rails_7b301b6135; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3671,6 +3809,14 @@ ALTER TABLE ONLY public.physician_legal_entity_memberships
 
 
 --
+-- Name: reconciliation_exceptions fk_rails_b72d8d7c17; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reconciliation_exceptions
+    ADD CONSTRAINT fk_rails_b72d8d7c17 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
 -- Name: physician_anticipation_authorizations fk_rails_ba60c25252; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3708,6 +3854,14 @@ ALTER TABLE ONLY public.kyc_documents
 
 ALTER TABLE ONLY public.anticipation_requests
     ADD CONSTRAINT fk_rails_cc45595c27 FOREIGN KEY (receivable_allocation_id) REFERENCES public.receivable_allocations(id);
+
+
+--
+-- Name: reconciliation_exceptions fk_rails_cc94151447; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reconciliation_exceptions
+    ADD CONSTRAINT fk_rails_cc94151447 FOREIGN KEY (resolved_by_party_id) REFERENCES public.parties(id);
 
 
 --
@@ -4278,6 +4432,19 @@ CREATE POLICY physicians_tenant_policy ON public.physicians USING ((tenant_id = 
 
 
 --
+-- Name: provider_webhook_receipts; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.provider_webhook_receipts ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: provider_webhook_receipts provider_webhook_receipts_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY provider_webhook_receipts_tenant_policy ON public.provider_webhook_receipts USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
 -- Name: receivable_allocations; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -4353,6 +4520,19 @@ ALTER TABLE public.receivables ENABLE ROW LEVEL SECURITY;
 --
 
 CREATE POLICY receivables_tenant_policy ON public.receivables USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
+-- Name: reconciliation_exceptions; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.reconciliation_exceptions ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: reconciliation_exceptions reconciliation_exceptions_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY reconciliation_exceptions_tenant_policy ON public.reconciliation_exceptions USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
 
 
 --
@@ -4454,6 +4634,8 @@ CREATE POLICY webauthn_credentials_tenant_policy ON public.webauthn_credentials 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260219193000'),
+('20260219182000'),
 ('20260219174000'),
 ('20260219170000'),
 ('20260219160000'),

@@ -1,0 +1,129 @@
+<main class="dashboard-shell">
+  <section class="hero-panel">
+    <div>
+      <p class="hero-kicker">Gestão de credenciais de integração</p>
+      <h2>Tokens de acesso da API</h2>
+      <p class="hero-subtitle">
+        Emita e revogue tokens por tenant com rastreabilidade de auditoria.
+      </p>
+    </div>
+    <div class="hero-meta">
+      <p><strong>Perfil:</strong> <%= role_label(Current.user&.role) %></p>
+      <p><strong>Usuário:</strong> <%= Current.user&.email_address %></p>
+      <p><strong>Tenant selecionado:</strong> <%= @selected_tenant.slug %></p>
+      <%= link_to "Voltar ao painel admin", admin_dashboard_path, class: "button button-primary" %>
+    </div>
+  </section>
+
+  <% if flash[:issued_api_access_token].present? %>
+    <section class="panel">
+      <header class="panel-header">
+        <h3>Token gerado (exibir uma única vez)</h3>
+        <p>Armazene em local seguro. O valor bruto não é recuperável após sair desta página.</p>
+      </header>
+      <article class="receivable-highlight">
+        <p><strong>Bearer token:</strong></p>
+        <code><%= flash[:issued_api_access_token] %></code>
+      </article>
+    </section>
+  <% end %>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Emitir novo token</h3>
+      <p>Escopos separados por vírgula, ponto e vírgula ou espaço.</p>
+    </header>
+
+    <%= form_with url: admin_api_access_tokens_path, method: :post, local: true, class: "receivable-selector" do |form| %>
+      <div class="field">
+        <%= form.label :tenant_id, "Tenant" %>
+        <%= form.select :tenant_id,
+          options_for_select(@tenants.map { |tenant| ["#{tenant.slug} · #{tenant.name}", tenant.id] }, @selected_tenant.id),
+          {},
+          name: "api_access_token[tenant_id]" %>
+      </div>
+
+      <div class="field">
+        <%= form.label :name, "Nome" %>
+        <%= form.text_field :name, name: "api_access_token[name]", required: true, placeholder: "ERP Hospital" %>
+      </div>
+
+      <div class="field">
+        <%= form.label :scopes_input, "Escopos" %>
+        <%= form.text_field :scopes_input,
+          name: "api_access_token[scopes_input]",
+          required: true,
+          placeholder: "receivables:read receivables:history" %>
+      </div>
+
+      <div class="field">
+        <%= form.label :user_email, "E-mail do usuário (opcional)" %>
+        <%= form.email_field :user_email,
+          name: "api_access_token[user_email]",
+          placeholder: "integracao@cliente.com.br" %>
+      </div>
+
+      <div class="field">
+        <%= form.label :expires_at, "Expira em (opcional)" %>
+        <%= form.datetime_local_field :expires_at, name: "api_access_token[expires_at]" %>
+      </div>
+
+      <%= form.submit "Emitir token", class: "button button-primary" %>
+    <% end %>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Tokens cadastrados</h3>
+      <p>Últimos <%= @tokens.size %> registros do tenant selecionado.</p>
+    </header>
+
+    <div class="table-wrapper">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Nome</th>
+            <th>Escopos</th>
+            <th>Vinculado a</th>
+            <th>Criado em</th>
+            <th>Expira em</th>
+            <th>Último uso</th>
+            <th>Status</th>
+            <th>Ação</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @tokens.each do |token| %>
+            <% status_text = if token[:revoked_at].present?
+              "Revogado"
+            elsif token[:expires_at].present? && token[:expires_at] <= Time.current
+              "Expirado"
+            else
+              "Ativo"
+            end %>
+            <tr>
+              <td><strong><%= token[:name] %></strong></td>
+              <td><%= token[:scopes].join(", ") %></td>
+              <td><%= token[:user_email].presence || "Sem vínculo" %></td>
+              <td><%= l(token[:created_at], format: :short) %></td>
+              <td><%= l(token[:expires_at], format: :short) if token[:expires_at].present? %></td>
+              <td><%= l(token[:last_used_at], format: :short) if token[:last_used_at].present? %></td>
+              <td><span class="status-pill"><%= status_text %></span></td>
+              <td>
+                <% if token[:revoked_at].blank? %>
+                  <%= button_to "Revogar",
+                    admin_api_access_token_path(token[:id], tenant_id: @selected_tenant.id),
+                    method: :delete,
+                    class: "button button-primary",
+                    form: { data: { turbo_confirm: "Revogar este token?" } } %>
+                <% else %>
+                  <span class="stage-dot stage-done">Revogado</span>
+                <% end %>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>

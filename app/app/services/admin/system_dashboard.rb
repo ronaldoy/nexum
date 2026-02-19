@@ -8,12 +8,14 @@ module Admin
     end
 
     def call
-      tenant_rows = Tenant.order(:slug).map { |tenant| build_tenant_row(tenant) }
+      tenants = Tenant.order(:slug).to_a
+      tenant_rows = tenants.map { |tenant| build_tenant_row(tenant) }
 
       {
         generated_at: Time.current,
         totals: build_totals(tenant_rows),
-        tenant_rows: tenant_rows
+        tenant_rows: tenant_rows,
+        recent_reconciliation_exceptions: build_recent_reconciliation_exceptions(tenants: tenants)
       }
     end
 
@@ -29,6 +31,8 @@ module Admin
         ownerships_scope = HospitalOwnership.where(tenant_id: tenant.id, active: true)
         outbox_scope = OutboxEvent.where(tenant_id: tenant.id)
         dispatch_attempts_scope = OutboxDispatchAttempt.where(tenant_id: tenant.id)
+        reconciliation_scope = ReconciliationException.where(tenant_id: tenant.id)
+        reconciliation_open_scope = reconciliation_scope.open
         sent_outbox_ids = dispatch_attempts_scope.where(status: "SENT").select(:outbox_event_id)
         dead_letter_outbox_ids = dispatch_attempts_scope.where(status: "DEAD_LETTER").select(:outbox_event_id)
 
@@ -50,6 +54,8 @@ module Admin
           settlement_paid_amount: settlements_scope.sum(:paid_amount).to_d,
           outbox_pending_count: outbox_scope.where.not(id: sent_outbox_ids).where.not(id: dead_letter_outbox_ids).count,
           outbox_dead_letter_count: dispatch_attempts_scope.where(status: "DEAD_LETTER").count,
+          reconciliation_open_count: reconciliation_open_scope.count,
+          reconciliation_total_count: reconciliation_scope.count,
           direct_upload_count: ActiveStorage::Blob.where(
             "app_active_storage_blob_tenant_id(metadata) = CAST(? AS uuid)",
             tenant.id
@@ -58,6 +64,7 @@ module Admin
             receivables_scope.maximum(:updated_at),
             anticipation_scope.maximum(:updated_at),
             settlements_scope.maximum(:updated_at),
+            reconciliation_scope.maximum(:last_seen_at),
             ActionIpLog.where(tenant_id: tenant.id).maximum(:occurred_at)
           ].compact.max
         }
@@ -79,9 +86,42 @@ module Admin
         settlements_paid_amount: rows.sum(BigDecimal("0")) { |row| row[:settlement_paid_amount] },
         outbox_pending_count: rows.sum { |row| row[:outbox_pending_count] },
         outbox_dead_letter_count: rows.sum { |row| row[:outbox_dead_letter_count] },
+        reconciliation_open_count: rows.sum { |row| row[:reconciliation_open_count] },
+        reconciliation_total_count: rows.sum { |row| row[:reconciliation_total_count] },
         direct_upload_count: rows.sum { |row| row[:direct_upload_count] },
         last_activity_at: rows.map { |row| row[:last_activity_at] }.compact.max
       }
+    end
+
+    def build_recent_reconciliation_exceptions(tenants:, global_limit: 20, per_tenant_limit: 10)
+      rows = tenants.flat_map do |tenant|
+        with_tenant_database_context(tenant_id: tenant.id, actor_id: actor_id, role: role) do
+          ReconciliationException
+            .where(tenant_id: tenant.id, status: "OPEN")
+            .order(last_seen_at: :desc)
+            .limit(per_tenant_limit)
+            .map do |exception|
+              {
+                tenant_id: tenant.id,
+                tenant_slug: tenant.slug,
+                tenant_name: tenant.name,
+                source: exception.source,
+                provider: exception.provider,
+                external_event_id: exception.external_event_id,
+                code: exception.code,
+                message: exception.message,
+                occurrences_count: exception.occurrences_count,
+                first_seen_at: exception.first_seen_at,
+                last_seen_at: exception.last_seen_at
+              }
+            end
+        end
+      end
+
+      rows
+        .sort_by { |row| row[:last_seen_at] || Time.at(0) }
+        .reverse
+        .first(global_limit)
     end
 
     def with_tenant_database_context(tenant_id:, actor_id:, role:)

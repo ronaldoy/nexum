@@ -1,4 +1,5 @@
 require "test_helper"
+require "digest"
 
 module Admin
   class DashboardControllerTest < ActionDispatch::IntegrationTest
@@ -28,6 +29,8 @@ module Admin
       assert_includes response.body, @default_tenant.slug
       assert_includes response.body, @secondary_tenant.slug
       assert_includes response.body, "Resumo por tenant"
+      assert_includes response.body, "Exceções de reconciliação recentes"
+      assert_includes response.body, "escrow_webhook_resource_not_found"
     end
 
     test "non privileged user is redirected away from admin dashboard" do
@@ -182,6 +185,22 @@ module Admin
           status: "DEAD_LETTER",
           occurred_at: Time.current,
           error_code: "test_dead_letter"
+        )
+
+        ReconciliationException.create!(
+          tenant: tenant,
+          source: "ESCROW_WEBHOOK",
+          provider: "QITECH",
+          external_event_id: "evt-dashboard-#{suffix}",
+          code: "escrow_webhook_resource_not_found",
+          message: "Webhook payload did not match any escrow account or payout.",
+          payload_sha256: Digest::SHA256.hexdigest("dashboard-#{suffix}"),
+          payload: { "event_id" => "evt-dashboard-#{suffix}" },
+          metadata: { "source" => "dashboard_test" },
+          status: "OPEN",
+          occurrences_count: 1,
+          first_seen_at: Time.current,
+          last_seen_at: Time.current
         )
       end
     end

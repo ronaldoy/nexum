@@ -30,6 +30,7 @@ The system supports:
   - Solid Queue
   - Outbox events
   - Endpoint idempotency (`Idempotency-Key`)
+  - Reconciliation exception queue (`reconciliation_exceptions`)
 - UI:
   - Rails + Hotwire
   - `pt-BR` UX copy for portal screens
@@ -68,6 +69,8 @@ The system supports:
 - Persistence:
   - `escrow_accounts`: provider account linkage per party.
   - `escrow_payouts`: idempotent payout attempts and provider references.
+  - `provider_webhook_receipts`: webhook idempotency and payload evidence.
+  - `reconciliation_exceptions`: mismatch/failure queue for operational follow-up.
 - Receivable provenance included in payout payload:
   - hospital (`debtor_party`)
   - owning organization (when mapped in `hospital_ownerships`)
@@ -83,8 +86,10 @@ Configure via Rails credentials (`integrations.qitech.*`) or environment:
 - `QITECH_PRIVATE_KEY`
 - `QITECH_KEY_ID`
 - `QITECH_SOURCE_ACCOUNT_KEY`
+- `QITECH_WEBHOOK_SECRET` or `QITECH_WEBHOOK_TOKEN`
 - `QITECH_OPEN_TIMEOUT_SECONDS`
 - `QITECH_READ_TIMEOUT_SECONDS`
+- `STARKBANK_WEBHOOK_SECRET` or `STARKBANK_WEBHOOK_TOKEN`
 - `ESCROW_DEFAULT_PROVIDER` (`QITECH` or `STARKBANK`)
 
 For account opening, provide provider-specific payload in party metadata:
@@ -99,7 +104,11 @@ For account opening, provide provider-specific payload in party metadata:
 
 - `GET /health`
 - `GET /ready`
+- `POST /webhooks/escrow/:provider/:tenant_slug`
 - `GET /admin/dashboard`
+- `GET /admin/api_access_tokens`
+- `POST /admin/api_access_tokens`
+- `DELETE /admin/api_access_tokens/:id`
 - `GET /api/v1/hospital_organizations`
 - `GET /api/v1/receivables`
 - `GET /api/v1/receivables/:id`

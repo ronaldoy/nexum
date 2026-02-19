@@ -4,7 +4,7 @@
       <p class="hero-kicker">Visão global multi-tenant</p>
       <h2>Painel administrativo do sistema</h2>
       <p class="hero-subtitle">
-        Consolidação operacional de todos os tenants, com métricas de recebíveis, antecipações, liquidações e fila de integração.
+        Consolidação operacional de todos os tenants, com métricas de recebíveis, antecipações, liquidações, fila de integração e exceções de reconciliação.
       </p>
       <p class="hero-subtitle">
         Atualizado em <strong><%= l(@generated_at, format: :short) %></strong>.
@@ -14,7 +14,8 @@
       <p><strong>Perfil:</strong> <%= role_label(Current.user&.role) %></p>
       <p><strong>Usuário:</strong> <%= Current.user&.email_address %></p>
       <p><strong>Tenants ativos:</strong> <%= @totals[:active_tenants_count] %>/<%= @totals[:tenants_count] %></p>
-      <%= link_to "Voltar ao portal", root_path, class: "button button-primary" %>
+      <%= link_to "Gerenciar tokens API", admin_api_access_tokens_path, class: "button button-primary" %>
+      <%= link_to "Voltar ao portal", root_path, class: "button button-outline" %>
     </div>
   </section>
 
@@ -57,6 +58,11 @@
       <p class="metric-footnote"><%= @totals[:outbox_dead_letter_count] %> em dead-letter</p>
     </article>
     <article class="metric-card">
+      <p class="metric-label">Exceções de reconciliação</p>
+      <p class="metric-value"><%= number_with_delimiter(@totals[:reconciliation_open_count], delimiter: ".") %></p>
+      <p class="metric-footnote"><%= @totals[:reconciliation_total_count] %> registradas</p>
+    </article>
+    <article class="metric-card">
       <p class="metric-label">Uploads diretos</p>
       <p class="metric-value"><%= number_with_delimiter(@totals[:direct_upload_count], delimiter: ".") %></p>
       <p class="metric-footnote">Blobs com contexto de tenant</p>
@@ -87,6 +93,8 @@
             <th>Pago</th>
             <th>Outbox pendente</th>
             <th>Dead-letter</th>
+            <th>Recon. abertas</th>
+            <th>Recon. total</th>
             <th>Uploads</th>
             <th>Última atividade</th>
           </tr>
@@ -113,6 +121,8 @@
               <td><%= format_brl(row[:settlement_paid_amount]) %></td>
               <td><%= number_with_delimiter(row[:outbox_pending_count], delimiter: ".") %></td>
               <td><%= number_with_delimiter(row[:outbox_dead_letter_count], delimiter: ".") %></td>
+              <td><%= number_with_delimiter(row[:reconciliation_open_count], delimiter: ".") %></td>
+              <td><%= number_with_delimiter(row[:reconciliation_total_count], delimiter: ".") %></td>
               <td><%= number_with_delimiter(row[:direct_upload_count], delimiter: ".") %></td>
               <td><%= l(row[:last_activity_at], format: :short) if row[:last_activity_at].present? %></td>
             </tr>
@@ -120,5 +130,50 @@
         </tbody>
       </table>
     </div>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Exceções de reconciliação recentes</h3>
+      <p>Eventos com mismatch ou falha de integração para acompanhamento operacional.</p>
+    </header>
+
+    <% if @recent_reconciliation_exceptions.any? %>
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Tenant</th>
+              <th>Origem</th>
+              <th>Provider</th>
+              <th>Evento externo</th>
+              <th>Código</th>
+              <th>Ocorrências</th>
+              <th>Última ocorrência</th>
+              <th>Mensagem</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% @recent_reconciliation_exceptions.each do |exception| %>
+              <tr>
+                <td>
+                  <strong><%= exception[:tenant_slug] %></strong><br>
+                  <small><%= exception[:tenant_name] %></small>
+                </td>
+                <td><%= exception[:source] %></td>
+                <td><%= exception[:provider] %></td>
+                <td><code><%= exception[:external_event_id] %></code></td>
+                <td><code><%= exception[:code] %></code></td>
+                <td><%= number_with_delimiter(exception[:occurrences_count], delimiter: ".") %></td>
+                <td><%= l(exception[:last_seen_at], format: :short) if exception[:last_seen_at].present? %></td>
+                <td><%= exception[:message] %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% else %>
+      <p class="empty-state">Nenhuma exceção de reconciliação aberta no momento.</p>
+    <% end %>
   </section>
 </main>

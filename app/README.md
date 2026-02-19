@@ -46,6 +46,10 @@ For full architecture, domain flow, and demo walkthrough see root `README.md`.
 - `GET /api/v1/receivables/:id` fetch single receivable.
 - `GET /api/v1/receivables/:id/history` full append-only timeline (events + document events).
 - `GET /docs/openapi/v1` serves OpenAPI v1 contract.
+- `POST /webhooks/escrow/:provider/:tenant_slug` receives signed provider webhooks and reconciles escrow payout/account status.
+- `GET /admin/api_access_tokens` lists integration tokens for the selected tenant (`ops_admin` + passkey step-up).
+- `POST /admin/api_access_tokens` issues a new integration token (`ops_admin` + passkey step-up).
+- `DELETE /admin/api_access_tokens/:id` revokes an integration token (`ops_admin` + passkey step-up).
 - OpenAPI source file: `../docs/openapi/v1.yaml`.
 - Generated API reference: `../docs/api_reference.md`.
 - Generated DB model docs: `../docs/database_model.md`.
@@ -57,6 +61,8 @@ For full architecture, domain flow, and demo walkthrough see root `README.md`.
 - Persisted state:
   - `escrow_accounts`
   - `escrow_payouts`
+  - `provider_webhook_receipts`
+  - `reconciliation_exceptions`
 - Destination account guardrail:
   - EXCESS payout destination `taxpayer_id` must match recipient party CPF/CNPJ.
 
@@ -68,8 +74,11 @@ For full architecture, domain flow, and demo walkthrough see root `README.md`.
   - `QITECH_PRIVATE_KEY`
   - `QITECH_KEY_ID`
   - `QITECH_SOURCE_ACCOUNT_KEY`
+  - `QITECH_WEBHOOK_SECRET` or `QITECH_WEBHOOK_TOKEN`
   - `QITECH_OPEN_TIMEOUT_SECONDS`
   - `QITECH_READ_TIMEOUT_SECONDS`
+- StarkBank:
+  - `STARKBANK_WEBHOOK_SECRET` or `STARKBANK_WEBHOOK_TOKEN`
 
 ### Party onboarding metadata
 - Account opening payload:
@@ -78,6 +87,18 @@ For full architecture, domain flow, and demo walkthrough see root `README.md`.
   - `party.metadata.integrations.qitech.escrow_account`
 - Destination account for EXCESS payout:
   - `party.metadata.integrations.qitech.payout_destination_account`
+
+### Webhook reconciliation (idempotent)
+- Endpoint format:
+  - `/webhooks/escrow/QITECH/:tenant_slug`
+  - `/webhooks/escrow/STARKBANK/:tenant_slug`
+- Receipt table:
+  - `provider_webhook_receipts` (tenant-scoped, unique by provider + event id)
+- Payload replay handling:
+  - Same provider event id + same payload: replay (`200`).
+  - Same provider event id + different payload: conflict (`409`).
+- Mismatch/failure queue:
+  - `reconciliation_exceptions` stores unresolved webhook reconciliation exceptions for ops follow-up.
 
 ## Docs Generation
 
