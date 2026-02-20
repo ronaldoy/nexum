@@ -3,6 +3,13 @@ module Admin
     DEFAULT_TOKEN_TTL_MINUTES = 15
     MAX_ROWS = 200
     SUPPORTED_SCOPES = PartnerApplication::ALLOWED_SCOPES.freeze
+    PARTNER_APPLICATION_PERMITTED_FIELDS = %i[
+      tenant_id
+      name
+      scopes_input
+      token_ttl_minutes
+      allowed_origins_input
+    ].freeze
 
     class ValidationError < StandardError; end
 
@@ -17,70 +24,33 @@ module Admin
     end
 
     def create
-      issued = issue_partner_application!
-
-      respond_to do |format|
-        format.html do
-          flash[:notice] = "Aplicação parceira criada com sucesso."
-          flash[:partner_application_client_id] = issued.fetch(:application).client_id
-          flash[:partner_application_client_secret] = issued.fetch(:client_secret)
-          redirect_to admin_partner_applications_path(tenant_id: @selected_tenant.id)
-        end
-
-        format.json do
-          render json: {
-            data: serialize_partner_application(issued.fetch(:application)).merge(
-              client_secret: issued.fetch(:client_secret)
-            )
-          }, status: :created
-        end
+      with_validation_error_handling do
+        render_create_success(issue_partner_application!)
       end
-    rescue ValidationError => error
-      handle_validation_error(code: "invalid_partner_application_request", message: error.message)
-    rescue ActiveRecord::RecordInvalid => error
-      handle_validation_error(code: "invalid_partner_application_request", message: error.record.errors.full_messages.to_sentence)
     end
 
     def rotate_secret
       application, client_secret = rotate_partner_application_secret!
-
-      respond_to do |format|
-        format.html do
-          flash[:notice] = "Segredo rotacionado com sucesso."
-          flash[:partner_application_client_id] = application.client_id
-          flash[:partner_application_client_secret] = client_secret
-          redirect_to admin_partner_applications_path(tenant_id: @selected_tenant.id)
-        end
-
-        format.json do
-          render json: {
-            data: serialize_partner_application(application).merge(client_secret: client_secret)
-          }, status: :ok
-        end
-      end
+      render_rotate_secret_success(application:, client_secret:)
     rescue ActiveRecord::RecordNotFound
       handle_not_found
     end
 
     def deactivate
-      application = deactivate_partner_application!
-
-      respond_to do |format|
-        format.html do
-          redirect_to admin_partner_applications_path(tenant_id: @selected_tenant.id), notice: "Aplicação parceira desativada."
-        end
-
-        format.json do
-          render json: {
-            data: serialize_partner_application(application)
-          }, status: :ok
-        end
-      end
+      render_deactivate_success(deactivate_partner_application!)
     rescue ActiveRecord::RecordNotFound
       handle_not_found
     end
 
     private
+
+    def with_validation_error_handling
+      yield
+    rescue ValidationError => error
+      handle_validation_error(code: "invalid_partner_application_request", message: error.message)
+    rescue ActiveRecord::RecordInvalid => error
+      handle_validation_error(code: "invalid_partner_application_request", message: error.record.errors.full_messages.to_sentence)
+    end
 
     def ensure_ops_admin!
       return if Current.user&.role == "ops_admin"
@@ -117,33 +87,12 @@ module Admin
 
     def issue_partner_application!
       attrs = partner_application_params
-      name = attrs.fetch(:name).to_s.strip
-      raise ValidationError, "Nome da aplicação é obrigatório." if name.blank?
-
-      scopes = normalize_scopes(attrs.fetch(:scopes_input))
-      raise ValidationError, "Informe ao menos um escopo permitido." if scopes.empty?
-
-      token_ttl_minutes = normalize_token_ttl(attrs[:token_ttl_minutes])
-      allowed_origins = normalize_allowed_origins(attrs[:allowed_origins_input])
-
-      with_tenant_database_context(tenant_id: @selected_tenant.id) do
-        tenant = Tenant.find(@selected_tenant.id)
-        application, client_secret = PartnerApplication.issue!(
-          tenant: tenant,
-          created_by_user: Current.user,
-          name: name,
-          scopes: scopes,
-          token_ttl_minutes: token_ttl_minutes,
-          allowed_origins: allowed_origins,
-          audit_context: lifecycle_audit_context(
-            metadata: {
-              "issued_for_tenant_id" => tenant.id,
-              "issued_for_tenant_slug" => tenant.slug
-            }
-          )
-        )
-        { application: application, client_secret: client_secret }
-      end
+      issue_partner_application_for_selected_tenant!(
+        name: validated_application_name(attrs.fetch(:name)),
+        scopes: validated_scopes(attrs.fetch(:scopes_input)),
+        token_ttl_minutes: normalize_token_ttl(attrs[:token_ttl_minutes]),
+        allowed_origins: normalize_allowed_origins(attrs[:allowed_origins_input])
+      )
     end
 
     def rotate_partner_application_secret!
@@ -162,7 +111,41 @@ module Admin
       end
     end
 
+    def issue_partner_application_for_selected_tenant!(name:, scopes:, token_ttl_minutes:, allowed_origins:)
+      with_tenant_database_context(tenant_id: @selected_tenant.id) do
+        tenant = Tenant.find(@selected_tenant.id)
+        application, client_secret = PartnerApplication.issue!(
+          tenant: tenant,
+          created_by_user: Current.user,
+          name: name,
+          scopes: scopes,
+          token_ttl_minutes: token_ttl_minutes,
+          allowed_origins: allowed_origins,
+          audit_context: lifecycle_audit_context(metadata: issue_audit_metadata(tenant))
+        )
+        { application: application, client_secret: client_secret }
+      end
+    end
+
+    def validated_application_name(raw_name)
+      name = raw_name.to_s.strip
+      raise ValidationError, "Nome da aplicação é obrigatório." if name.blank?
+
+      name
+    end
+
+    def validated_scopes(raw_scopes)
+      scopes = normalize_scopes(raw_scopes)
+      raise ValidationError, "Informe ao menos um escopo permitido." if scopes.empty?
+
+      scopes
+    end
+
     def lifecycle_audit_context(metadata: {})
+      base_lifecycle_audit_context.merge(metadata: metadata)
+    end
+
+    def base_lifecycle_audit_context
       {
         actor_party_id: Current.user&.party_id,
         ip_address: request.remote_ip,
@@ -170,19 +153,19 @@ module Admin
         request_id: request.request_id,
         endpoint_path: request.fullpath,
         http_method: request.method,
-        channel: "ADMIN",
-        metadata: metadata
+        channel: "ADMIN"
+      }
+    end
+
+    def issue_audit_metadata(tenant)
+      {
+        "issued_for_tenant_id" => tenant.id,
+        "issued_for_tenant_slug" => tenant.slug
       }
     end
 
     def partner_application_params
-      params.require(:partner_application).permit(
-        :tenant_id,
-        :name,
-        :scopes_input,
-        :token_ttl_minutes,
-        :allowed_origins_input
-      )
+      params.require(:partner_application).permit(*PARTNER_APPLICATION_PERMITTED_FIELDS)
     end
 
     def normalize_scopes(raw)
@@ -247,6 +230,56 @@ module Admin
         "SELECT set_config($1, $2, true)",
         [ key.to_s, value.to_s ]
       )
+    end
+
+    def render_create_success(issued)
+      respond_to do |format|
+        format.html do
+          flash[:notice] = "Aplicação parceira criada com sucesso."
+          flash[:partner_application_client_id] = issued.fetch(:application).client_id
+          flash[:partner_application_client_secret] = issued.fetch(:client_secret)
+          redirect_to admin_partner_applications_path(tenant_id: @selected_tenant.id)
+        end
+
+        format.json do
+          render json: {
+            data: serialize_partner_application(issued.fetch(:application)).merge(
+              client_secret: issued.fetch(:client_secret)
+            )
+          }, status: :created
+        end
+      end
+    end
+
+    def render_rotate_secret_success(application:, client_secret:)
+      respond_to do |format|
+        format.html do
+          flash[:notice] = "Segredo rotacionado com sucesso."
+          flash[:partner_application_client_id] = application.client_id
+          flash[:partner_application_client_secret] = client_secret
+          redirect_to admin_partner_applications_path(tenant_id: @selected_tenant.id)
+        end
+
+        format.json do
+          render json: {
+            data: serialize_partner_application(application).merge(client_secret: client_secret)
+          }, status: :ok
+        end
+      end
+    end
+
+    def render_deactivate_success(application)
+      respond_to do |format|
+        format.html do
+          redirect_to admin_partner_applications_path(tenant_id: @selected_tenant.id), notice: "Aplicação parceira desativada."
+        end
+
+        format.json do
+          render json: {
+            data: serialize_partner_application(application)
+          }, status: :ok
+        end
+      end
     end
 
     def serialize_partner_application(application)
