@@ -10,6 +10,18 @@ module Receivables
         replayed
       end
     end
+    CallInputs = Struct.new(:payload, :payload_hash, keyword_init: true)
+    CreationContext = Struct.new(
+      :receivable_kind,
+      :debtor_party,
+      :creditor_party,
+      :beneficiary_party,
+      :gross_amount,
+      :performed_at,
+      :due_at,
+      :cutoff_at,
+      keyword_init: true
+    )
 
     class ValidationError < StandardError
       attr_reader :code
@@ -45,93 +57,137 @@ module Receivables
     def call(raw_payload)
       raise_validation_error!("missing_idempotency_key", "Idempotency-Key is required.") if @idempotency_key.blank?
 
-      payload = normalize_payload(raw_payload)
-      payload_hash = receivable_payload_hash(payload)
-
-      ActiveRecord::Base.transaction do
-        existing = Receivable.where(tenant_id: @tenant_id, external_reference: payload.fetch(:external_reference)).lock.first
-        if existing
-          allocation = existing.receivable_allocations.order(sequence: :asc).first
-          ensure_matching_replay!(existing: existing, allocation: allocation, payload_hash: payload_hash, payload: payload)
-          create_action_log!(
-            action_type: "RECEIVABLE_CREATE_REPLAYED",
-            success: true,
-            target_id: existing.id,
-            metadata: { replayed: true, idempotency_key: @idempotency_key, external_reference: existing.external_reference }
-          )
-          return Result.new(receivable: existing, allocation: allocation, replayed: true)
-        end
-
-        receivable_kind = ReceivableKind.where(tenant_id: @tenant_id, code: payload.fetch(:receivable_kind_code)).first
-        raise_validation_error!("receivable_kind_not_found", "Receivable kind is invalid.") if receivable_kind.blank?
-
-        debtor_party = Party.where(tenant_id: @tenant_id).find(payload.fetch(:debtor_party_id))
-        creditor_party = Party.where(tenant_id: @tenant_id).find(payload.fetch(:creditor_party_id))
-        beneficiary_party = Party.where(tenant_id: @tenant_id).find(payload.fetch(:beneficiary_party_id))
-
-        if debtor_party.kind != "HOSPITAL"
-          raise_validation_error!("debtor_party_kind_invalid", "Debtor party must be a HOSPITAL.")
-        end
-
-        gross_amount = round_money(parse_decimal(payload.fetch(:gross_amount), field: "gross_amount"))
-        raise_validation_error!("invalid_gross_amount", "gross_amount must be greater than zero.") if gross_amount <= 0
-
-        performed_at = parse_time(payload[:performed_at].presence || Time.current, field: "performed_at")
-        due_at = parse_time(payload.fetch(:due_at), field: "due_at")
-        cutoff_at = parse_time(payload[:cutoff_at].presence || BusinessCalendar.cutoff_at(performed_at.in_time_zone.to_date), field: "cutoff_at")
-
-        receivable = Receivable.create!(
-          tenant_id: @tenant_id,
-          receivable_kind: receivable_kind,
-          debtor_party: debtor_party,
-          creditor_party: creditor_party,
-          beneficiary_party: beneficiary_party,
-          external_reference: payload.fetch(:external_reference),
-          gross_amount: gross_amount,
-          currency: "BRL",
-          status: "PERFORMED",
-          performed_at: performed_at,
-          due_at: due_at,
-          cutoff_at: cutoff_at,
-          metadata: normalize_hash_metadata(payload[:metadata]).merge(
-            PAYLOAD_HASH_METADATA_KEY => payload_hash,
-            "idempotency_key" => @idempotency_key
-          )
-        )
-
-        allocation = create_primary_allocation!(
-          receivable: receivable,
-          payload: payload,
-          gross_amount: gross_amount
-        )
-
-        create_receivable_event!(
-          receivable: receivable,
-          allocation: allocation,
-          occurred_at: performed_at
-        )
-
-        create_action_log!(
-          action_type: "RECEIVABLE_CREATED",
-          success: true,
-          target_id: receivable.id,
-          metadata: {
-            replayed: false,
-            idempotency_key: @idempotency_key,
-            external_reference: receivable.external_reference,
-            receivable_kind_code: receivable_kind.code
-          }
-        )
-
-        Result.new(receivable: receivable, allocation: allocation, replayed: false)
-      end
+      inputs = build_call_inputs(raw_payload)
+      ActiveRecord::Base.transaction { create_or_replay(inputs) }
     rescue ActiveRecord::RecordNotUnique
-      replay_after_race(payload: payload, payload_hash: payload_hash)
+      replay_after_race(payload: inputs&.payload || normalize_payload(raw_payload), payload_hash: inputs&.payload_hash.to_s)
     rescue ActiveRecord::RecordInvalid => error
       raise ValidationError.new(code: "invalid_receivable_payload", message: error.record.errors.full_messages.to_sentence)
     end
 
     private
+
+    def build_call_inputs(raw_payload)
+      payload = normalize_payload(raw_payload)
+      payload_hash = receivable_payload_hash(payload)
+      CallInputs.new(payload:, payload_hash:)
+    end
+
+    def create_or_replay(inputs)
+      existing = find_existing_receivable(inputs.payload)
+      return build_replay_result(existing:, inputs:) if existing
+
+      create_new_receivable(inputs)
+    end
+
+    def find_existing_receivable(payload)
+      Receivable.where(tenant_id: @tenant_id, external_reference: payload.fetch(:external_reference)).lock.first
+    end
+
+    def build_replay_result(existing:, inputs:)
+      allocation = existing.receivable_allocations.order(sequence: :asc).first
+      ensure_matching_replay!(
+        existing: existing,
+        allocation: allocation,
+        payload_hash: inputs.payload_hash,
+        payload: inputs.payload
+      )
+      create_action_log!(
+        action_type: "RECEIVABLE_CREATE_REPLAYED",
+        success: true,
+        target_id: existing.id,
+        metadata: { replayed: true, idempotency_key: @idempotency_key, external_reference: existing.external_reference }
+      )
+      Result.new(receivable: existing, allocation: allocation, replayed: true)
+    end
+
+    def create_new_receivable(inputs)
+      context = build_creation_context(inputs.payload)
+      receivable = create_receivable_record!(payload: inputs.payload, payload_hash: inputs.payload_hash, context:)
+      allocation = create_primary_allocation!(
+        receivable: receivable,
+        payload: inputs.payload,
+        gross_amount: context.gross_amount
+      )
+
+      create_receivable_event!(
+        receivable: receivable,
+        allocation: allocation,
+        occurred_at: context.performed_at
+      )
+
+      create_action_log!(
+        action_type: "RECEIVABLE_CREATED",
+        success: true,
+        target_id: receivable.id,
+        metadata: {
+          replayed: false,
+          idempotency_key: @idempotency_key,
+          external_reference: receivable.external_reference,
+          receivable_kind_code: context.receivable_kind.code
+        }
+      )
+
+      Result.new(receivable: receivable, allocation: allocation, replayed: false)
+    end
+
+    def build_creation_context(payload)
+      receivable_kind = ReceivableKind.where(tenant_id: @tenant_id, code: payload.fetch(:receivable_kind_code)).first
+      raise_validation_error!("receivable_kind_not_found", "Receivable kind is invalid.") if receivable_kind.blank?
+
+      debtor_party = Party.where(tenant_id: @tenant_id).find(payload.fetch(:debtor_party_id))
+      creditor_party = Party.where(tenant_id: @tenant_id).find(payload.fetch(:creditor_party_id))
+      beneficiary_party = Party.where(tenant_id: @tenant_id).find(payload.fetch(:beneficiary_party_id))
+      validate_debtor_party!(debtor_party)
+
+      gross_amount = round_money(parse_decimal(payload.fetch(:gross_amount), field: "gross_amount"))
+      raise_validation_error!("invalid_gross_amount", "gross_amount must be greater than zero.") if gross_amount <= 0
+
+      performed_at = parse_time(payload[:performed_at].presence || Time.current, field: "performed_at")
+      due_at = parse_time(payload.fetch(:due_at), field: "due_at")
+      cutoff_at = parse_time(
+        payload[:cutoff_at].presence || BusinessCalendar.cutoff_at(performed_at.in_time_zone.to_date),
+        field: "cutoff_at"
+      )
+
+      CreationContext.new(
+        receivable_kind: receivable_kind,
+        debtor_party: debtor_party,
+        creditor_party: creditor_party,
+        beneficiary_party: beneficiary_party,
+        gross_amount: gross_amount,
+        performed_at: performed_at,
+        due_at: due_at,
+        cutoff_at: cutoff_at
+      )
+    end
+
+    def validate_debtor_party!(debtor_party)
+      return if debtor_party.kind == "HOSPITAL"
+
+      raise_validation_error!("debtor_party_kind_invalid", "Debtor party must be a HOSPITAL.")
+    end
+
+    def create_receivable_record!(payload:, payload_hash:, context:)
+      Receivable.create!(
+        tenant_id: @tenant_id,
+        receivable_kind: context.receivable_kind,
+        debtor_party: context.debtor_party,
+        creditor_party: context.creditor_party,
+        beneficiary_party: context.beneficiary_party,
+        external_reference: payload.fetch(:external_reference),
+        gross_amount: context.gross_amount,
+        currency: "BRL",
+        status: "PERFORMED",
+        performed_at: context.performed_at,
+        due_at: context.due_at,
+        cutoff_at: context.cutoff_at,
+        metadata: normalize_hash_metadata(payload[:metadata]).merge(
+          PAYLOAD_HASH_METADATA_KEY => payload_hash,
+          "idempotency_key" => @idempotency_key
+        )
+      )
+    end
 
     def normalize_payload(raw_payload)
       payload = raw_payload.to_h.symbolize_keys

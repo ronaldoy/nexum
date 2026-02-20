@@ -11,6 +11,7 @@ module KycProfiles
         replayed
       end
     end
+    CreateInputs = Struct.new(:party_id, :status, :risk_level, :metadata, :payload_hash, keyword_init: true)
 
     class ValidationError < StandardError
       attr_reader :code
@@ -44,6 +45,38 @@ module KycProfiles
     end
 
     def call(raw_payload, default_party_id:)
+      inputs = build_create_inputs(raw_payload:, default_party_id:)
+      result = nil
+      validation_error = nil
+
+      ActiveRecord::Base.transaction do
+        result, validation_error = create_or_replay(inputs)
+      end
+
+      if validation_error
+        create_failure_log(error: validation_error, target_id: inputs.party_id, actor_party_id: nil)
+        raise validation_error
+      end
+
+      result
+    rescue ActiveRecord::RecordInvalid => error
+      validation_error = ValidationError.new(
+        code: "invalid_kyc_profile",
+        message: error.record.errors.full_messages.to_sentence
+      )
+      create_failure_log(error: validation_error, target_id: inputs&.party_id || raw_payload.to_h[:party_id], actor_party_id: nil)
+      raise validation_error
+    rescue ActiveRecord::RecordNotFound => error
+      create_failure_log(error: error, target_id: inputs&.party_id || raw_payload.to_h[:party_id], actor_party_id: nil)
+      raise
+    rescue ActiveRecord::RecordNotUnique
+      existing_outbox = OutboxEvent.find_by!(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
+      replay_result(existing_outbox:, payload_hash: inputs&.payload_hash.to_s)
+    end
+
+    private
+
+    def build_create_inputs(raw_payload:, default_party_id:)
       payload = raw_payload.to_h.deep_symbolize_keys
       party_id = payload[:party_id].presence || default_party_id
       raise_validation_error!("party_required", "party_id is required.") if party_id.blank?
@@ -62,88 +95,85 @@ module KycProfiles
         metadata: metadata
       )
 
-      kyc_profile = nil
-      result = nil
-      validation_error = nil
-
-      ActiveRecord::Base.transaction do
-        existing_outbox = OutboxEvent.lock.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
-        if existing_outbox
-          begin
-            result = replay_result(existing_outbox:, payload_hash:)
-          rescue ValidationError => error
-            validation_error = error
-          end
-          next
-        end
-
-        party = Party.where(tenant_id: @tenant_id).lock.find(party_id)
-        existing_profile = KycProfile.where(tenant_id: @tenant_id, party_id: party.id).lock.first
-        if existing_profile
-          validation_error = ValidationError.new(
-            code: "kyc_profile_already_exists",
-            message: "KYC profile already exists for this party."
-          )
-          next
-        end
-
-        kyc_profile = KycProfile.create!(
-          tenant_id: @tenant_id,
-          party: party,
-          status: status,
-          risk_level: risk_level,
-          metadata: metadata
-        )
-
-        create_kyc_event!(
-          kyc_profile: kyc_profile,
-          party: party,
-          event_type: OUTBOX_EVENT_TYPE,
-          payload: {
-            "idempotency_key" => @idempotency_key,
-            "status" => kyc_profile.status,
-            "risk_level" => kyc_profile.risk_level
-          }
-        )
-
-        create_outbox_event!(
-          kyc_profile: kyc_profile,
-          payload_hash: payload_hash
-        )
-
-        create_action_log!(
-          action_type: "KYC_PROFILE_CREATED",
-          success: true,
-          actor_party_id: party.id,
-          target_id: kyc_profile.id,
-          metadata: { replayed: false, idempotency_key: @idempotency_key }
-        )
-
-        result = Result.new(kyc_profile: kyc_profile, replayed: false)
-      end
-
-      if validation_error
-        create_failure_log(error: validation_error, target_id: party_id, actor_party_id: nil)
-        raise validation_error
-      end
-
-      result
-    rescue ActiveRecord::RecordInvalid => error
-      validation_error = ValidationError.new(
-        code: "invalid_kyc_profile",
-        message: error.record.errors.full_messages.to_sentence
+      CreateInputs.new(
+        party_id: party_id,
+        status: status,
+        risk_level: risk_level,
+        metadata: metadata,
+        payload_hash: payload_hash
       )
-      create_failure_log(error: validation_error, target_id: raw_payload.to_h[:party_id], actor_party_id: nil)
-      raise validation_error
-    rescue ActiveRecord::RecordNotFound => error
-      create_failure_log(error: error, target_id: raw_payload.to_h[:party_id], actor_party_id: nil)
-      raise
-    rescue ActiveRecord::RecordNotUnique
-      existing_outbox = OutboxEvent.find_by!(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
-      replay_result(existing_outbox:, payload_hash:)
     end
 
-    private
+    def create_or_replay(inputs)
+      existing_outbox = OutboxEvent.lock.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
+      return replay_or_capture_validation_error(existing_outbox:, payload_hash: inputs.payload_hash) if existing_outbox
+
+      [ create_new_profile_result!(inputs), nil ]
+    rescue ValidationError => error
+      [ nil, error ]
+    end
+
+    def replay_or_capture_validation_error(existing_outbox:, payload_hash:)
+      [ replay_result(existing_outbox:, payload_hash:), nil ]
+    rescue ValidationError => error
+      [ nil, error ]
+    end
+
+    def create_new_profile_result!(inputs)
+      party = Party.where(tenant_id: @tenant_id).lock.find(inputs.party_id)
+      ensure_profile_absent!(party)
+
+      kyc_profile = KycProfile.create!(
+        tenant_id: @tenant_id,
+        party: party,
+        status: inputs.status,
+        risk_level: inputs.risk_level,
+        metadata: inputs.metadata
+      )
+
+      append_profile_artifacts!(kyc_profile:, party:, payload_hash: inputs.payload_hash)
+      log_profile_creation_success!(kyc_profile:, party:)
+
+      Result.new(kyc_profile:, replayed: false)
+    end
+
+    def ensure_profile_absent!(party)
+      existing_profile = KycProfile.where(tenant_id: @tenant_id, party_id: party.id).lock.first
+      return if existing_profile.blank?
+
+      raise ValidationError.new(
+        code: "kyc_profile_already_exists",
+        message: "KYC profile already exists for this party."
+      )
+    end
+
+    def append_profile_artifacts!(kyc_profile:, party:, payload_hash:)
+      create_kyc_event!(
+        kyc_profile: kyc_profile,
+        party: party,
+        event_type: OUTBOX_EVENT_TYPE,
+        payload: {
+          "idempotency_key" => @idempotency_key,
+          "status" => kyc_profile.status,
+          "risk_level" => kyc_profile.risk_level
+        }
+      )
+
+      create_outbox_event!(
+        kyc_profile: kyc_profile,
+        payload_hash: payload_hash
+      )
+    end
+
+    def log_profile_creation_success!(kyc_profile:, party:)
+      create_action_log!(
+        action_type: "KYC_PROFILE_CREATED",
+        success: true,
+        actor_party_id: party.id,
+        target_id: kyc_profile.id,
+        metadata: { replayed: false, idempotency_key: @idempotency_key }
+      )
+    end
 
     def normalize_status
       "DRAFT"

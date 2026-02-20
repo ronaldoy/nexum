@@ -24,6 +24,7 @@ module Receivables
         replayed
       end
     end
+    CallInputs = Struct.new(:receivable_id, :payload, :payload_hash, keyword_init: true)
 
     class ValidationError < StandardError
       attr_reader :code
@@ -57,113 +58,48 @@ module Receivables
     end
 
     def call(receivable_id:, raw_payload:, default_actor_party_id:, privileged_actor: false)
-      payload = normalize_payload(
-        raw_payload.to_h,
+      inputs = build_call_inputs(
+        receivable_id: receivable_id,
+        raw_payload: raw_payload,
         default_actor_party_id: default_actor_party_id,
         privileged_actor: privileged_actor
       )
-      payload_hash = build_payload_hash(receivable_id:, payload:)
-
       result = nil
       failure = nil
 
       ActiveRecord::Base.transaction do
-        existing_outbox = OutboxEvent.lock.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
-        if existing_outbox
-          begin
-            result = replay_result(existing_outbox:, payload_hash:)
-          rescue ValidationError => error
-            failure = error
-          end
-          next
-        end
-
-        receivable = Receivable.where(tenant_id: @tenant_id).lock.find(receivable_id)
-        actor_party = resolve_actor_party!(payload.fetch(:actor_party_id))
-        ensure_actor_party_authorized!(receivable:, actor_party:)
-        challenges = ensure_verified_challenge_pair!(
-          receivable: receivable,
-          actor_party: actor_party,
-          email_challenge_id: payload.fetch(:email_challenge_id),
-          whatsapp_challenge_id: payload.fetch(:whatsapp_challenge_id)
-        )
-
-        document = Document.create!(
-          tenant_id: @tenant_id,
-          receivable: receivable,
-          actor_party: actor_party,
-          document_type: payload.fetch(:document_type),
-          signature_method: payload.fetch(:signature_method),
-          status: "SIGNED",
-          sha256: payload.fetch(:sha256),
-          storage_key: payload.fetch(:storage_key),
-          signed_at: payload.fetch(:signed_at),
-          metadata: payload.fetch(:metadata)
-        )
-        consume_verified_challenges!(challenges:, consumed_at: payload.fetch(:signed_at))
-        attach_blob!(record: document, blob: payload[:blob])
-
-        create_document_event!(
-          document:,
-          receivable:,
-          actor_party:,
-          payload:
-        )
-        create_receivable_event!(
-          receivable:,
-          document:,
-          actor_party:,
-          payload:
-        )
-        create_outbox_event!(
-          receivable:,
-          document:,
-          payload_hash:
-        )
-        create_action_log!(
-          action_type: "RECEIVABLE_DOCUMENT_ATTACHED",
-          success: true,
-          actor_party_id: actor_party.id,
-          target_id: document.id,
-          metadata: {
-            replayed: false,
-            idempotency_key: @idempotency_key,
-            receivable_id: receivable.id
-          }
-        )
-
-        result = Result.new(document:, replayed: false)
+        result, failure = attach_or_replay(inputs)
       end
 
       if failure
-        create_failure_log(error: failure, receivable_id: receivable_id)
+        create_failure_log(error: failure, receivable_id: inputs.receivable_id)
         raise failure
       end
 
       result
     rescue ValidationError => error
-      create_failure_log(error: error, receivable_id: receivable_id)
+      create_failure_log(error: error, receivable_id: inputs&.receivable_id || receivable_id)
       raise
     rescue ActiveRecord::RecordInvalid => error
       validation_error = ValidationError.new(
         code: "invalid_document",
         message: error.record.errors.full_messages.to_sentence
       )
-      create_failure_log(error: validation_error, receivable_id: receivable_id)
+      create_failure_log(error: validation_error, receivable_id: inputs&.receivable_id || receivable_id)
       raise validation_error
     rescue ActiveRecord::RecordNotFound => error
-      create_failure_log(error: error, receivable_id: receivable_id)
+      create_failure_log(error: error, receivable_id: inputs&.receivable_id || receivable_id)
       raise
     rescue ActiveRecord::RecordNotUnique => error
       existing_outbox = OutboxEvent.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
-      return replay_result(existing_outbox:, payload_hash:) if existing_outbox.present?
+      return replay_result(existing_outbox:, payload_hash: inputs&.payload_hash.to_s) if existing_outbox.present?
 
       if error.message.include?("index_documents_on_tenant_id_and_sha256")
         validation_error = ValidationError.new(
           code: "duplicate_document_hash",
           message: "A signed document with this sha256 already exists for this tenant."
         )
-        create_failure_log(error: validation_error, receivable_id: receivable_id)
+        create_failure_log(error: validation_error, receivable_id: inputs&.receivable_id || receivable_id)
         raise validation_error
       end
 
@@ -171,6 +107,110 @@ module Receivables
     end
 
     private
+
+    def build_call_inputs(receivable_id:, raw_payload:, default_actor_party_id:, privileged_actor:)
+      payload = normalize_payload(
+        raw_payload.to_h,
+        default_actor_party_id: default_actor_party_id,
+        privileged_actor: privileged_actor
+      )
+      payload_hash = build_payload_hash(receivable_id:, payload:)
+
+      CallInputs.new(
+        receivable_id: receivable_id,
+        payload: payload,
+        payload_hash: payload_hash
+      )
+    end
+
+    def attach_or_replay(inputs)
+      existing_outbox = OutboxEvent.lock.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
+      return replay_or_capture_validation_error(existing_outbox:, payload_hash: inputs.payload_hash) if existing_outbox
+
+      [ create_attachment_result!(inputs), nil ]
+    end
+
+    def replay_or_capture_validation_error(existing_outbox:, payload_hash:)
+      [ replay_result(existing_outbox:, payload_hash:), nil ]
+    rescue ValidationError => error
+      [ nil, error ]
+    end
+
+    def create_attachment_result!(inputs)
+      receivable = Receivable.where(tenant_id: @tenant_id).lock.find(inputs.receivable_id)
+      actor_party = resolve_actor_party!(inputs.payload.fetch(:actor_party_id))
+      ensure_actor_party_authorized!(receivable:, actor_party:)
+      challenges = ensure_verified_challenge_pair!(
+        receivable: receivable,
+        actor_party: actor_party,
+        email_challenge_id: inputs.payload.fetch(:email_challenge_id),
+        whatsapp_challenge_id: inputs.payload.fetch(:whatsapp_challenge_id)
+      )
+
+      document = create_document!(receivable:, actor_party:, payload: inputs.payload)
+      consume_verified_challenges!(challenges:, consumed_at: inputs.payload.fetch(:signed_at))
+      attach_blob!(record: document, blob: inputs.payload[:blob])
+
+      append_attachment_artifacts!(
+        receivable: receivable,
+        actor_party: actor_party,
+        document: document,
+        payload: inputs.payload,
+        payload_hash: inputs.payload_hash
+      )
+      log_attachment_success!(receivable:, actor_party:, document:)
+
+      Result.new(document:, replayed: false)
+    end
+
+    def create_document!(receivable:, actor_party:, payload:)
+      Document.create!(
+        tenant_id: @tenant_id,
+        receivable: receivable,
+        actor_party: actor_party,
+        document_type: payload.fetch(:document_type),
+        signature_method: payload.fetch(:signature_method),
+        status: "SIGNED",
+        sha256: payload.fetch(:sha256),
+        storage_key: payload.fetch(:storage_key),
+        signed_at: payload.fetch(:signed_at),
+        metadata: payload.fetch(:metadata)
+      )
+    end
+
+    def append_attachment_artifacts!(receivable:, actor_party:, document:, payload:, payload_hash:)
+      create_document_event!(
+        document: document,
+        receivable: receivable,
+        actor_party: actor_party,
+        payload: payload
+      )
+      create_receivable_event!(
+        receivable: receivable,
+        document: document,
+        actor_party: actor_party,
+        payload: payload
+      )
+      create_outbox_event!(
+        receivable: receivable,
+        document: document,
+        payload_hash: payload_hash
+      )
+    end
+
+    def log_attachment_success!(receivable:, actor_party:, document:)
+      create_action_log!(
+        action_type: "RECEIVABLE_DOCUMENT_ATTACHED",
+        success: true,
+        actor_party_id: actor_party.id,
+        target_id: document.id,
+        metadata: {
+          replayed: false,
+          idempotency_key: @idempotency_key,
+          receivable_id: receivable.id
+        }
+      )
+    end
 
     def normalize_payload(raw_payload, default_actor_party_id:, privileged_actor:)
       payload = raw_payload.deep_symbolize_keys

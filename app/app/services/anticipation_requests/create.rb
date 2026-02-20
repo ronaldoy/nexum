@@ -20,6 +20,8 @@ module AnticipationRequests
       keyword_init: true
     )
 
+    Financials = Struct.new(:requested_at, :discount_amount, :net_amount, keyword_init: true)
+
     Result = Struct.new(:anticipation_request, :replayed, keyword_init: true) do
       def replayed?
         replayed
@@ -60,62 +62,34 @@ module AnticipationRequests
     def call(raw_payload, default_requester_party_id:)
       intent = normalize_intent(raw_payload, default_requester_party_id:)
       intent_hash = idempotency_payload_hash(intent)
+      replay_result = nil
+      result = nil
 
       ActiveRecord::Base.transaction do
         existing = AnticipationRequest.lock.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
         if existing
-          ensure_matching_idempotency!(existing:, intent:, intent_hash:)
-          create_action_log!(
-            action_type: "ANTICIPATION_REQUEST_REPLAYED",
-            success: true,
-            requester_party_id: existing.requester_party_id,
-            target_id: existing.id,
-            metadata: { replayed: true, idempotency_key: @idempotency_key }
-          )
-          return Result.new(anticipation_request: existing, replayed: true)
+          replay_result = build_replay_result(existing:, intent:, intent_hash:)
+          next
         end
 
-        receivable = Receivable.where(tenant_id: @tenant_id).lock.find(intent.receivable_id)
-        ensure_receivable_eligible!(receivable)
-
-        allocation = resolve_allocation(receivable:, receivable_allocation_id: intent.receivable_allocation_id)
-        requester_party = resolve_requester_party!(requester_party_id: intent.requester_party_id)
-        ensure_requester_authorized!(receivable:, allocation:, requester_party:)
-        ensure_requested_amount_available!(receivable:, allocation:, requested_amount: intent.requested_amount)
-
-        requested_at = Time.current
-        discount_amount = round_currency(intent.requested_amount * intent.discount_rate)
-        net_amount = round_currency(intent.requested_amount - discount_amount)
-        ensure_positive_net_amount!(net_amount)
-
-        anticipation_request = AnticipationRequest.create!(
-          tenant_id: @tenant_id,
+        receivable, allocation, requester_party = load_request_context!(intent)
+        financials = calculate_financials(intent)
+        anticipation_request = create_anticipation_request_record!(
+          intent: intent,
+          intent_hash: intent_hash,
           receivable: receivable,
-          receivable_allocation: allocation,
+          allocation: allocation,
           requester_party: requester_party,
-          idempotency_key: @idempotency_key,
-          requested_amount: intent.requested_amount,
-          discount_rate: intent.discount_rate,
-          discount_amount: discount_amount,
-          net_amount: net_amount,
-          status: "REQUESTED",
-          channel: intent.channel,
-          requested_at: requested_at,
-          settlement_target_date: BusinessCalendar.next_business_day(from: requested_at),
-          metadata: intent.metadata.merge(PAYLOAD_HASH_METADATA_KEY => intent_hash)
+          financials: financials
         )
 
-        if receivable.status != "ANTICIPATION_REQUESTED"
-          receivable.update!(status: "ANTICIPATION_REQUESTED")
-        end
-
+        mark_receivable_as_anticipated!(receivable)
         create_receivable_event!(
-          receivable:,
-          requester_party:,
-          anticipation_request:,
-          occurred_at: requested_at
+          receivable: receivable,
+          requester_party: requester_party,
+          anticipation_request: anticipation_request,
+          occurred_at: financials.requested_at
         )
-
         create_action_log!(
           action_type: "ANTICIPATION_REQUEST_CREATED",
           success: true,
@@ -124,13 +98,77 @@ module AnticipationRequests
           metadata: { replayed: false, idempotency_key: @idempotency_key }
         )
 
-        Result.new(anticipation_request:, replayed: false)
+        result = Result.new(anticipation_request: anticipation_request, replayed: false)
       end
+
+      replay_result || result
     rescue ActiveRecord::RecordNotUnique
       replay_existing_for_race_condition(intent:, intent_hash:)
     end
 
     private
+
+    def build_replay_result(existing:, intent:, intent_hash:)
+      ensure_matching_idempotency!(existing:, intent:, intent_hash:)
+      create_action_log!(
+        action_type: "ANTICIPATION_REQUEST_REPLAYED",
+        success: true,
+        requester_party_id: existing.requester_party_id,
+        target_id: existing.id,
+        metadata: { replayed: true, idempotency_key: @idempotency_key }
+      )
+      Result.new(anticipation_request: existing, replayed: true)
+    end
+
+    def load_request_context!(intent)
+      receivable = Receivable.where(tenant_id: @tenant_id).lock.find(intent.receivable_id)
+      ensure_receivable_eligible!(receivable)
+
+      allocation = resolve_allocation(receivable:, receivable_allocation_id: intent.receivable_allocation_id)
+      requester_party = resolve_requester_party!(requester_party_id: intent.requester_party_id)
+      ensure_requester_authorized!(receivable:, allocation:, requester_party:)
+      ensure_requested_amount_available!(receivable:, allocation:, requested_amount: intent.requested_amount)
+
+      [ receivable, allocation, requester_party ]
+    end
+
+    def calculate_financials(intent)
+      requested_at = Time.current
+      discount_amount = round_currency(intent.requested_amount * intent.discount_rate)
+      net_amount = round_currency(intent.requested_amount - discount_amount)
+      ensure_positive_net_amount!(net_amount)
+
+      Financials.new(
+        requested_at: requested_at,
+        discount_amount: discount_amount,
+        net_amount: net_amount
+      )
+    end
+
+    def create_anticipation_request_record!(intent:, intent_hash:, receivable:, allocation:, requester_party:, financials:)
+      AnticipationRequest.create!(
+        tenant_id: @tenant_id,
+        receivable: receivable,
+        receivable_allocation: allocation,
+        requester_party: requester_party,
+        idempotency_key: @idempotency_key,
+        requested_amount: intent.requested_amount,
+        discount_rate: intent.discount_rate,
+        discount_amount: financials.discount_amount,
+        net_amount: financials.net_amount,
+        status: "REQUESTED",
+        channel: intent.channel,
+        requested_at: financials.requested_at,
+        settlement_target_date: BusinessCalendar.next_business_day(from: financials.requested_at),
+        metadata: intent.metadata.merge(PAYLOAD_HASH_METADATA_KEY => intent_hash)
+      )
+    end
+
+    def mark_receivable_as_anticipated!(receivable)
+      return if receivable.status == "ANTICIPATION_REQUESTED"
+
+      receivable.update!(status: "ANTICIPATION_REQUESTED")
+    end
 
     def normalize_intent(raw_payload, default_requester_party_id:)
       payload = raw_payload.to_h.deep_symbolize_keys

@@ -9,6 +9,14 @@ module AnticipationRequests
     WHATSAPP_OUTBOX_EVENT_TYPE = "AUTH_CHALLENGE_WHATSAPP_DISPATCH_REQUESTED".freeze
     CHALLENGE_TTL = 15.minutes
 
+    IssueInputs = Struct.new(
+      :anticipation_request_id,
+      :email_destination,
+      :whatsapp_destination,
+      :payload_hash,
+      keyword_init: true
+    )
+
     Result = Struct.new(:anticipation_request, :challenges, :replayed, keyword_init: true) do
       def replayed?
         replayed
@@ -48,110 +56,27 @@ module AnticipationRequests
 
     def call(anticipation_request_id:, email_destination:, whatsapp_destination:)
       failure_logged = false
-      normalized_email = normalize_email_destination(email_destination)
-      normalized_whatsapp = normalize_whatsapp_destination(whatsapp_destination)
-      payload_hash = issuance_payload_hash(
+      inputs = build_issue_inputs(
         anticipation_request_id: anticipation_request_id,
-        email_destination: normalized_email,
-        whatsapp_destination: normalized_whatsapp
+        email_destination: email_destination,
+        whatsapp_destination: whatsapp_destination
       )
-
       anticipation_request = nil
       result = nil
       validation_error = nil
 
       ActiveRecord::Base.transaction do
-        anticipation_request = AnticipationRequest.where(tenant_id: @tenant_id).lock.find(anticipation_request_id)
-
-        unless anticipation_request.status == "REQUESTED"
-          validation_error = ValidationError.new(
-            code: "anticipation_status_not_challengeable",
-            message: "Only REQUESTED anticipation requests can issue confirmation challenges."
-          )
-          next
-        end
-
-        existing_outbox = OutboxEvent.lock.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
-        if existing_outbox
-          begin
-            result = replay_result(existing_outbox:, payload_hash:)
-          rescue ValidationError => error
-            validation_error = error
-          end
-          next
-        end
-
-        email_code = generate_code
-        whatsapp_code = generate_code
-        expires_at = Time.current + CHALLENGE_TTL
-
-        email_challenge = create_challenge!(
-          anticipation_request:,
-          delivery_channel: "EMAIL",
-          destination_masked: mask_email(normalized_email),
-          code: email_code,
-          expires_at: expires_at
-        )
-        whatsapp_challenge = create_challenge!(
-          anticipation_request:,
-          delivery_channel: "WHATSAPP",
-          destination_masked: mask_whatsapp(normalized_whatsapp),
-          code: whatsapp_code,
-          expires_at: expires_at
-        )
-
-        create_primary_outbox_event!(
-          anticipation_request:,
-          payload_hash:,
-          email_challenge:,
-          whatsapp_challenge:
-        )
-        create_channel_outbox_event!(
-          anticipation_request:,
-          challenge: email_challenge,
-          event_type: EMAIL_OUTBOX_EVENT_TYPE,
-          idempotency_key_suffix: "email",
-          destination: normalized_email,
-          code: email_code
-        )
-        create_channel_outbox_event!(
-          anticipation_request:,
-          challenge: whatsapp_challenge,
-          event_type: WHATSAPP_OUTBOX_EVENT_TYPE,
-          idempotency_key_suffix: "whatsapp",
-          destination: normalized_whatsapp,
-          code: whatsapp_code
-        )
-
-        create_receivable_event!(
-          anticipation_request:,
-          email_challenge:,
-          whatsapp_challenge:
-        )
-
-        create_action_log!(
-          action_type: "ANTICIPATION_CHALLENGES_ISSUED",
-          success: true,
-          requester_party_id: anticipation_request.requester_party_id,
-          target_id: anticipation_request.id,
-          metadata: {
-            replayed: false,
-            idempotency_key: @idempotency_key,
-            challenge_ids: [ email_challenge.id, whatsapp_challenge.id ]
-          }
-        )
-
-        result = Result.new(
-          anticipation_request:,
-          challenges: [ email_challenge, whatsapp_challenge ],
-          replayed: false
+        anticipation_request = find_anticipation_request!(inputs.anticipation_request_id)
+        result, validation_error = issue_or_replay_challenges!(
+          anticipation_request: anticipation_request,
+          inputs: inputs
         )
       end
 
       if validation_error
         create_failure_log(
           error: validation_error,
-          anticipation_request_id: anticipation_request_id,
+          anticipation_request_id: inputs.anticipation_request_id,
           actor_party_id: anticipation_request&.requester_party_id
         )
         failure_logged = true
@@ -163,20 +88,125 @@ module AnticipationRequests
       unless failure_logged
         create_failure_log(
           error: error,
-          anticipation_request_id: anticipation_request_id,
+          anticipation_request_id: inputs&.anticipation_request_id || anticipation_request_id,
           actor_party_id: anticipation_request&.requester_party_id
         )
       end
       raise
     rescue ActiveRecord::RecordNotFound => error
-      create_failure_log(error:, anticipation_request_id:, actor_party_id: anticipation_request&.requester_party_id)
+      create_failure_log(error:, anticipation_request_id: inputs&.anticipation_request_id || anticipation_request_id, actor_party_id: anticipation_request&.requester_party_id)
       raise
     rescue ActiveRecord::RecordNotUnique
       existing_outbox = OutboxEvent.find_by!(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
-      replay_result(existing_outbox:, payload_hash:)
+      replay_result(existing_outbox:, payload_hash: inputs&.payload_hash.to_s)
     end
 
     private
+
+    def build_issue_inputs(anticipation_request_id:, email_destination:, whatsapp_destination:)
+      normalized_email = normalize_email_destination(email_destination)
+      normalized_whatsapp = normalize_whatsapp_destination(whatsapp_destination)
+      payload_hash = issuance_payload_hash(
+        anticipation_request_id: anticipation_request_id,
+        email_destination: normalized_email,
+        whatsapp_destination: normalized_whatsapp
+      )
+
+      IssueInputs.new(
+        anticipation_request_id: anticipation_request_id,
+        email_destination: normalized_email,
+        whatsapp_destination: normalized_whatsapp,
+        payload_hash: payload_hash
+      )
+    end
+
+    def find_anticipation_request!(anticipation_request_id)
+      AnticipationRequest.where(tenant_id: @tenant_id).lock.find(anticipation_request_id)
+    end
+
+    def issue_or_replay_challenges!(anticipation_request:, inputs:)
+      return [ nil, status_not_challengeable_error ] unless anticipation_request.status == "REQUESTED"
+
+      existing_outbox = OutboxEvent.lock.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
+      return [ replay_result(existing_outbox:, payload_hash: inputs.payload_hash), nil ] if existing_outbox
+
+      [ issue_new_challenges!(anticipation_request:, inputs:), nil ]
+    rescue ValidationError => error
+      [ nil, error ]
+    end
+
+    def status_not_challengeable_error
+      ValidationError.new(
+        code: "anticipation_status_not_challengeable",
+        message: "Only REQUESTED anticipation requests can issue confirmation challenges."
+      )
+    end
+
+    def issue_new_challenges!(anticipation_request:, inputs:)
+      email_code = generate_code
+      whatsapp_code = generate_code
+      expires_at = Time.current + CHALLENGE_TTL
+
+      email_challenge = create_challenge!(
+        anticipation_request: anticipation_request,
+        delivery_channel: "EMAIL",
+        destination_masked: mask_email(inputs.email_destination),
+        code: email_code,
+        expires_at: expires_at
+      )
+      whatsapp_challenge = create_challenge!(
+        anticipation_request: anticipation_request,
+        delivery_channel: "WHATSAPP",
+        destination_masked: mask_whatsapp(inputs.whatsapp_destination),
+        code: whatsapp_code,
+        expires_at: expires_at
+      )
+
+      create_primary_outbox_event!(
+        anticipation_request: anticipation_request,
+        payload_hash: inputs.payload_hash,
+        email_challenge: email_challenge,
+        whatsapp_challenge: whatsapp_challenge
+      )
+      create_channel_outbox_event!(
+        anticipation_request: anticipation_request,
+        challenge: email_challenge,
+        event_type: EMAIL_OUTBOX_EVENT_TYPE,
+        idempotency_key_suffix: "email",
+        destination: inputs.email_destination,
+        code: email_code
+      )
+      create_channel_outbox_event!(
+        anticipation_request: anticipation_request,
+        challenge: whatsapp_challenge,
+        event_type: WHATSAPP_OUTBOX_EVENT_TYPE,
+        idempotency_key_suffix: "whatsapp",
+        destination: inputs.whatsapp_destination,
+        code: whatsapp_code
+      )
+      create_receivable_event!(
+        anticipation_request: anticipation_request,
+        email_challenge: email_challenge,
+        whatsapp_challenge: whatsapp_challenge
+      )
+      create_action_log!(
+        action_type: "ANTICIPATION_CHALLENGES_ISSUED",
+        success: true,
+        requester_party_id: anticipation_request.requester_party_id,
+        target_id: anticipation_request.id,
+        metadata: {
+          replayed: false,
+          idempotency_key: @idempotency_key,
+          challenge_ids: [ email_challenge.id, whatsapp_challenge.id ]
+        }
+      )
+
+      Result.new(
+        anticipation_request: anticipation_request,
+        challenges: [ email_challenge, whatsapp_challenge ],
+        replayed: false
+      )
+    end
 
     def replay_result(existing_outbox:, payload_hash:)
       existing_payload_hash = existing_outbox.payload&.dig("payload_hash").to_s

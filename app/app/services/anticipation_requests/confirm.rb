@@ -7,6 +7,7 @@ module AnticipationRequests
     PAYLOAD_HASH_METADATA_KEY = "_confirmation_payload_hash".freeze
     FDIC_FUNDING_OUTBOX_EVENT_TYPE = "ANTICIPATION_FIDC_FUNDING_REQUESTED".freeze
     FDIC_FUNDING_OUTBOX_IDEMPOTENCY_SUFFIX = "fdic_funding_request".freeze
+    CONFIRMATION_CHANNELS = %w[EMAIL WHATSAPP].freeze
 
     Result = Struct.new(:anticipation_request, :replayed, keyword_init: true) do
       def replayed?
@@ -52,85 +53,13 @@ module AnticipationRequests
       validation_error = nil
 
       ActiveRecord::Base.transaction do
-        anticipation_request = AnticipationRequest.where(tenant_id: @tenant_id).lock.find(anticipation_request_id)
-
-        if anticipation_request.status == "APPROVED"
-          begin
-            ensure_replay_compatibility!(anticipation_request:, payload_hash:)
-          rescue ValidationError => error
-            validation_error = error
-            next
-          end
-          create_action_log!(
-            action_type: "ANTICIPATION_CONFIRM_REPLAYED",
-            success: true,
-            requester_party_id: anticipation_request.requester_party_id,
-            target_id: anticipation_request.id,
-            metadata: { replayed: true, idempotency_key: @idempotency_key }
-          )
-          result = Result.new(anticipation_request:, replayed: true)
-          next
-        end
-
-        unless anticipation_request.status == "REQUESTED"
-          validation_error = ValidationError.new(
-            code: "anticipation_status_not_confirmable",
-            message: "Only REQUESTED anticipation requests can be confirmed."
-          )
-          next
-        end
-
-        begin
-          email_challenge = load_challenge!(
-            anticipation_request: anticipation_request,
-            channel: "EMAIL"
-          )
-          whatsapp_challenge = load_challenge!(
-            anticipation_request: anticipation_request,
-            channel: "WHATSAPP"
-          )
-
-          verify_challenge!(challenge: email_challenge, code: email_code, invalid_code: "invalid_email_code")
-          verify_challenge!(challenge: whatsapp_challenge, code: whatsapp_code, invalid_code: "invalid_whatsapp_code")
-
-          confirmed_at = Time.current
-          anticipation_request.transition_status!(
-            "APPROVED",
-            metadata: {
-              "confirmed_at" => confirmed_at.utc.iso8601(6),
-              "confirmation_channels" => %w[EMAIL WHATSAPP],
-              "confirmation_idempotency_key" => @idempotency_key,
-              PAYLOAD_HASH_METADATA_KEY => payload_hash
-            }
-          )
-
-          create_receivable_event!(
-            anticipation_request: anticipation_request,
-            email_challenge: email_challenge,
-            whatsapp_challenge: whatsapp_challenge,
-            occurred_at: confirmed_at
-          )
-
-          create_fdic_funding_outbox_event!(
-            anticipation_request: anticipation_request
-          )
-
-          create_action_log!(
-            action_type: "ANTICIPATION_CONFIRMED",
-            success: true,
-            requester_party_id: anticipation_request.requester_party_id,
-            target_id: anticipation_request.id,
-            metadata: {
-              replayed: false,
-              idempotency_key: @idempotency_key,
-              confirmation_channels: %w[EMAIL WHATSAPP]
-            }
-          )
-
-          result = Result.new(anticipation_request:, replayed: false)
-        rescue ValidationError => error
-          validation_error = error
-        end
+        anticipation_request = find_anticipation_request!(anticipation_request_id)
+        result, validation_error = process_confirmation(
+          anticipation_request: anticipation_request,
+          payload_hash: payload_hash,
+          email_code: email_code,
+          whatsapp_code: whatsapp_code
+        )
       end
 
       if validation_error
@@ -149,6 +78,110 @@ module AnticipationRequests
     end
 
     private
+
+    def find_anticipation_request!(anticipation_request_id)
+      AnticipationRequest.where(tenant_id: @tenant_id).lock.find(anticipation_request_id)
+    end
+
+    def process_confirmation(anticipation_request:, payload_hash:, email_code:, whatsapp_code:)
+      return [ confirm_replay(anticipation_request:, payload_hash:), nil ] if anticipation_request.status == "APPROVED"
+      return [ nil, status_not_confirmable_error ] unless anticipation_request.status == "REQUESTED"
+
+      [ confirm_requested_anticipation(anticipation_request:, payload_hash:, email_code:, whatsapp_code:), nil ]
+    rescue ValidationError => error
+      [ nil, error ]
+    end
+
+    def confirm_replay(anticipation_request:, payload_hash:)
+      ensure_replay_compatibility!(anticipation_request:, payload_hash:)
+      create_action_log!(
+        action_type: "ANTICIPATION_CONFIRM_REPLAYED",
+        success: true,
+        requester_party_id: anticipation_request.requester_party_id,
+        target_id: anticipation_request.id,
+        metadata: { replayed: true, idempotency_key: @idempotency_key }
+      )
+      Result.new(anticipation_request:, replayed: true)
+    end
+
+    def status_not_confirmable_error
+      ValidationError.new(
+        code: "anticipation_status_not_confirmable",
+        message: "Only REQUESTED anticipation requests can be confirmed."
+      )
+    end
+
+    def confirm_requested_anticipation(anticipation_request:, payload_hash:, email_code:, whatsapp_code:)
+      email_challenge, whatsapp_challenge = load_confirmation_challenges!(anticipation_request)
+      verify_confirmation_codes!(
+        email_challenge: email_challenge,
+        whatsapp_challenge: whatsapp_challenge,
+        email_code: email_code,
+        whatsapp_code: whatsapp_code
+      )
+
+      confirmed_at = Time.current
+      transition_to_approved!(
+        anticipation_request: anticipation_request,
+        confirmed_at: confirmed_at,
+        payload_hash: payload_hash
+      )
+
+      create_receivable_event!(
+        anticipation_request: anticipation_request,
+        email_challenge: email_challenge,
+        whatsapp_challenge: whatsapp_challenge,
+        occurred_at: confirmed_at
+      )
+      create_fdic_funding_outbox_event!(anticipation_request: anticipation_request)
+      log_confirmation_success!(anticipation_request: anticipation_request)
+
+      Result.new(anticipation_request:, replayed: false)
+    end
+
+    def load_confirmation_challenges!(anticipation_request)
+      email_challenge = load_challenge!(
+        anticipation_request: anticipation_request,
+        channel: "EMAIL"
+      )
+      whatsapp_challenge = load_challenge!(
+        anticipation_request: anticipation_request,
+        channel: "WHATSAPP"
+      )
+
+      [ email_challenge, whatsapp_challenge ]
+    end
+
+    def verify_confirmation_codes!(email_challenge:, whatsapp_challenge:, email_code:, whatsapp_code:)
+      verify_challenge!(challenge: email_challenge, code: email_code, invalid_code: "invalid_email_code")
+      verify_challenge!(challenge: whatsapp_challenge, code: whatsapp_code, invalid_code: "invalid_whatsapp_code")
+    end
+
+    def transition_to_approved!(anticipation_request:, confirmed_at:, payload_hash:)
+      anticipation_request.transition_status!(
+        "APPROVED",
+        metadata: {
+          "confirmed_at" => confirmed_at.utc.iso8601(6),
+          "confirmation_channels" => CONFIRMATION_CHANNELS,
+          "confirmation_idempotency_key" => @idempotency_key,
+          PAYLOAD_HASH_METADATA_KEY => payload_hash
+        }
+      )
+    end
+
+    def log_confirmation_success!(anticipation_request:)
+      create_action_log!(
+        action_type: "ANTICIPATION_CONFIRMED",
+        success: true,
+        requester_party_id: anticipation_request.requester_party_id,
+        target_id: anticipation_request.id,
+        metadata: {
+          replayed: false,
+          idempotency_key: @idempotency_key,
+          confirmation_channels: CONFIRMATION_CHANNELS
+        }
+      )
+    end
 
     def load_challenge!(anticipation_request:, channel:)
       challenge = AuthChallenge.where(
@@ -216,7 +249,7 @@ module AnticipationRequests
       payload = {
         anticipation_request_id: anticipation_request.id,
         idempotency_key: @idempotency_key,
-        confirmation_channels: %w[EMAIL WHATSAPP],
+        confirmation_channels: CONFIRMATION_CHANNELS,
         email_challenge_id: email_challenge.id,
         whatsapp_challenge_id: whatsapp_challenge.id
       }

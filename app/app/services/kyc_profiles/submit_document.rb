@@ -18,6 +18,7 @@ module KycProfiles
         replayed
       end
     end
+    SubmissionInputs = Struct.new(:kyc_profile_id, :normalized_payload, :payload_hash, keyword_init: true)
 
     class ValidationError < StandardError
       attr_reader :code
@@ -51,83 +52,17 @@ module KycProfiles
     end
 
     def call(kyc_profile_id:, raw_payload:)
-      payload = raw_payload.to_h.deep_symbolize_keys
-      normalized_payload = normalize_payload(payload)
-      payload_hash = build_payload_hash(kyc_profile_id: kyc_profile_id, payload: normalized_payload.except(:blob))
-
-      kyc_document = nil
+      inputs = build_submission_inputs(kyc_profile_id:, raw_payload:)
       result = nil
-      validation_error = nil
+      replay_validation_error = nil
 
       ActiveRecord::Base.transaction do
-        existing_outbox = OutboxEvent.lock.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
-        if existing_outbox
-          begin
-            result = replay_result(existing_outbox:, payload_hash:)
-          rescue ValidationError => error
-            validation_error = error
-          end
-          next
-        end
-
-        kyc_profile = KycProfile.where(tenant_id: @tenant_id).lock.find(kyc_profile_id)
-        validate_party_consistency!(kyc_profile:, payload: normalized_payload)
-
-        kyc_document = KycDocument.create!(
-          tenant_id: @tenant_id,
-          kyc_profile: kyc_profile,
-          party_id: kyc_profile.party_id,
-          document_type: normalized_payload[:document_type],
-          document_number: normalized_payload[:document_number],
-          issuing_country: normalized_payload[:issuing_country],
-          issuing_state: normalized_payload[:issuing_state],
-          issued_on: normalized_payload[:issued_on],
-          expires_on: normalized_payload[:expires_on],
-          is_key_document: normalized_payload[:is_key_document],
-          status: "SUBMITTED",
-          storage_key: normalized_payload[:storage_key],
-          sha256: normalized_payload[:sha256],
-          metadata: normalized_payload[:metadata]
-        )
-        attach_blob!(record: kyc_document, blob: normalized_payload[:blob])
-
-        create_kyc_event!(
-          kyc_profile: kyc_profile,
-          party_id: kyc_profile.party_id,
-          event_type: OUTBOX_EVENT_TYPE,
-          payload: {
-            "idempotency_key" => @idempotency_key,
-            "kyc_document_id" => kyc_document.id,
-            "document_type" => kyc_document.document_type,
-            "is_key_document" => kyc_document.is_key_document,
-            "status" => kyc_document.status
-          }
-        )
-
-        create_outbox_event!(
-          kyc_profile: kyc_profile,
-          kyc_document: kyc_document,
-          payload_hash: payload_hash
-        )
-
-        create_action_log!(
-          action_type: "KYC_DOCUMENT_SUBMITTED",
-          success: true,
-          actor_party_id: kyc_profile.party_id,
-          target_id: kyc_document.id,
-          metadata: {
-            replayed: false,
-            idempotency_key: @idempotency_key,
-            kyc_profile_id: kyc_profile.id
-          }
-        )
-
-        result = Result.new(kyc_document: kyc_document, replayed: false)
+        result, replay_validation_error = submit_or_replay(inputs)
       end
 
-      if validation_error
-        create_failure_log(error: validation_error, target_id: kyc_profile_id, actor_party_id: nil)
-        raise validation_error
+      if replay_validation_error
+        create_failure_log(error: replay_validation_error, target_id: inputs.kyc_profile_id, actor_party_id: nil)
+        raise replay_validation_error
       end
 
       result
@@ -136,17 +71,109 @@ module KycProfiles
         code: "invalid_kyc_document",
         message: error.record.errors.full_messages.to_sentence
       )
-      create_failure_log(error: validation_error, target_id: kyc_profile_id, actor_party_id: nil)
+      create_failure_log(error: validation_error, target_id: inputs&.kyc_profile_id || kyc_profile_id, actor_party_id: nil)
       raise validation_error
     rescue ActiveRecord::RecordNotFound => error
-      create_failure_log(error: error, target_id: kyc_profile_id, actor_party_id: nil)
+      create_failure_log(error: error, target_id: inputs&.kyc_profile_id || kyc_profile_id, actor_party_id: nil)
       raise
     rescue ActiveRecord::RecordNotUnique
       existing_outbox = OutboxEvent.find_by!(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
-      replay_result(existing_outbox:, payload_hash:)
+      replay_result(existing_outbox:, payload_hash: inputs&.payload_hash.to_s)
     end
 
     private
+
+    def build_submission_inputs(kyc_profile_id:, raw_payload:)
+      payload = raw_payload.to_h.deep_symbolize_keys
+      normalized_payload = normalize_payload(payload)
+      payload_hash = build_payload_hash(kyc_profile_id: kyc_profile_id, payload: normalized_payload.except(:blob))
+
+      SubmissionInputs.new(
+        kyc_profile_id: kyc_profile_id,
+        normalized_payload: normalized_payload,
+        payload_hash: payload_hash
+      )
+    end
+
+    def submit_or_replay(inputs)
+      existing_outbox = OutboxEvent.lock.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
+      return replay_or_capture_validation_error(existing_outbox:, payload_hash: inputs.payload_hash) if existing_outbox
+
+      [ create_submission_result!(inputs), nil ]
+    end
+
+    def replay_or_capture_validation_error(existing_outbox:, payload_hash:)
+      [ replay_result(existing_outbox:, payload_hash:), nil ]
+    rescue ValidationError => error
+      [ nil, error ]
+    end
+
+    def create_submission_result!(inputs)
+      kyc_profile = KycProfile.where(tenant_id: @tenant_id).lock.find(inputs.kyc_profile_id)
+      validate_party_consistency!(kyc_profile:, payload: inputs.normalized_payload)
+
+      kyc_document = persist_kyc_document!(kyc_profile:, payload: inputs.normalized_payload)
+      append_submission_artifacts!(kyc_profile:, kyc_document:, payload_hash: inputs.payload_hash)
+      log_submission_success!(kyc_profile:, kyc_document:)
+
+      Result.new(kyc_document:, replayed: false)
+    end
+
+    def persist_kyc_document!(kyc_profile:, payload:)
+      kyc_document = KycDocument.create!(
+        tenant_id: @tenant_id,
+        kyc_profile: kyc_profile,
+        party_id: kyc_profile.party_id,
+        document_type: payload[:document_type],
+        document_number: payload[:document_number],
+        issuing_country: payload[:issuing_country],
+        issuing_state: payload[:issuing_state],
+        issued_on: payload[:issued_on],
+        expires_on: payload[:expires_on],
+        is_key_document: payload[:is_key_document],
+        status: "SUBMITTED",
+        storage_key: payload[:storage_key],
+        sha256: payload[:sha256],
+        metadata: payload[:metadata]
+      )
+      attach_blob!(record: kyc_document, blob: payload[:blob])
+      kyc_document
+    end
+
+    def append_submission_artifacts!(kyc_profile:, kyc_document:, payload_hash:)
+      create_kyc_event!(
+        kyc_profile: kyc_profile,
+        party_id: kyc_profile.party_id,
+        event_type: OUTBOX_EVENT_TYPE,
+        payload: {
+          "idempotency_key" => @idempotency_key,
+          "kyc_document_id" => kyc_document.id,
+          "document_type" => kyc_document.document_type,
+          "is_key_document" => kyc_document.is_key_document,
+          "status" => kyc_document.status
+        }
+      )
+
+      create_outbox_event!(
+        kyc_profile: kyc_profile,
+        kyc_document: kyc_document,
+        payload_hash: payload_hash
+      )
+    end
+
+    def log_submission_success!(kyc_profile:, kyc_document:)
+      create_action_log!(
+        action_type: "KYC_DOCUMENT_SUBMITTED",
+        success: true,
+        actor_party_id: kyc_profile.party_id,
+        target_id: kyc_document.id,
+        metadata: {
+          replayed: false,
+          idempotency_key: @idempotency_key,
+          kyc_profile_id: kyc_profile.id
+        }
+      )
+    end
 
     def normalize_payload(payload)
       metadata = sanitize_client_metadata(payload[:metadata] || {})

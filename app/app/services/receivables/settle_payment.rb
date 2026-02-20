@@ -13,6 +13,27 @@ module Receivables
     ESCROW_EXCESS_PAYOUT_KIND = "EXCESS".freeze
     FDIC_SETTLEMENT_OPERATION_KIND = "SETTLEMENT_REPORT".freeze
 
+    CallInputs = Struct.new(
+      :amount,
+      :paid_time,
+      :payment_reference,
+      :metadata,
+      :payload_hash,
+      keyword_init: true
+    )
+
+    Distribution = Struct.new(
+      :cnpj_share_rate,
+      :cnpj_amount,
+      :beneficiary_pool,
+      :obligations,
+      :fdic_balance_before,
+      :fdic_amount,
+      :beneficiary_amount,
+      :fdic_balance_after,
+      keyword_init: true
+    )
+
     Result = Struct.new(:settlement, :settlement_entries, :replayed, keyword_init: true) do
       def replayed?
         replayed
@@ -53,159 +74,87 @@ module Receivables
     end
 
     def call(receivable_id:, paid_amount:, receivable_allocation_id: nil, paid_at: Time.current, payment_reference: nil, metadata: {})
-      raise_validation_error!("missing_idempotency_key", "Idempotency-Key is required.") if @idempotency_key.blank?
-
-      amount = round_money(parse_decimal(paid_amount, field: "paid_amount"))
-      raise_validation_error!("invalid_paid_amount", "paid_amount must be greater than zero.") if amount <= 0
-      paid_time = parse_time(paid_at, field: "paid_at")
-      normalized_payment_reference = payment_reference.to_s.strip.presence || @idempotency_key
-
-      metadata_hash = normalize_metadata(metadata || {})
-      payload_hash = payment_payload_hash(
-        receivable_id: receivable_id,
-        receivable_allocation_id: receivable_allocation_id,
-        paid_amount: amount,
-        paid_at: paid_time,
-        payment_reference: normalized_payment_reference,
-        metadata: metadata_hash
-      )
-
+      inputs = nil
       settlement = nil
       settlement_entries = []
-      replayed = false
+
+      inputs = build_call_inputs(
+        receivable_id: receivable_id,
+        receivable_allocation_id: receivable_allocation_id,
+        paid_amount: paid_amount,
+        paid_at: paid_at,
+        payment_reference: payment_reference,
+        metadata: metadata
+      )
+
+      replay_result = nil
 
       ActiveRecord::Base.transaction do
-        existing = find_existing_settlement(normalized_payment_reference)
+        existing = find_existing_settlement(inputs.payment_reference)
         if existing
-          ensure_matching_replay!(
+          replay_result = build_replay_result(
             existing: existing,
-            payload_hash: payload_hash,
+            inputs: inputs,
             receivable_id: receivable_id,
-            receivable_allocation_id: receivable_allocation_id,
-            paid_amount: amount
+            receivable_allocation_id: receivable_allocation_id
           )
-          create_action_log!(
-            action_type: "RECEIVABLE_PAYMENT_SETTLEMENT_REPLAYED",
-            success: true,
-            target_id: existing.id,
-            metadata: {
-              replayed: true,
-              payment_reference: normalized_payment_reference,
-              idempotency_key: @idempotency_key
-            }
-          )
-          return Result.new(
-            settlement: existing,
-            settlement_entries: existing.anticipation_settlement_entries.order(created_at: :asc).to_a,
-            replayed: true
-          )
+          next
         end
 
-        receivable = Receivable.where(tenant_id: @tenant_id).lock.find(receivable_id)
-        allocation = resolve_allocation(receivable:, receivable_allocation_id:)
-
-        cnpj_share_rate = resolve_cnpj_share_rate(allocation)
-        cnpj_amount = round_money(amount * cnpj_share_rate)
-        beneficiary_pool = round_money(amount - cnpj_amount)
-
-        obligations = open_fdic_obligations(receivable:, allocation:, valuation_time: paid_time)
-        fdic_balance_before = round_money(obligations.sum { |entry| entry[:outstanding] })
-        fdic_amount = round_money([ beneficiary_pool, fdic_balance_before ].min)
-        beneficiary_amount = round_money(beneficiary_pool - fdic_amount)
-        fdic_balance_after = round_money(fdic_balance_before - fdic_amount)
-
-        settlement = ReceivablePaymentSettlement.create!(
-          tenant_id: @tenant_id,
+        receivable, allocation = load_receivable_and_allocation(
+          receivable_id: receivable_id,
+          receivable_allocation_id: receivable_allocation_id
+        )
+        distribution = calculate_distribution(
+          amount: inputs.amount,
           receivable: receivable,
-          receivable_allocation: allocation,
-          paid_amount: amount,
-          cnpj_amount: cnpj_amount,
-          fdic_amount: fdic_amount,
-          beneficiary_amount: beneficiary_amount,
-          fdic_balance_before: fdic_balance_before,
-          fdic_balance_after: fdic_balance_after,
-          paid_at: paid_time,
-          payment_reference: normalized_payment_reference,
-          idempotency_key: @idempotency_key,
-          request_id: @request_id,
-          metadata: metadata_hash.merge(
-            PAYLOAD_HASH_METADATA_KEY => payload_hash,
-            "cnpj_share_rate" => decimal_as_string(cnpj_share_rate),
-            "idempotency_key" => @idempotency_key,
-            "replayed" => false
-          )
+          allocation: allocation,
+          paid_time: inputs.paid_time
+        )
+
+        settlement = create_settlement_record!(
+          receivable: receivable,
+          allocation: allocation,
+          inputs: inputs,
+          distribution: distribution
         )
 
         settlement_entries = create_settlement_entries!(
           settlement: settlement,
-          obligations: obligations,
-          fdic_amount: fdic_amount,
-          settled_at: paid_time
+          obligations: distribution.obligations,
+          fdic_amount: distribution.fdic_amount,
+          settled_at: inputs.paid_time
         )
 
-        post_ledger_entries!(
+        run_post_settlement_workflow!(
           settlement: settlement,
           receivable: receivable,
           allocation: allocation,
-          cnpj_amount: cnpj_amount,
-          fdic_amount: fdic_amount,
-          beneficiary_amount: beneficiary_amount,
-          paid_at: paid_time
-        )
-
-        update_statuses_after_payment!(receivable:, allocation:)
-
-        create_receivable_event!(
-          receivable: receivable,
-          settlement: settlement,
           settlement_entries: settlement_entries,
-          occurred_at: paid_time
-        )
-
-        create_escrow_excess_outbox_event!(
-          settlement: settlement,
-          receivable: receivable,
-          beneficiary_amount: beneficiary_amount
-        )
-
-        create_fdic_settlement_outbox_event!(
-          settlement: settlement,
-          receivable: receivable,
-          fdic_amount: fdic_amount
-        )
-
-        create_action_log!(
-          action_type: "RECEIVABLE_PAYMENT_SETTLEMENT_CREATED",
-          success: true,
-          target_id: settlement.id,
-          metadata: {
-            replayed: false,
-            payment_reference: normalized_payment_reference,
-            idempotency_key: @idempotency_key,
-            paid_amount: decimal_as_string(amount),
-            cnpj_amount: decimal_as_string(cnpj_amount),
-            fdic_amount: decimal_as_string(fdic_amount),
-            beneficiary_amount: decimal_as_string(beneficiary_amount)
-          }
+          distribution: distribution,
+          paid_time: inputs.paid_time,
+          payment_reference: inputs.payment_reference
         )
       end
 
-      Result.new(settlement:, settlement_entries:, replayed:)
+      return replay_result if replay_result
+
+      Result.new(settlement:, settlement_entries:, replayed: false)
     rescue ActiveRecord::RecordNotFound => error
-      create_failure_log(error:, receivable_id:, payment_reference: normalized_payment_reference)
+      create_failure_log(error:, receivable_id:, payment_reference: inputs&.payment_reference)
       raise
     rescue ValidationError => error
-      create_failure_log(error:, receivable_id:, payment_reference: normalized_payment_reference)
+      create_failure_log(error:, receivable_id:, payment_reference: inputs&.payment_reference)
       raise
     rescue ActiveRecord::RecordNotUnique
       existing = ReceivablePaymentSettlement.where(tenant_id: @tenant_id, idempotency_key: @idempotency_key).first
       if existing
         ensure_matching_replay!(
           existing: existing,
-          payload_hash: payload_hash,
+          payload_hash: inputs&.payload_hash.to_s,
           receivable_id: receivable_id,
           receivable_allocation_id: receivable_allocation_id,
-          paid_amount: amount
+          paid_amount: inputs&.amount.to_d
         )
         return Result.new(
           settlement: existing,
@@ -216,11 +165,165 @@ module Receivables
 
       raise
     rescue ActiveRecord::ActiveRecordError => error
-      create_failure_log(error:, receivable_id:, payment_reference: normalized_payment_reference)
+      create_failure_log(error:, receivable_id:, payment_reference: inputs&.payment_reference)
       raise
     end
 
     private
+
+    def build_call_inputs(receivable_id:, receivable_allocation_id:, paid_amount:, paid_at:, payment_reference:, metadata:)
+      raise_validation_error!("missing_idempotency_key", "Idempotency-Key is required.") if @idempotency_key.blank?
+
+      amount = round_money(parse_decimal(paid_amount, field: "paid_amount"))
+      raise_validation_error!("invalid_paid_amount", "paid_amount must be greater than zero.") if amount <= 0
+      paid_time = parse_time(paid_at, field: "paid_at")
+      normalized_payment_reference = payment_reference.to_s.strip.presence || @idempotency_key
+      metadata_hash = normalize_metadata(metadata || {})
+      payload_hash = payment_payload_hash(
+        receivable_id: receivable_id,
+        receivable_allocation_id: receivable_allocation_id,
+        paid_amount: amount,
+        paid_at: paid_time,
+        payment_reference: normalized_payment_reference,
+        metadata: metadata_hash
+      )
+
+      CallInputs.new(
+        amount: amount,
+        paid_time: paid_time,
+        payment_reference: normalized_payment_reference,
+        metadata: metadata_hash,
+        payload_hash: payload_hash
+      )
+    end
+
+    def build_replay_result(existing:, inputs:, receivable_id:, receivable_allocation_id:)
+      ensure_matching_replay!(
+        existing: existing,
+        payload_hash: inputs.payload_hash,
+        receivable_id: receivable_id,
+        receivable_allocation_id: receivable_allocation_id,
+        paid_amount: inputs.amount
+      )
+      create_action_log!(
+        action_type: "RECEIVABLE_PAYMENT_SETTLEMENT_REPLAYED",
+        success: true,
+        target_id: existing.id,
+        metadata: {
+          replayed: true,
+          payment_reference: inputs.payment_reference,
+          idempotency_key: @idempotency_key
+        }
+      )
+      Result.new(
+        settlement: existing,
+        settlement_entries: existing.anticipation_settlement_entries.order(created_at: :asc).to_a,
+        replayed: true
+      )
+    end
+
+    def load_receivable_and_allocation(receivable_id:, receivable_allocation_id:)
+      receivable = Receivable.where(tenant_id: @tenant_id).lock.find(receivable_id)
+      allocation = resolve_allocation(receivable:, receivable_allocation_id:)
+      [ receivable, allocation ]
+    end
+
+    def calculate_distribution(amount:, receivable:, allocation:, paid_time:)
+      cnpj_share_rate = resolve_cnpj_share_rate(allocation)
+      cnpj_amount = round_money(amount * cnpj_share_rate)
+      beneficiary_pool = round_money(amount - cnpj_amount)
+      obligations = open_fdic_obligations(receivable:, allocation:, valuation_time: paid_time)
+      fdic_balance_before = round_money(obligations.sum { |entry| entry[:outstanding] })
+      fdic_amount = round_money([ beneficiary_pool, fdic_balance_before ].min)
+      beneficiary_amount = round_money(beneficiary_pool - fdic_amount)
+      fdic_balance_after = round_money(fdic_balance_before - fdic_amount)
+
+      Distribution.new(
+        cnpj_share_rate: cnpj_share_rate,
+        cnpj_amount: cnpj_amount,
+        beneficiary_pool: beneficiary_pool,
+        obligations: obligations,
+        fdic_balance_before: fdic_balance_before,
+        fdic_amount: fdic_amount,
+        beneficiary_amount: beneficiary_amount,
+        fdic_balance_after: fdic_balance_after
+      )
+    end
+
+    def create_settlement_record!(receivable:, allocation:, inputs:, distribution:)
+      ReceivablePaymentSettlement.create!(
+        tenant_id: @tenant_id,
+        receivable: receivable,
+        receivable_allocation: allocation,
+        paid_amount: inputs.amount,
+        cnpj_amount: distribution.cnpj_amount,
+        fdic_amount: distribution.fdic_amount,
+        beneficiary_amount: distribution.beneficiary_amount,
+        fdic_balance_before: distribution.fdic_balance_before,
+        fdic_balance_after: distribution.fdic_balance_after,
+        paid_at: inputs.paid_time,
+        payment_reference: inputs.payment_reference,
+        idempotency_key: @idempotency_key,
+        request_id: @request_id,
+        metadata: inputs.metadata.merge(
+          PAYLOAD_HASH_METADATA_KEY => inputs.payload_hash,
+          "cnpj_share_rate" => decimal_as_string(distribution.cnpj_share_rate),
+          "idempotency_key" => @idempotency_key,
+          "replayed" => false
+        )
+      )
+    end
+
+    def run_post_settlement_workflow!(
+      settlement:,
+      receivable:,
+      allocation:,
+      settlement_entries:,
+      distribution:,
+      paid_time:,
+      payment_reference:
+    )
+      post_ledger_entries!(
+        settlement: settlement,
+        receivable: receivable,
+        allocation: allocation,
+        cnpj_amount: distribution.cnpj_amount,
+        fdic_amount: distribution.fdic_amount,
+        beneficiary_amount: distribution.beneficiary_amount,
+        paid_at: paid_time
+      )
+      update_statuses_after_payment!(receivable:, allocation:)
+      create_receivable_event!(
+        receivable: receivable,
+        settlement: settlement,
+        settlement_entries: settlement_entries,
+        occurred_at: paid_time
+      )
+      create_escrow_excess_outbox_event!(
+        settlement: settlement,
+        receivable: receivable,
+        beneficiary_amount: distribution.beneficiary_amount
+      )
+      create_fdic_settlement_outbox_event!(
+        settlement: settlement,
+        receivable: receivable,
+        fdic_amount: distribution.fdic_amount
+      )
+      create_action_log!(
+        action_type: "RECEIVABLE_PAYMENT_SETTLEMENT_CREATED",
+        success: true,
+        target_id: settlement.id,
+        metadata: {
+          replayed: false,
+          payment_reference: payment_reference,
+          idempotency_key: @idempotency_key,
+          paid_amount: decimal_as_string(settlement.paid_amount),
+          cnpj_amount: decimal_as_string(distribution.cnpj_amount),
+          fdic_amount: decimal_as_string(distribution.fdic_amount),
+          beneficiary_amount: decimal_as_string(distribution.beneficiary_amount)
+        }
+      )
+    end
 
     def parse_decimal(raw_value, field:)
       value = BigDecimal(raw_value.to_s)
