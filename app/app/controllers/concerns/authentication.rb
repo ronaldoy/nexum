@@ -26,7 +26,7 @@ module Authentication
 
     def resume_session
       Current.session ||= find_session_by_cookie
-      Current.user ||= Current.session&.effective_user
+      Current.user ||= Current.session&.user
     end
 
     def find_session_by_cookie
@@ -37,13 +37,13 @@ module Authentication
 
       bootstrap_database_tenant_context!(tenant_id)
 
-      session = Session.includes(:user_by_uuid, :user).find_by(id: session_id, tenant_id: tenant_id)
+      session = Session.includes(:user).find_by(id: session_id, tenant_id: tenant_id)
       unless session
         clear_bootstrap_database_tenant_context!
         return nil
       end
 
-      user = session.effective_user
+      user = session.user
       unless user&.tenant_id.to_s == tenant_id.to_s
         terminate_persisted_session(session)
         clear_bootstrap_database_tenant_context!

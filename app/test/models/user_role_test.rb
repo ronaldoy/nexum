@@ -12,7 +12,7 @@ class UserRoleTest < ActiveSupport::TestCase
     user_role = UserRole.new(tenant: @default_tenant, user: @default_user, role: role)
 
     assert_not user_role.valid?
-    assert_includes user_role.errors[:user_id], "has already been taken"
+    assert_includes user_role.errors[:user_uuid_id], "has already been taken"
   end
 
   test "requires user and role to match tenant" do

@@ -26,7 +26,7 @@ class SessionTest < ActiveSupport::TestCase
     assert_equal user.uuid_id, session.user_uuid_id
   end
 
-  test "resolves user from user_uuid_id when user_id is missing" do
+  test "resolves user from user_uuid_id" do
     user = users(:one)
     session = Session.new(
       tenant: user.tenant,
@@ -36,6 +36,7 @@ class SessionTest < ActiveSupport::TestCase
     )
 
     assert session.valid?
-    assert_equal user.id, session.user_id
+    assert_equal user.uuid_id, session.user_uuid_id
+    assert_equal user, session.user
   end
 end

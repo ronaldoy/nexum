@@ -202,15 +202,14 @@ module Admin
     end
 
     def serialize_token(token)
-      effective_user = token.effective_user
+      user = token.user
       {
         id: token.id,
         tenant_id: token.tenant_id,
         name: token.name,
         scopes: Array(token.scopes),
-        user_id: token.user_id,
         user_uuid_id: token.user_uuid_id,
-        user_email: effective_user&.email_address,
+        user_email: user&.email_address,
         created_at: token.created_at,
         expires_at: token.expires_at,
         revoked_at: token.revoked_at,
@@ -231,7 +230,8 @@ module Admin
         metadata: {
           "issued_for_tenant_id" => tenant.id,
           "issued_for_tenant_slug" => tenant.slug,
-          "issued_for_user_id" => user&.id
+          "issued_for_user_id" => user&.id,
+          "issued_for_user_uuid_id" => user&.uuid_id
         }
       }
     end

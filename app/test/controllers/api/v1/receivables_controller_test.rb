@@ -70,10 +70,10 @@ module Api
         assert_equal "invalid_token", response.parsed_body.dig("error", "code")
       end
 
-      test "authenticates with uuid user reference when token bigint user_id is nil" do
+      test "authenticates token even when it is not bound to a user" do
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
           token_record = ApiAccessToken.authenticate(@read_token)
-          token_record.update_columns(user_id: nil)
+          token_record.update_columns(user_uuid_id: nil)
         end
 
         get api_v1_receivables_path, headers: authorization_headers(@read_token), as: :json

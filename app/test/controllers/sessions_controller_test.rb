@@ -152,7 +152,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "", cookies[:session_id]
   end
 
-  test "resumes session using uuid-first user resolution when bigint user_id drifts" do
+  test "rejects resumed session when persisted user uuid drifts from cookie" do
     sign_in_as(@user)
 
     drift_user = nil
@@ -173,14 +173,13 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       )
 
       session_record = Session.find(Current.session.id)
-      session_record.update_columns(user_id: drift_user.id, user_uuid_id: @user.uuid_id)
+      session_record.update_columns(user_uuid_id: drift_user.uuid_id)
     end
 
     get root_path
 
-    assert_response :success
-    assert_includes response.body, @user.email_address
-    refute_includes response.body, drift_user.email_address
+    assert_redirected_to new_session_path
+    assert_equal "", cookies[:session_id]
   end
 
   private

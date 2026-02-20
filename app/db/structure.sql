@@ -527,7 +527,6 @@ ALTER TABLE ONLY public.anticipation_settlement_entries FORCE ROW LEVEL SECURITY
 CREATE TABLE public.api_access_tokens (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     tenant_id uuid NOT NULL,
-    user_id bigint,
     name character varying NOT NULL,
     token_identifier character varying NOT NULL,
     token_digest character varying NOT NULL,
@@ -1007,7 +1006,6 @@ ALTER TABLE ONLY public.parties FORCE ROW LEVEL SECURITY;
 CREATE TABLE public.partner_applications (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     tenant_id uuid NOT NULL,
-    created_by_user_id bigint,
     name character varying NOT NULL,
     client_id character varying NOT NULL,
     client_secret_digest character varying NOT NULL,
@@ -1390,14 +1388,13 @@ CREATE TABLE public.schema_migrations (
 
 CREATE TABLE public.sessions (
     id bigint NOT NULL,
-    user_id bigint NOT NULL,
     ip_address character varying,
     user_agent character varying,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
     tenant_id uuid NOT NULL,
     admin_webauthn_verified_at timestamp(6) without time zone,
-    user_uuid_id uuid
+    user_uuid_id uuid NOT NULL
 );
 
 ALTER TABLE ONLY public.sessions FORCE ROW LEVEL SECURITY;
@@ -1446,13 +1443,13 @@ ALTER TABLE ONLY public.tenants FORCE ROW LEVEL SECURITY;
 CREATE TABLE public.user_roles (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     tenant_id uuid NOT NULL,
-    user_id bigint NOT NULL,
     role_id uuid NOT NULL,
-    assigned_by_user_id bigint,
     assigned_at timestamp(6) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL
+    updated_at timestamp(6) without time zone NOT NULL,
+    user_uuid_id uuid NOT NULL,
+    assigned_by_user_uuid_id uuid
 );
 
 ALTER TABLE ONLY public.user_roles FORCE ROW LEVEL SECURITY;
@@ -1463,7 +1460,6 @@ ALTER TABLE ONLY public.user_roles FORCE ROW LEVEL SECURITY;
 --
 
 CREATE TABLE public.users (
-    id bigint NOT NULL,
     email_address text NOT NULL,
     password_digest character varying NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
@@ -1481,32 +1477,12 @@ ALTER TABLE ONLY public.users FORCE ROW LEVEL SECURITY;
 
 
 --
--- Name: users_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.users_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: users_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
-
-
---
 -- Name: webauthn_credentials; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.webauthn_credentials (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     tenant_id uuid NOT NULL,
-    user_id bigint NOT NULL,
     webauthn_id character varying NOT NULL,
     public_key text NOT NULL,
     sign_count bigint DEFAULT 0 NOT NULL,
@@ -1515,6 +1491,7 @@ CREATE TABLE public.webauthn_credentials (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
+    user_uuid_id uuid NOT NULL,
     CONSTRAINT webauthn_credentials_sign_count_non_negative_check CHECK ((sign_count >= 0))
 );
 
@@ -1547,13 +1524,6 @@ ALTER TABLE ONLY public.active_storage_variant_records ALTER COLUMN id SET DEFAU
 --
 
 ALTER TABLE ONLY public.sessions ALTER COLUMN id SET DEFAULT nextval('public.sessions_id_seq'::regclass);
-
-
---
--- Name: users id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_id_seq'::regclass);
 
 
 --
@@ -1905,7 +1875,7 @@ ALTER TABLE ONLY public.user_roles
 --
 
 ALTER TABLE ONLY public.users
-    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+    ADD CONSTRAINT users_pkey PRIMARY KEY (uuid_id);
 
 
 --
@@ -2285,13 +2255,6 @@ CREATE INDEX index_api_access_tokens_on_tenant_lifecycle ON public.api_access_to
 --
 
 CREATE UNIQUE INDEX index_api_access_tokens_on_token_identifier ON public.api_access_tokens USING btree (token_identifier);
-
-
---
--- Name: index_api_access_tokens_on_user_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_api_access_tokens_on_user_id ON public.api_access_tokens USING btree (user_id);
 
 
 --
@@ -2834,13 +2797,6 @@ CREATE UNIQUE INDEX index_partner_applications_on_client_id ON public.partner_ap
 
 
 --
--- Name: index_partner_applications_on_created_by_user_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_partner_applications_on_created_by_user_id ON public.partner_applications USING btree (created_by_user_id);
-
-
---
 -- Name: index_partner_applications_on_created_by_user_uuid_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3198,17 +3154,10 @@ CREATE INDEX index_sessions_on_tenant_id ON public.sessions USING btree (tenant_
 
 
 --
--- Name: index_sessions_on_tenant_id_and_user_id; Type: INDEX; Schema: public; Owner: -
+-- Name: index_sessions_on_tenant_id_and_user_uuid_id; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX index_sessions_on_tenant_id_and_user_id ON public.sessions USING btree (tenant_id, user_id);
-
-
---
--- Name: index_sessions_on_user_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_sessions_on_user_id ON public.sessions USING btree (user_id);
+CREATE INDEX index_sessions_on_tenant_id_and_user_uuid_id ON public.sessions USING btree (tenant_id, user_uuid_id);
 
 
 --
@@ -3226,10 +3175,10 @@ CREATE UNIQUE INDEX index_tenants_on_slug ON public.tenants USING btree (slug);
 
 
 --
--- Name: index_user_roles_on_assigned_by_user_id; Type: INDEX; Schema: public; Owner: -
+-- Name: index_user_roles_on_assigned_by_user_uuid_id; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX index_user_roles_on_assigned_by_user_id ON public.user_roles USING btree (assigned_by_user_id);
+CREATE INDEX index_user_roles_on_assigned_by_user_uuid_id ON public.user_roles USING btree (assigned_by_user_uuid_id);
 
 
 --
@@ -3254,17 +3203,17 @@ CREATE INDEX index_user_roles_on_tenant_role ON public.user_roles USING btree (t
 
 
 --
--- Name: index_user_roles_on_tenant_user; Type: INDEX; Schema: public; Owner: -
+-- Name: index_user_roles_on_tenant_user_uuid; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX index_user_roles_on_tenant_user ON public.user_roles USING btree (tenant_id, user_id);
+CREATE UNIQUE INDEX index_user_roles_on_tenant_user_uuid ON public.user_roles USING btree (tenant_id, user_uuid_id);
 
 
 --
--- Name: index_user_roles_on_user_id; Type: INDEX; Schema: public; Owner: -
+-- Name: index_user_roles_on_user_uuid_id; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX index_user_roles_on_user_id ON public.user_roles USING btree (user_id);
+CREATE INDEX index_user_roles_on_user_uuid_id ON public.user_roles USING btree (user_uuid_id);
 
 
 --
@@ -3296,13 +3245,6 @@ CREATE UNIQUE INDEX index_users_on_tenant_id_and_webauthn_id ON public.users USI
 
 
 --
--- Name: index_users_on_uuid_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX index_users_on_uuid_id ON public.users USING btree (uuid_id);
-
-
---
 -- Name: index_webauthn_credentials_on_tenant_credential; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3317,17 +3259,17 @@ CREATE INDEX index_webauthn_credentials_on_tenant_id ON public.webauthn_credenti
 
 
 --
--- Name: index_webauthn_credentials_on_tenant_user_credential; Type: INDEX; Schema: public; Owner: -
+-- Name: index_webauthn_credentials_on_tenant_user_uuid_credential; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX index_webauthn_credentials_on_tenant_user_credential ON public.webauthn_credentials USING btree (tenant_id, user_id, webauthn_id);
+CREATE UNIQUE INDEX index_webauthn_credentials_on_tenant_user_uuid_credential ON public.webauthn_credentials USING btree (tenant_id, user_uuid_id, webauthn_id);
 
 
 --
--- Name: index_webauthn_credentials_on_user_id; Type: INDEX; Schema: public; Owner: -
+-- Name: index_webauthn_credentials_on_user_uuid_id; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX index_webauthn_credentials_on_user_id ON public.webauthn_credentials USING btree (user_id);
+CREATE INDEX index_webauthn_credentials_on_user_uuid_id ON public.webauthn_credentials USING btree (user_uuid_id);
 
 
 --
@@ -3459,6 +3401,14 @@ ALTER TABLE ONLY public.kyc_profiles
 
 ALTER TABLE ONLY public.assignment_contracts
     ADD CONSTRAINT fk_rails_074ac762b1 FOREIGN KEY (assignee_party_id) REFERENCES public.parties(id);
+
+
+--
+-- Name: user_roles fk_rails_0a1c428280; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_roles
+    ADD CONSTRAINT fk_rails_0a1c428280 FOREIGN KEY (assigned_by_user_uuid_id) REFERENCES public.users(uuid_id);
 
 
 --
@@ -3622,14 +3572,6 @@ ALTER TABLE ONLY public.assignment_contracts
 
 
 --
--- Name: user_roles fk_rails_318345354e; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.user_roles
-    ADD CONSTRAINT fk_rails_318345354e FOREIGN KEY (user_id) REFERENCES public.users(id);
-
-
---
 -- Name: webauthn_credentials fk_rails_318d45c5d9; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3707,14 +3649,6 @@ ALTER TABLE ONLY public.physician_legal_entity_memberships
 
 ALTER TABLE ONLY public.ledger_transactions
     ADD CONSTRAINT fk_rails_44cf54fd66 FOREIGN KEY (actor_party_id) REFERENCES public.parties(id);
-
-
---
--- Name: user_roles fk_rails_4cc38d53ec; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.user_roles
-    ADD CONSTRAINT fk_rails_4cc38d53ec FOREIGN KEY (assigned_by_user_id) REFERENCES public.users(id);
 
 
 --
@@ -3819,14 +3753,6 @@ ALTER TABLE ONLY public.escrow_payouts
 
 ALTER TABLE ONLY public.kyc_profiles
     ADD CONSTRAINT fk_rails_73346608bf FOREIGN KEY (party_id) REFERENCES public.parties(id);
-
-
---
--- Name: sessions fk_rails_758836b4f0; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.sessions
-    ADD CONSTRAINT fk_rails_758836b4f0 FOREIGN KEY (user_id) REFERENCES public.users(id);
 
 
 --
@@ -3966,19 +3892,19 @@ ALTER TABLE ONLY public.receivable_allocations
 
 
 --
+-- Name: webauthn_credentials fk_rails_97d46c1d04; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.webauthn_credentials
+    ADD CONSTRAINT fk_rails_97d46c1d04 FOREIGN KEY (user_uuid_id) REFERENCES public.users(uuid_id);
+
+
+--
 -- Name: active_storage_variant_records fk_rails_993965df05; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.active_storage_variant_records
     ADD CONSTRAINT fk_rails_993965df05 FOREIGN KEY (blob_id) REFERENCES public.active_storage_blobs(id);
-
-
---
--- Name: partner_applications fk_rails_9b0bbe7b37; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.partner_applications
-    ADD CONSTRAINT fk_rails_9b0bbe7b37 FOREIGN KEY (created_by_user_id) REFERENCES public.users(id);
 
 
 --
@@ -3998,19 +3924,19 @@ ALTER TABLE ONLY public.action_ip_logs
 
 
 --
+-- Name: user_roles fk_rails_a0cecec38d; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_roles
+    ADD CONSTRAINT fk_rails_a0cecec38d FOREIGN KEY (user_uuid_id) REFERENCES public.users(uuid_id);
+
+
+--
 -- Name: physician_anticipation_authorizations fk_rails_a3334b1e81; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.physician_anticipation_authorizations
     ADD CONSTRAINT fk_rails_a3334b1e81 FOREIGN KEY (legal_entity_party_id) REFERENCES public.parties(id);
-
-
---
--- Name: webauthn_credentials fk_rails_a4355aef77; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.webauthn_credentials
-    ADD CONSTRAINT fk_rails_a4355aef77 FOREIGN KEY (user_id) REFERENCES public.users(id);
 
 
 --
@@ -4283,14 +4209,6 @@ ALTER TABLE ONLY public.outbox_dispatch_attempts
 
 ALTER TABLE ONLY public.action_ip_logs
     ADD CONSTRAINT fk_rails_f0fed210ec FOREIGN KEY (actor_party_id) REFERENCES public.parties(id);
-
-
---
--- Name: api_access_tokens fk_rails_f405a7988d; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.api_access_tokens
-    ADD CONSTRAINT fk_rails_f405a7988d FOREIGN KEY (user_id) REFERENCES public.users(id);
 
 
 --
@@ -4913,6 +4831,8 @@ CREATE POLICY webauthn_credentials_tenant_policy ON public.webauthn_credentials 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260220103000'),
+('20260220100000'),
 ('20260219213000'),
 ('20260219203000'),
 ('20260219195500'),

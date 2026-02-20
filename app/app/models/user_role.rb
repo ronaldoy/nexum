@@ -1,10 +1,10 @@
 class UserRole < ApplicationRecord
   belongs_to :tenant
-  belongs_to :user
+  belongs_to :user, foreign_key: :user_uuid_id, primary_key: :uuid_id, inverse_of: :user_roles
   belongs_to :role
-  belongs_to :assigned_by_user, class_name: "User", optional: true
+  belongs_to :assigned_by_user, class_name: "User", foreign_key: :assigned_by_user_uuid_id, primary_key: :uuid_id, optional: true
 
-  validates :user_id, uniqueness: { scope: :tenant_id }
+  validates :user_uuid_id, uniqueness: { scope: :tenant_id }
 
   validate :tenant_matches_user
   validate :tenant_matches_role

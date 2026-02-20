@@ -1,4 +1,6 @@
 class User < ApplicationRecord
+  self.primary_key = :uuid_id
+
   ROLES = Role::CODES
   PRIVILEGED_ROLES = %w[hospital_admin ops_admin].freeze
   MFA_ALLOWED_DRIFT_STEPS = 1
@@ -10,12 +12,10 @@ class User < ApplicationRecord
   encrypts :mfa_secret
 
   has_secure_password algorithm: :argon2
-  has_many :sessions, dependent: :destroy
-  has_many :sessions_by_uuid, class_name: "Session", foreign_key: :user_uuid_id, primary_key: :uuid_id, inverse_of: :user_by_uuid
-  has_many :api_access_tokens, dependent: :destroy
-  has_many :api_access_tokens_by_uuid, class_name: "ApiAccessToken", foreign_key: :user_uuid_id, primary_key: :uuid_id, inverse_of: :user_by_uuid
-  has_many :webauthn_credentials, dependent: :destroy
-  has_many :user_roles, dependent: :restrict_with_exception
+  has_many :sessions, foreign_key: :user_uuid_id, primary_key: :uuid_id, inverse_of: :user, dependent: :destroy
+  has_many :api_access_tokens, foreign_key: :user_uuid_id, primary_key: :uuid_id, inverse_of: :user, dependent: :destroy
+  has_many :webauthn_credentials, foreign_key: :user_uuid_id, primary_key: :uuid_id, inverse_of: :user, dependent: :destroy
+  has_many :user_roles, foreign_key: :user_uuid_id, primary_key: :uuid_id, inverse_of: :user, dependent: :restrict_with_exception
   has_many :roles, through: :user_roles
 
   normalizes :email_address, with: ->(e) { e.strip.downcase }

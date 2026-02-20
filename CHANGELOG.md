@@ -24,6 +24,8 @@ The format follows Keep a Changelog and Semantic Versioning.
 - Kamal deploy config now fails closed for host and registry configuration (no insecure defaults).
 - OpenAPI/API reference and DB model documentation now include partner OAuth, physician intake, receivable creation, and partner application schema updates.
 - UUID rollout for users advanced to UUID-first authentication paths: session/API token/user resolution now prefers UUID references with bigint fallback.
+- User-dependent auth tables now use UUID-only references (`sessions`, `api_access_tokens`, `partner_applications`, `user_roles`, `webauthn_credentials`) and their bigint user FK columns were removed.
+- `users.uuid_id` promoted to table primary key and legacy `users.id bigint` removed.
 
 ## [0.1.0] - 2026-02-19
 

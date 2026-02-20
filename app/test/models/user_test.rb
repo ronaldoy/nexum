@@ -33,7 +33,7 @@ class UserTest < ActiveSupport::TestCase
     )
 
     raw_email = User.connection.select_value(
-      "SELECT email_address FROM users WHERE id = #{User.connection.quote(user.id)}"
+      "SELECT email_address FROM users WHERE uuid_id = #{User.connection.quote(user.id)}"
     )
 
     refute_equal "sensitive@example.com", raw_email

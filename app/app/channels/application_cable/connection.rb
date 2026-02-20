@@ -23,7 +23,7 @@ module ApplicationCable
       end
 
       def set_current_identity!(session)
-        user = session.effective_user
+        user = session.user
         self.current_session = session
         self.current_user = user
         self.current_tenant_id = session.tenant_id.to_s
@@ -66,13 +66,13 @@ module ApplicationCable
         return nil if session_id.blank? || tenant_id.blank?
 
         with_database_tenant_context(tenant_id) do
-          Session.includes(:user_by_uuid, :user).find_by(id: session_id, tenant_id: tenant_id)
+          Session.includes(:user).find_by(id: session_id, tenant_id: tenant_id)
         end
       end
 
       def valid_session?(session)
         return false if session.blank?
-        user = session.effective_user
+        user = session.user
         return false if user.blank?
         return false if user.tenant_id.to_s != session.tenant_id.to_s
 

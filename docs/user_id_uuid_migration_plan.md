@@ -9,16 +9,25 @@ Goal: migrate `users.id` from `bigint` to `uuid` safely, with zero data loss and
   - Phase 2 (shadow UUID references on dependents)
   - Phase 3 baseline dual-write in model layer
   - Phase 4 baseline UUID-first reads on critical auth paths (web session auth, API token auth, websocket/session identity)
+  - Phase 5 dependent-table cutover via `app/db/migrate/20260220100000_convert_user_references_to_uuid_only.rb`:
+    - removed bigint user FKs from `sessions`, `api_access_tokens`, `partner_applications`, `user_roles`, `webauthn_credentials`
+    - application associations now read/write only UUID user references
+  - Phase 6 PK promotion via `app/db/migrate/20260220103000_promote_users_uuid_primary_key.rb`:
+    - `users.uuid_id` is now the table primary key
+    - legacy `users.id bigint` column/sequence removed
 - Still pending:
-  - Phase 5+ (PK promotion and bigint cleanup)
+  - Optional future naming cleanup (only if desired): rename `users.uuid_id` to `users.id` with coordinated FK rename strategy.
 
 ## Scope
 
-Tables and flows that reference `users.id` today:
-- `sessions.user_id`
-- `api_access_tokens.user_id`
-- `partner_applications.created_by_user_id`
-- any future FK to `users`
+Tables and flows that reference users by UUID now:
+- `sessions.user_uuid_id`
+- `api_access_tokens.user_uuid_id`
+- `partner_applications.created_by_user_uuid_id`
+- `user_roles.user_uuid_id`
+- `user_roles.assigned_by_user_uuid_id`
+- `webauthn_credentials.user_uuid_id`
+- any future FK to `users.uuid_id`
 - authentication/session loading paths
 - admin audit trails that include user identity
 
@@ -55,15 +64,18 @@ Tables and flows that reference `users.id` today:
 - Keep bigint columns for fallback during bake period.
 - Run parity checks and alert on drift.
 
-5. Promote UUID as primary key
+5. Cut dependents over to UUID-only references
+- Drop bigint FK columns from dependents after backfill verification.
+- Keep `users.id` unchanged during this step.
+
+6. Promote UUID as primary key
 - Create new PK strategy:
   - either table swap approach (recommended for lower risk)
   - or in-place PK switch during maintenance window
 - Repoint dependent FKs to UUID PK.
 - Remove bigint FK usage from application code.
 
-6. Cleanup
-- Drop old bigint FK columns from dependents.
+7. Cleanup
 - Drop bigint `users.id` only after full verification and backup checkpoint.
 - Regenerate schema/docs and update runbooks.
 
@@ -79,5 +91,5 @@ Tables and flows that reference `users.id` today:
 ## Rollback strategy
 
 - Until step 5, rollback by switching reads back to bigint and keeping dual-write.
-- Keep bigint columns untouched until UUID mode is stable for at least one full release cycle.
+- After step 5, rollback requires database restore from snapshot plus application rollback to pre-cutover code.
 - Snapshot DB before PK promotion step.
