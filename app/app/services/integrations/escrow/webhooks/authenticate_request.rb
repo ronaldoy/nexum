@@ -24,40 +24,43 @@ module Integrations
         }.freeze
 
         def call(provider:, request:, raw_body:)
-          provider_code = ProviderConfig.normalize_provider(provider)
+          provider_code = normalized_provider(provider)
           secret = webhook_secret_for(provider_code)
           token = webhook_token_for(provider_code)
+          return authenticate_with_signature(provider_code:, secret:, request:, raw_body:) if secret.present?
+          return authenticate_with_token(provider_code:, token:, request:) if token.present?
 
-          if secret.present?
-            signature = extract_header(request:, candidates: HMAC_HEADER_CANDIDATES.fetch(provider_code, []))
-            if signature.blank?
-              raise Error.new(code: "webhook_signature_missing", message: "Webhook signature header is missing.")
-            end
+          raise_webhook_auth_not_configured!(provider_code)
+        end
 
-            verify_hmac_signature!(signature:, secret:, raw_body:)
-            return signature
-          end
+        private
 
-          if token.present?
-            provided_token = extract_bearer_token(request) || extract_header(request:, candidates: TOKEN_HEADER_CANDIDATES.fetch(provider_code, []))
-            if provided_token.blank?
-              raise Error.new(code: "webhook_token_missing", message: "Webhook token is missing.")
-            end
+        def normalized_provider(provider)
+          ProviderConfig.normalize_provider(provider)
+        end
 
-            unless secure_compare(provided_token, token)
-              raise Error.new(code: "webhook_token_invalid", message: "Webhook token is invalid.")
-            end
+        def authenticate_with_signature(provider_code:, secret:, request:, raw_body:)
+          signature = extract_header(request:, candidates: HMAC_HEADER_CANDIDATES.fetch(provider_code, []))
+          raise Error.new(code: "webhook_signature_missing", message: "Webhook signature header is missing.") if signature.blank?
 
-            return "bearer"
-          end
+          verify_hmac_signature!(signature:, secret:, raw_body:)
+          signature
+        end
 
+        def authenticate_with_token(provider_code:, token:, request:)
+          provided_token = extract_bearer_token(request) || extract_header(request:, candidates: TOKEN_HEADER_CANDIDATES.fetch(provider_code, []))
+          raise Error.new(code: "webhook_token_missing", message: "Webhook token is missing.") if provided_token.blank?
+          raise Error.new(code: "webhook_token_invalid", message: "Webhook token is invalid.") unless secure_compare(provided_token, token)
+
+          "bearer"
+        end
+
+        def raise_webhook_auth_not_configured!(provider_code)
           raise Error.new(
             code: "webhook_auth_not_configured",
             message: "Webhook authentication is not configured for provider #{provider_code}."
           )
         end
-
-        private
 
         def verify_hmac_signature!(signature:, secret:, raw_body:)
           provided = normalize_signature(signature)
