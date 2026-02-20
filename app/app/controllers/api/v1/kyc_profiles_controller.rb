@@ -7,88 +7,116 @@ module Api
         submit_document: "kyc:write"
       )
 
-      def show
-        kyc_profile = tenant_kyc_profiles.find(params[:id])
-        authorize_party_access!(kyc_profile.party_id)
+      CREATE_PERMITTED_FIELDS = [
+        :party_id,
+        { metadata: {} }
+      ].freeze
 
-        render json: {
-          data: kyc_profile_payload(kyc_profile)
-        }
+      SUBMIT_DOCUMENT_PERMITTED_FIELDS = [
+        :party_id,
+        :document_type,
+        :document_number,
+        :issuing_country,
+        :issuing_state,
+        :issued_on,
+        :expires_on,
+        :is_key_document,
+        :storage_key,
+        :blob_signed_id,
+        :sha256,
+        { metadata: {} }
+      ].freeze
+
+      def show
+        render_show_response(load_kyc_profile_with_access!(params[:id]))
       end
 
       def create
-        authorize_party_access!(create_params[:party_id]) if create_params[:party_id].present?
+        payload = create_params
+        authorize_create_party_access!(payload)
+        result = kyc_profile_creation_result(payload)
 
-        result = kyc_profile_creation_service.call(
-          create_params.to_h,
-          default_party_id: current_actor_party_id
-        )
-
-        render json: {
-          data: kyc_profile_payload(result.kyc_profile).merge(
-            replayed: result.replayed?
-          )
-        }, status: (result.replayed? ? :ok : :created)
-      rescue KycProfiles::Create::IdempotencyConflict => error
+        render_create_response(result)
+      rescue ::KycProfiles::Create::IdempotencyConflict => error
         render_api_error(code: error.code, message: error.message, status: :conflict)
-      rescue KycProfiles::Create::ValidationError => error
+      rescue ::KycProfiles::Create::ValidationError => error
         render_api_error(code: error.code, message: error.message, status: :unprocessable_entity)
       end
 
       def submit_document
-        kyc_profile = tenant_kyc_profiles.find(params[:id])
-        authorize_party_access!(kyc_profile.party_id)
+        kyc_profile = load_kyc_profile_with_access!(params[:id])
+        result = kyc_document_submission_result(kyc_profile)
 
-        result = kyc_document_submission_service.call(
-          kyc_profile_id: kyc_profile.id,
-          raw_payload: submit_document_params.to_h
-        )
-
-        render json: {
-          data: kyc_document_payload(result.kyc_document).merge(
-            replayed: result.replayed?
-          )
-        }, status: (result.replayed? ? :ok : :created)
-      rescue KycProfiles::SubmitDocument::IdempotencyConflict => error
+        render_submit_document_response(result)
+      rescue ::KycProfiles::SubmitDocument::IdempotencyConflict => error
         render_api_error(code: error.code, message: error.message, status: :conflict)
-      rescue KycProfiles::SubmitDocument::ValidationError => error
+      rescue ::KycProfiles::SubmitDocument::ValidationError => error
         render_api_error(code: error.code, message: error.message, status: :unprocessable_entity)
       end
 
       private
 
+      def load_kyc_profile_with_access!(kyc_profile_id)
+        kyc_profile = tenant_kyc_profiles.find(kyc_profile_id)
+        authorize_party_access!(kyc_profile.party_id)
+        kyc_profile
+      end
+
+      def render_show_response(kyc_profile)
+        render json: { data: payload_presenter.profile(kyc_profile) }
+      end
+
+      def authorize_create_party_access!(payload)
+        party_id = payload[:party_id]
+        authorize_party_access!(party_id) if party_id.present?
+      end
+
+      def kyc_profile_creation_result(payload)
+        kyc_profile_creation_service.call(
+          payload.to_h,
+          default_party_id: current_actor_party_id
+        )
+      end
+
+      def render_create_response(result)
+        render json: {
+          data: payload_presenter.profile(result.kyc_profile).merge(
+            replayed: result.replayed?
+          )
+        }, status: (result.replayed? ? :ok : :created)
+      end
+
+      def kyc_document_submission_result(kyc_profile)
+        kyc_document_submission_service.call(
+          kyc_profile_id: kyc_profile.id,
+          raw_payload: submit_document_params.to_h
+        )
+      end
+
+      def render_submit_document_response(result)
+        render json: {
+          data: payload_presenter.document(result.kyc_document).merge(
+            replayed: result.replayed?
+          )
+        }, status: (result.replayed? ? :ok : :created)
+      end
+
       def create_params
         payload = params[:kyc_profile].presence || params
-        payload.permit(
-          :party_id,
-          metadata: {}
-        )
+        payload.permit(*CREATE_PERMITTED_FIELDS)
       end
 
       def submit_document_params
         payload = params[:kyc_document].presence || params
-        payload.permit(
-          :party_id,
-          :document_type,
-          :document_number,
-          :issuing_country,
-          :issuing_state,
-          :issued_on,
-          :expires_on,
-          :is_key_document,
-          :storage_key,
-          :blob_signed_id,
-          :sha256,
-          metadata: {}
-        )
+        payload.permit(*SUBMIT_DOCUMENT_PERMITTED_FIELDS)
       end
 
       def tenant_kyc_profiles
         KycProfile.where(tenant_id: Current.tenant_id).includes(:party, :kyc_documents, :kyc_events)
       end
 
-      def kyc_profile_creation_service
-        KycProfiles::Create.new(
+      def request_context_attributes
+        {
           tenant_id: Current.tenant_id,
           actor_role: Current.role,
           request_id: Current.request_id,
@@ -97,72 +125,23 @@ module Api
           user_agent: request.user_agent,
           endpoint_path: request.fullpath,
           http_method: request.method
+        }
+      end
+
+      def kyc_profile_creation_service
+        ::KycProfiles::Create.new(
+          **request_context_attributes
         )
       end
 
       def kyc_document_submission_service
-        KycProfiles::SubmitDocument.new(
-          tenant_id: Current.tenant_id,
-          actor_role: Current.role,
-          request_id: Current.request_id,
-          idempotency_key: Current.idempotency_key,
-          request_ip: request.remote_ip,
-          user_agent: request.user_agent,
-          endpoint_path: request.fullpath,
-          http_method: request.method
+        ::KycProfiles::SubmitDocument.new(
+          **request_context_attributes
         )
       end
 
-      def kyc_profile_payload(profile)
-        {
-          id: profile.id,
-          tenant_id: profile.tenant_id,
-          party_id: profile.party_id,
-          status: profile.status,
-          risk_level: profile.risk_level,
-          submitted_at: profile.submitted_at&.iso8601,
-          reviewed_at: profile.reviewed_at&.iso8601,
-          reviewer_party_id: profile.reviewer_party_id,
-          metadata: profile.metadata || {},
-          documents: profile.kyc_documents.order(created_at: :asc).map { |entry| kyc_document_payload(entry) },
-          events: profile.kyc_events.order(occurred_at: :asc).map { |entry| kyc_event_payload(entry) }
-        }
-      end
-
-      def kyc_document_payload(document)
-        {
-          id: document.id,
-          tenant_id: document.tenant_id,
-          kyc_profile_id: document.kyc_profile_id,
-          party_id: document.party_id,
-          document_type: document.document_type,
-          document_number: document.document_number,
-          issuing_country: document.issuing_country,
-          issuing_state: document.issuing_state,
-          issued_on: document.issued_on&.iso8601,
-          expires_on: document.expires_on&.iso8601,
-          is_key_document: document.is_key_document,
-          status: document.status,
-          verified_at: document.verified_at&.iso8601,
-          rejection_reason: document.rejection_reason,
-          storage_key: document.storage_key,
-          sha256: document.sha256,
-          metadata: document.metadata || {}
-        }
-      end
-
-      def kyc_event_payload(event)
-        {
-          id: event.id,
-          tenant_id: event.tenant_id,
-          kyc_profile_id: event.kyc_profile_id,
-          party_id: event.party_id,
-          actor_party_id: event.actor_party_id,
-          event_type: event.event_type,
-          occurred_at: event.occurred_at&.iso8601,
-          request_id: event.request_id,
-          payload: event.payload || {}
-        }
+      def payload_presenter
+        @payload_presenter ||= KycProfilePayloadPresenter.new
       end
     end
   end

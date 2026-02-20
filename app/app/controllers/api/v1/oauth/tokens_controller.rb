@@ -10,16 +10,18 @@ module Api
         before_action :set_oauth_response_headers
 
         def create
-          return render_unsupported_grant_type unless client_credentials_grant?
+          with_oauth_error_handling do
+            result = oauth_token_issue_result
+            return if performed?
 
-          credentials = client_credentials
-          return render_invalid_client unless client_credentials_present?(credentials)
+            render_token_response(**result)
+          end
+        end
 
-          application = find_active_application(credentials.fetch(:client_id))
-          return render_invalid_client if application.blank?
+        private
 
-          issued = issue_access_token(application:, client_secret: credentials.fetch(:client_secret))
-          render_token_response(application:, issued:)
+        def with_oauth_error_handling
+          yield
         rescue PartnerApplication::AuthenticationError
           render_invalid_client
         rescue PartnerApplication::ScopeError => error
@@ -28,7 +30,20 @@ module Api
           render_invalid_request(error.record.errors.full_messages.to_sentence)
         end
 
-        private
+        def oauth_token_issue_result
+          return render_unsupported_grant_type unless client_credentials_grant?
+
+          credentials = client_credentials
+          return render_invalid_client unless client_credentials_present?(credentials)
+
+          application = find_active_application(credentials.fetch(:client_id))
+          return render_invalid_client if application.blank?
+
+          {
+            application: application,
+            issued: issue_access_token(application:, client_secret: credentials.fetch(:client_secret))
+          }
+        end
 
         def resolved_tenant_id
           @resolved_tenant_id ||= resolve_tenant_id_from_slug(params[:tenant_slug])
@@ -104,10 +119,14 @@ module Api
             endpoint_path: request.fullpath,
             http_method: request.method,
             channel: "API",
-            metadata: {
-              "grant_type" => grant_type,
-              "tenant_slug" => params[:tenant_slug]
-            }
+            metadata: token_audit_metadata
+          }
+        end
+
+        def token_audit_metadata
+          {
+            "grant_type" => grant_type,
+            "tenant_slug" => params[:tenant_slug]
           }
         end
 
