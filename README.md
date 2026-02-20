@@ -82,7 +82,7 @@ The system supports:
 
 - Escrow disbursement is provider-agnostic (`Integrations::Escrow` abstraction).
 - Current provider implementation: `QITECH`.
-- Future provider stub already wired: `STARKBANK`.
+- Future provider stub already wired: `STARKBANK` (feature-flagged off in v1).
 - Trigger point:
   - On receivable settlement (`POST /api/v1/receivables/:id/settle_payment`), the system computes `beneficiary_amount` (excedente after anticipated/FIDC repayment) and emits `RECEIVABLE_ESCROW_EXCESS_PAYOUT_REQUESTED` into `outbox_events`.
 - Worker dispatch:
@@ -111,7 +111,8 @@ Configure via Rails credentials (`integrations.qitech.*`) or environment:
 - `QITECH_OPEN_TIMEOUT_SECONDS`
 - `QITECH_READ_TIMEOUT_SECONDS`
 - `STARKBANK_WEBHOOK_SECRET` or `STARKBANK_WEBHOOK_TOKEN`
-- `ESCROW_DEFAULT_PROVIDER` (`QITECH` or `STARKBANK`)
+- `ESCROW_DEFAULT_PROVIDER` (`QITECH` in v1)
+- `ESCROW_ENABLE_STARKBANK` (`false` by default)
 
 For account opening, provide provider-specific payload in party metadata:
 

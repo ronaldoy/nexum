@@ -64,3 +64,4 @@ Production safety:
 - Static credentials in production require explicit emergency override:
   - `UPRIGHT_AUTH_PROVIDER=static_credentials`
   - `UPRIGHT_ALLOW_STATIC_AUTH_IN_PRODUCTION=true`
+  - `ADMIN_PASSWORD` with a non-default value

@@ -56,7 +56,9 @@ env:
     ALERTMANAGER_URL: http://nexum-upright-alertmanager:9093
   secret:
     - RAILS_MASTER_KEY
-    - ADMIN_PASSWORD
+    - OIDC_ISSUER
+    - OIDC_CLIENT_ID
+    - OIDC_CLIENT_SECRET
     - UPRIGHT_POSTGRES_HOST
     - UPRIGHT_POSTGRES_PORT
     - UPRIGHT_POSTGRES_DB

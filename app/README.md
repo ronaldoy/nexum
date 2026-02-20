@@ -67,7 +67,8 @@ For full architecture, domain flow, and demo walkthrough see root `README.md`.
   - EXCESS payout destination `taxpayer_id` must match recipient party CPF/CNPJ.
 
 ### Provider configuration
-- `ESCROW_DEFAULT_PROVIDER` (`QITECH` or `STARKBANK`)
+- `ESCROW_DEFAULT_PROVIDER` (`QITECH` in v1)
+- `ESCROW_ENABLE_STARKBANK` (`false` by default; set `true` only when StarkBank rollout is enabled)
 - QI Tech:
   - `QITECH_BASE_URL`
   - `QITECH_API_CLIENT_KEY`
@@ -77,7 +78,7 @@ For full architecture, domain flow, and demo walkthrough see root `README.md`.
   - `QITECH_WEBHOOK_SECRET` or `QITECH_WEBHOOK_TOKEN`
   - `QITECH_OPEN_TIMEOUT_SECONDS`
   - `QITECH_READ_TIMEOUT_SECONDS`
-- StarkBank:
+- StarkBank (feature-flagged):
   - `STARKBANK_WEBHOOK_SECRET` or `STARKBANK_WEBHOOK_TOKEN`
 
 ### Party onboarding metadata
