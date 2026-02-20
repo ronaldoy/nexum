@@ -152,12 +152,11 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
     @idempotency_key = request.headers[IDEMPOTENCY_KEY_HEADER].to_s.strip
     return if @idempotency_key.present?
 
-    render json: {
-      error: {
-        code: "missing_idempotency_key",
-        message: "Idempotency-Key header is required for mutating requests."
-      }
-    }, status: :unprocessable_entity
+    render_error(
+      status: :unprocessable_entity,
+      code: "missing_idempotency_key",
+      message: "Idempotency-Key header is required for mutating requests."
+    )
   end
 
   def direct_upload_payload_hash
@@ -166,7 +165,7 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   end
 
   def normalized_digest_payload
-    blob = params.expect(blob: [ :filename, :byte_size, :checksum, :content_type, metadata: {} ])
+    blob = blob_params
 
     {
       filename: blob[:filename].to_s,
@@ -177,8 +176,12 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   end
 
   def blob_args(payload_hash:)
-    args = params.expect(blob: [ :filename, :byte_size, :checksum, :content_type, metadata: {} ]).to_h.symbolize_keys
+    args = blob_params.to_h.symbolize_keys
     args.merge(metadata: direct_upload_metadata(raw_metadata: args[:metadata], payload_hash: payload_hash))
+  end
+
+  def blob_params
+    @blob_params ||= params.expect(blob: [ :filename, :byte_size, :checksum, :content_type, metadata: {} ])
   end
 
   def direct_upload_metadata(raw_metadata:, payload_hash:)
@@ -210,12 +213,11 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   def render_existing_idempotent_blob(existing_blob, payload_hash)
     existing_payload_hash = existing_blob.metadata&.dig("direct_upload_payload_hash").to_s
     if existing_payload_hash.present? && existing_payload_hash != payload_hash
-      return render json: {
-        error: {
-          code: "idempotency_key_reused_with_different_payload",
-          message: "Idempotency-Key was already used with a different direct upload payload."
-        }
-      }, status: :conflict
+      return render_error(
+        status: :conflict,
+        code: "idempotency_key_reused_with_different_payload",
+        message: "Idempotency-Key was already used with a different direct upload payload."
+      )
     end
 
     render_direct_upload(blob: existing_blob, replayed: true)
@@ -261,33 +263,40 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   end
 
   def render_invalid_blob_payload
-    render json: { error: { code: "invalid_blob_payload", message: "blob payload is required." } }, status: :unprocessable_entity
+    render_error(status: :unprocessable_entity, code: "invalid_blob_payload", message: "blob payload is required.")
   end
 
   def render_file_too_large
-    render json: { error: { code: "file_too_large", message: "File exceeds upload size limit." } }, status: :content_too_large
+    render_error(status: :content_too_large, code: "file_too_large", message: "File exceeds upload size limit.")
   end
 
   def render_invalid_content_type
-    render json: { error: { code: "invalid_content_type", message: "File content type is not allowed." } }, status: :unprocessable_entity
+    render_error(status: :unprocessable_entity, code: "invalid_content_type", message: "File content type is not allowed.")
   end
 
   def render_unauthorized
-    render json: {
-      error: {
-        code: "invalid_token",
-        message: "Authentication token is invalid or expired."
-      }
-    }, status: :unauthorized
+    render_error(
+      status: :unauthorized,
+      code: "invalid_token",
+      message: "Authentication token is invalid or expired."
+    )
   end
 
   def render_context_unavailable
+    render_error(
+      status: :service_unavailable,
+      code: "request_context_unavailable",
+      message: "Authentication context could not be established."
+    )
+  end
+
+  def render_error(status:, code:, message:)
     render json: {
       error: {
-        code: "request_context_unavailable",
-        message: "Authentication context could not be established."
+        code: code,
+        message: message
       }
-    }, status: :service_unavailable
+    }, status: status
   end
 
   def with_database_tenant_context(tenant_id, actor_id: nil, role: nil)

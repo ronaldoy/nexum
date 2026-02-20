@@ -12,6 +12,26 @@ module Webhooks
       X-STARKBANK-Event-Id
     ].freeze
 
+    WebhookContext = Struct.new(
+      :provider,
+      :raw_body,
+      :payload,
+      :payload_sha256,
+      :signature,
+      :provider_event_id,
+      keyword_init: true
+    ) do
+      def event_type
+        payload["event_type"].to_s.presence || payload["type"].to_s.presence
+      end
+    end
+
+    WebhookOutcome = Struct.new(:result, :receipt, :replayed, keyword_init: true) do
+      def replayed?
+        replayed
+      end
+    end
+
     class WebhookError < StandardError
       attr_reader :code
 
@@ -30,14 +50,39 @@ module Webhooks
     rescue_from WebhookError, with: :render_webhook_error
 
     def create
-      if Current.tenant_id.blank?
-        render_not_found(
-          code: "tenant_not_found",
-          message: "Tenant not found for webhook endpoint."
-        )
-        return
-      end
+      return unless tenant_context_available?
 
+      context = build_webhook_context
+      outcome = process_webhook!(context)
+
+      capture_ignored_reconciliation_exception!(context:, outcome:)
+      return render_replayed_webhook(context:, receipt: outcome.receipt) if outcome.replayed?
+
+      render_processed_webhook(context:, outcome:)
+    rescue Integrations::Escrow::Error => error
+      handle_integration_error(error:, context:)
+    rescue ActiveRecord::RecordInvalid => error
+      render_unprocessable(
+        code: "webhook_receipt_invalid",
+        message: error.record.errors.full_messages.to_sentence
+      )
+    rescue ActiveRecord::RecordNotUnique
+      handle_record_not_unique(context:)
+    end
+
+    private
+
+    def tenant_context_available?
+      return true if Current.tenant_id.present?
+
+      render_not_found(
+        code: "tenant_not_found",
+        message: "Tenant not found for webhook endpoint."
+      )
+      false
+    end
+
+    def build_webhook_context
       provider = Integrations::Escrow::ProviderConfig.normalize_provider(params[:provider])
       raw_body = request.raw_post.to_s
       payload = parse_payload!(raw_body)
@@ -45,132 +90,149 @@ module Webhooks
       signature = authenticate_signature!(provider:, raw_body:)
       provider_event_id = resolve_provider_event_id(payload:, payload_sha256:)
 
+      WebhookContext.new(
+        provider: provider,
+        raw_body: raw_body,
+        payload: payload,
+        payload_sha256: payload_sha256,
+        signature: signature,
+        provider_event_id: provider_event_id
+      )
+    end
+
+    def process_webhook!(context)
       result = nil
       receipt = nil
       replayed = false
 
       ActiveRecord::Base.transaction do
-        existing = ProviderWebhookReceipt.lock.find_by(
-          tenant_id: Current.tenant_id,
-          provider: provider,
-          provider_event_id: provider_event_id
-        )
-
+        existing = find_existing_receipt(context)
         if existing
-          ensure_matching_payload!(existing:, payload_sha256:)
+          ensure_matching_payload!(existing:, payload_sha256: context.payload_sha256)
           replayed = true
           receipt = existing
-          next
+        else
+          result = reconcile_webhook!(context)
+          receipt = create_processed_receipt!(context:, result:)
         end
-
-        result = Integrations::Escrow::ReconcileWebhookEvent.new(
-          tenant_id: Current.tenant_id,
-          provider: provider,
-          payload: payload,
-          provider_event_id: provider_event_id,
-          request_id: request.request_id,
-          request_ip: request.remote_ip,
-          user_agent: request.user_agent,
-          endpoint_path: request.path,
-          http_method: request.method
-        ).call
-
-        receipt = ProviderWebhookReceipt.create!(
-          tenant_id: Current.tenant_id,
-          provider: provider,
-          provider_event_id: provider_event_id,
-          event_type: payload["event_type"].to_s.presence || payload["type"].to_s.presence,
-          signature: signature,
-          payload_sha256: payload_sha256,
-          payload: payload,
-          request_headers: persisted_request_headers,
-          status: result.status,
-          processed_at: Time.current
-        )
       end
 
-      if result&.status == "IGNORED"
-        capture_reconciliation_exception!(
-          provider: provider,
-          provider_event_id: provider_event_id,
-          code: "escrow_webhook_resource_not_found",
-          message: "Webhook payload did not match any escrow account or payout.",
-          payload_sha256: payload_sha256,
-          payload: payload,
-          metadata: {
-            "receipt_id" => receipt.id,
-            "reconciliation_result" => result.metadata
-          }
-        )
-      end
+      WebhookOutcome.new(result:, receipt:, replayed:)
+    end
 
-      if replayed
-        create_action_log!(
-          action_type: "ESCROW_WEBHOOK_REPLAYED",
-          success: true,
-          target_type: "ProviderWebhookReceipt",
-          target_id: receipt.id,
-          metadata: {
-            "provider" => provider,
-            "provider_event_id" => provider_event_id,
-            "receipt_status" => receipt.status
-          }
-        )
+    def find_existing_receipt(context)
+      ProviderWebhookReceipt.lock.find_by(
+        tenant_id: Current.tenant_id,
+        provider: context.provider,
+        provider_event_id: context.provider_event_id
+      )
+    end
 
-        render json: {
-          data: {
-            status: "replayed",
-            provider: provider,
-            provider_event_id: provider_event_id,
-            receipt_id: receipt.id
-          }
-        }, status: :ok
-        return
-      end
+    def reconcile_webhook!(context)
+      Integrations::Escrow::ReconcileWebhookEvent.new(
+        tenant_id: Current.tenant_id,
+        provider: context.provider,
+        payload: context.payload,
+        provider_event_id: context.provider_event_id,
+        request_id: request.request_id,
+        request_ip: request.remote_ip,
+        user_agent: request.user_agent,
+        endpoint_path: request.path,
+        http_method: request.method
+      ).call
+    end
 
+    def create_processed_receipt!(context:, result:)
+      ProviderWebhookReceipt.create!(
+        tenant_id: Current.tenant_id,
+        provider: context.provider,
+        provider_event_id: context.provider_event_id,
+        event_type: context.event_type,
+        signature: context.signature,
+        payload_sha256: context.payload_sha256,
+        payload: context.payload,
+        request_headers: persisted_request_headers,
+        status: result.status,
+        processed_at: Time.current
+      )
+    end
+
+    def capture_ignored_reconciliation_exception!(context:, outcome:)
+      return unless outcome.result&.status == "IGNORED"
+
+      capture_reconciliation_exception!(
+        provider: context.provider,
+        provider_event_id: context.provider_event_id,
+        code: "escrow_webhook_resource_not_found",
+        message: "Webhook payload did not match any escrow account or payout.",
+        payload_sha256: context.payload_sha256,
+        payload: context.payload,
+        metadata: {
+          "receipt_id" => outcome.receipt.id,
+          "reconciliation_result" => outcome.result.metadata
+        }
+      )
+    end
+
+    def render_replayed_webhook(context:, receipt:)
       create_action_log!(
-        action_type: "ESCROW_WEBHOOK_RECEIVED",
+        action_type: "ESCROW_WEBHOOK_REPLAYED",
         success: true,
         target_type: "ProviderWebhookReceipt",
         target_id: receipt.id,
         metadata: {
-          "provider" => provider,
-          "provider_event_id" => provider_event_id,
-          "receipt_status" => receipt.status,
-          "reconciliation_target_type" => result.target_type,
-          "reconciliation_target_id" => result.target_id
+          "provider" => context.provider,
+          "provider_event_id" => context.provider_event_id,
+          "receipt_status" => receipt.status
+        }
+      )
+
+      render_replayed_payload(
+        provider: context.provider,
+        provider_event_id: context.provider_event_id,
+        receipt_id: receipt.id
+      )
+    end
+
+    def render_processed_webhook(context:, outcome:)
+      create_action_log!(
+        action_type: "ESCROW_WEBHOOK_RECEIVED",
+        success: true,
+        target_type: "ProviderWebhookReceipt",
+        target_id: outcome.receipt.id,
+        metadata: {
+          "provider" => context.provider,
+          "provider_event_id" => context.provider_event_id,
+          "receipt_status" => outcome.receipt.status,
+          "reconciliation_target_type" => outcome.result.target_type,
+          "reconciliation_target_id" => outcome.result.target_id
         }
       )
 
       render json: {
         data: {
-          status: result.status.downcase,
-          provider: provider,
-          provider_event_id: provider_event_id,
-          receipt_id: receipt.id,
+          status: outcome.result.status.downcase,
+          provider: context.provider,
+          provider_event_id: context.provider_event_id,
+          receipt_id: outcome.receipt.id,
           reconciliation: {
-            target_type: result.target_type,
-            target_id: result.target_id
+            target_type: outcome.result.target_type,
+            target_id: outcome.result.target_id
           }
         }
       }, status: :accepted
-    rescue Integrations::Escrow::Error => error
-      create_failed_receipt!(
-        provider: provider,
-        provider_event_id: provider_event_id,
-        payload_sha256: payload_sha256,
-        payload: payload,
-        signature: signature,
-        error: error
-      )
+    end
+
+    def handle_integration_error(error:, context:)
+      create_failed_receipt!(context:, error:)
 
       capture_reconciliation_exception!(
-        provider: provider,
-        provider_event_id: provider_event_id,
+        provider: context&.provider,
+        provider_event_id: context&.provider_event_id,
         code: error.code,
         message: error.message,
-        payload_sha256: payload_sha256,
-        payload: payload,
+        payload_sha256: context&.payload_sha256,
+        payload: context&.payload || {},
         metadata: {
           "exception_class" => error.class.name
         }
@@ -180,8 +242,8 @@ module Webhooks
         action_type: "ESCROW_WEBHOOK_FAILED",
         success: false,
         metadata: {
-          "provider" => provider,
-          "provider_event_id" => provider_event_id,
+          "provider" => context&.provider,
+          "provider_event_id" => context&.provider_event_id,
           "error_code" => error.code,
           "error_message" => error.message
         }
@@ -191,16 +253,21 @@ module Webhooks
         code: error.code,
         message: error.message
       )
-    rescue ActiveRecord::RecordInvalid => error
-      render_unprocessable(
-        code: "webhook_receipt_invalid",
-        message: error.record.errors.full_messages.to_sentence
-      )
-    rescue ActiveRecord::RecordNotUnique
+    end
+
+    def handle_record_not_unique(context:)
+      if context.nil? || context.provider.blank? || context.provider_event_id.blank? || context.payload_sha256.blank?
+        render_conflict(
+          code: "webhook_idempotency_conflict",
+          message: "Webhook event id conflict."
+        )
+        return
+      end
+
       existing = ProviderWebhookReceipt.find_by(
         tenant_id: Current.tenant_id,
-        provider: provider,
-        provider_event_id: provider_event_id
+        provider: context.provider,
+        provider_event_id: context.provider_event_id
       )
       if existing.nil?
         render_conflict(
@@ -210,18 +277,24 @@ module Webhooks
         return
       end
 
-      ensure_matching_payload!(existing:, payload_sha256:)
+      ensure_matching_payload!(existing:, payload_sha256: context.payload_sha256)
+      render_replayed_payload(
+        provider: context.provider,
+        provider_event_id: context.provider_event_id,
+        receipt_id: existing.id
+      )
+    end
+
+    def render_replayed_payload(provider:, provider_event_id:, receipt_id:)
       render json: {
         data: {
           status: "replayed",
           provider: provider,
           provider_event_id: provider_event_id,
-          receipt_id: existing.id
+          receipt_id: receipt_id
         }
       }, status: :ok
     end
-
-    private
 
     def resolved_tenant_id
       @resolved_tenant_id ||= resolve_tenant_id_from_slug(params[:tenant_slug])
@@ -276,17 +349,18 @@ module Webhooks
       )
     end
 
-    def create_failed_receipt!(provider:, provider_event_id:, payload_sha256:, payload:, signature:, error:)
-      return if provider.blank? || provider_event_id.blank? || payload_sha256.blank?
+    def create_failed_receipt!(context:, error:)
+      return if context.nil?
+      return if context.provider.blank? || context.provider_event_id.blank? || context.payload_sha256.blank?
 
       ProviderWebhookReceipt.create!(
         tenant_id: Current.tenant_id,
-        provider: provider,
-        provider_event_id: provider_event_id,
-        event_type: payload["event_type"].to_s.presence || payload["type"].to_s.presence,
-        signature: signature,
-        payload_sha256: payload_sha256,
-        payload: payload,
+        provider: context.provider,
+        provider_event_id: context.provider_event_id,
+        event_type: context.event_type,
+        signature: context.signature,
+        payload_sha256: context.payload_sha256,
+        payload: context.payload,
         request_headers: persisted_request_headers,
         status: "FAILED",
         error_code: error.code,
