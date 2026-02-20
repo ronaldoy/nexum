@@ -7,47 +7,36 @@ module Integrations
 
       def call(outbox_event:)
         payload = {}
-        anticipation_request = nil
-        settlement = nil
+        source = {}
         recipient_party = nil
         amount = BigDecimal("0")
-        provider_code = nil
+        provider_context = {}
         payout = nil
         payout_idempotency_key = nil
 
         payload = normalize_metadata(outbox_event.payload || {})
-        anticipation_request_id = payload["anticipation_request_id"].to_s.presence
-        settlement_id = payload["settlement_id"].to_s.presence
-        ensure_source_reference_present!(anticipation_request_id:, settlement_id:)
-        recipient_party_id = payload["recipient_party_id"].to_s.presence
-
-        anticipation_request = load_anticipation_request(tenant_id: outbox_event.tenant_id, anticipation_request_id:)
-        settlement = load_settlement(tenant_id: outbox_event.tenant_id, settlement_id:)
-
-        recipient_party_id ||= anticipation_request&.requester_party_id
-        recipient_party_id ||= settlement&.receivable&.beneficiary_party_id
-        raise ValidationError.new(code: "recipient_party_missing", message: "recipient_party_id is required.") if recipient_party_id.blank?
-
-        recipient_party = Party.where(tenant_id: outbox_event.tenant_id).lock.find(recipient_party_id)
-        ensure_party_payable!(recipient_party)
-
-        amount = round_money(parse_decimal(payload.fetch("amount"), field: "amount"))
-        raise ValidationError.new(code: "invalid_amount", message: "amount must be greater than zero.") if amount <= 0
-        ensure_excess_amount_matches_settlement!(payload:, settlement:, amount:)
-
-        provider_code = ProviderConfig.normalize_provider(
-          payload["provider"].presence || ProviderConfig.default_provider(tenant_id: outbox_event.tenant_id)
-        )
-        provider = ProviderRegistry.fetch(provider_code: provider_code)
-
-        payout_idempotency_key = payload["payout_idempotency_key"].to_s.presence || outbox_event.idempotency_key.to_s.presence || "#{outbox_event.id}:escrow_payout"
-        account_idempotency_key = payload["account_idempotency_key"].to_s.presence || "#{recipient_party.id}:escrow_account"
-
-        payout = EscrowPayout.lock.find_or_initialize_by(
+        source = resolve_source_records(tenant_id: outbox_event.tenant_id, payload: payload)
+        recipient_party = resolve_recipient_party!(
           tenant_id: outbox_event.tenant_id,
-          idempotency_key: payout_idempotency_key
+          payload: payload,
+          anticipation_request: source[:anticipation_request],
+          settlement: source[:settlement]
         )
-        return payout if payout.persisted? && payout.status == "SENT"
+        amount = resolve_amount!(payload)
+        ensure_excess_amount_matches_settlement!(payload:, settlement: source[:settlement], amount:)
+
+        provider_context = resolve_provider_context(tenant_id: outbox_event.tenant_id, payload: payload)
+        provider_code = provider_context.fetch(:provider_code)
+        provider = provider_context.fetch(:provider)
+
+        payout_idempotency_key = resolve_payout_idempotency_key(outbox_event:, payload:)
+        account_idempotency_key = resolve_account_idempotency_key(payload:, recipient_party:)
+
+        payout = find_or_initialize_payout(
+          tenant_id: outbox_event.tenant_id,
+          payout_idempotency_key: payout_idempotency_key
+        )
+        return payout if payout_sent?(payout)
 
         escrow_account = ensure_escrow_account!(
           tenant_id: outbox_event.tenant_id,
@@ -56,11 +45,142 @@ module Integrations
           idempotency_key: account_idempotency_key,
           metadata: payload
         )
+        persist_pending_payout!(
+          payout: payout,
+          outbox_event: outbox_event,
+          source: source,
+          recipient_party: recipient_party,
+          escrow_account: escrow_account,
+          provider_code: provider_code,
+          amount: amount,
+          payload: payload
+        )
 
+        payout_result = provider.create_payout!(
+          tenant_id: outbox_event.tenant_id,
+          escrow_account: escrow_account,
+          recipient_party: recipient_party,
+          amount: amount,
+          currency: "BRL",
+          idempotency_key: provider_request_control_key(payload:, payout_idempotency_key: payout_idempotency_key),
+          metadata: payload.merge(
+            "provider_request_control_key" => provider_request_control_key(payload:, payout_idempotency_key: payout_idempotency_key)
+          )
+        )
+
+        persisted = persist_payout_success!(
+          payout: payout,
+          outbox_event: outbox_event,
+          anticipation_request: source[:anticipation_request],
+          settlement: source[:settlement],
+          recipient_party: recipient_party,
+          escrow_account: escrow_account,
+          provider_code: provider_code,
+          amount: amount,
+          payout_result: payout_result,
+          payload: payload
+        )
+
+        ensure_payout_sent!(persisted)
+        log_dispatch_success!(
+          outbox_event: outbox_event,
+          payout: persisted,
+          anticipation_request: source[:anticipation_request],
+          settlement: source[:settlement],
+          recipient_party: recipient_party,
+          provider_code: provider_code,
+          amount: amount
+        )
+
+        persisted
+      rescue Error => error
+        persist_payout_failure!(
+          payout: payout,
+          outbox_event: outbox_event,
+          anticipation_request: source[:anticipation_request],
+          settlement: source[:settlement],
+          recipient_party: recipient_party,
+          provider_code: provider_context[:provider_code],
+          amount: amount,
+          payload: payload,
+          error: error
+        )
+        raise
+      rescue KeyError => error
+        raise ValidationError.new(
+          code: "escrow_payload_invalid",
+          message: "Escrow payout payload is missing required fields.",
+          details: { missing_key: error.key }
+        )
+      rescue ActiveRecord::RecordNotUnique
+        resolve_payout_conflict!(tenant_id: outbox_event.tenant_id, payout_idempotency_key: payout_idempotency_key)
+      end
+
+      private
+
+      def resolve_source_records(tenant_id:, payload:)
+        anticipation_request_id = payload["anticipation_request_id"].to_s.presence
+        settlement_id = payload["settlement_id"].to_s.presence
+        ensure_source_reference_present!(anticipation_request_id:, settlement_id:)
+
+        {
+          anticipation_request: load_anticipation_request(tenant_id: tenant_id, anticipation_request_id: anticipation_request_id),
+          settlement: load_settlement(tenant_id: tenant_id, settlement_id: settlement_id)
+        }
+      end
+
+      def resolve_recipient_party!(tenant_id:, payload:, anticipation_request:, settlement:)
+        recipient_party_id = payload["recipient_party_id"].to_s.presence
+        recipient_party_id ||= anticipation_request&.requester_party_id
+        recipient_party_id ||= settlement&.receivable&.beneficiary_party_id
+        raise ValidationError.new(code: "recipient_party_missing", message: "recipient_party_id is required.") if recipient_party_id.blank?
+
+        recipient_party = Party.where(tenant_id: tenant_id).lock.find(recipient_party_id)
+        ensure_party_payable!(recipient_party)
+        recipient_party
+      end
+
+      def resolve_amount!(payload)
+        amount = round_money(parse_decimal(payload.fetch("amount"), field: "amount"))
+        return amount if amount.positive?
+
+        raise ValidationError.new(code: "invalid_amount", message: "amount must be greater than zero.")
+      end
+
+      def resolve_provider_context(tenant_id:, payload:)
+        provider_code = ProviderConfig.normalize_provider(
+          payload["provider"].presence || ProviderConfig.default_provider(tenant_id: tenant_id)
+        )
+        {
+          provider_code: provider_code,
+          provider: ProviderRegistry.fetch(provider_code: provider_code)
+        }
+      end
+
+      def resolve_payout_idempotency_key(outbox_event:, payload:)
+        payload["payout_idempotency_key"].to_s.presence || outbox_event.idempotency_key.to_s.presence || "#{outbox_event.id}:escrow_payout"
+      end
+
+      def resolve_account_idempotency_key(payload:, recipient_party:)
+        payload["account_idempotency_key"].to_s.presence || "#{recipient_party.id}:escrow_account"
+      end
+
+      def find_or_initialize_payout(tenant_id:, payout_idempotency_key:)
+        EscrowPayout.lock.find_or_initialize_by(
+          tenant_id: tenant_id,
+          idempotency_key: payout_idempotency_key
+        )
+      end
+
+      def payout_sent?(payout)
+        payout.persisted? && payout.status == "SENT"
+      end
+
+      def persist_pending_payout!(payout:, outbox_event:, source:, recipient_party:, escrow_account:, provider_code:, amount:, payload:)
         payout.assign_attributes(
           tenant_id: outbox_event.tenant_id,
-          anticipation_request_id: anticipation_request&.id,
-          receivable_payment_settlement_id: settlement&.id,
+          anticipation_request_id: source[:anticipation_request]&.id,
+          receivable_payment_settlement_id: source[:settlement]&.id,
           party_id: recipient_party.id,
           escrow_account_id: escrow_account.id,
           provider: provider_code,
@@ -74,44 +194,28 @@ module Integrations
           })
         )
         payout.save! if payout.new_record? || payout.changed?
+      end
 
-        provider_request_control_key = payload["provider_request_control_key"].to_s.presence || payout_idempotency_key
-        payout_result = provider.create_payout!(
-          tenant_id: outbox_event.tenant_id,
-          escrow_account: escrow_account,
-          recipient_party: recipient_party,
-          amount: amount,
-          currency: "BRL",
-          idempotency_key: provider_request_control_key,
-          metadata: payload.merge("provider_request_control_key" => provider_request_control_key)
+      def provider_request_control_key(payload:, payout_idempotency_key:)
+        payload["provider_request_control_key"].to_s.presence || payout_idempotency_key
+      end
+
+      def ensure_payout_sent!(payout)
+        return if payout.status == "SENT"
+
+        raise ValidationError.new(
+          code: "escrow_payout_not_sent",
+          message: "Escrow payout did not reach a sent state.",
+          details: { status: payout.status }
         )
+      end
 
-        persisted = persist_payout_success!(
-          payout: payout,
-          outbox_event: outbox_event,
-          anticipation_request: anticipation_request,
-          settlement: settlement,
-          recipient_party: recipient_party,
-          escrow_account: escrow_account,
-          provider_code: provider_code,
-          amount: amount,
-          payout_result: payout_result,
-          payload: payload
-        )
-
-        if persisted.status != "SENT"
-          raise ValidationError.new(
-            code: "escrow_payout_not_sent",
-            message: "Escrow payout did not reach a sent state.",
-            details: { status: persisted.status }
-          )
-        end
-
+      def log_dispatch_success!(outbox_event:, payout:, anticipation_request:, settlement:, recipient_party:, provider_code:, amount:)
         create_action_log!(
           outbox_event: outbox_event,
           action_type: "ESCROW_PAYOUT_DISPATCHED",
           success: true,
-          target_id: persisted.id,
+          target_id: payout.id,
           metadata: {
             "anticipation_request_id" => anticipation_request&.id,
             "settlement_id" => settlement&.id,
@@ -119,35 +223,16 @@ module Integrations
             "provider" => provider_code,
             "amount" => amount.to_s("F"),
             "currency" => "BRL",
-            "provider_transfer_id" => persisted.provider_transfer_id,
-            "idempotency_key" => persisted.idempotency_key
+            "provider_transfer_id" => payout.provider_transfer_id,
+            "idempotency_key" => payout.idempotency_key
           }
         )
+      end
 
-        persisted
-      rescue Error => error
-        persist_payout_failure!(
-          payout: payout,
-          outbox_event: outbox_event,
-          anticipation_request: anticipation_request,
-          settlement: settlement,
-          recipient_party: recipient_party,
-          provider_code: provider_code,
-          amount: amount,
-          payload: payload,
-          error: error
-        )
-        raise
-      rescue KeyError => error
-        raise ValidationError.new(
-          code: "escrow_payload_invalid",
-          message: "Escrow payout payload is missing required fields.",
-          details: { missing_key: error.key }
-        )
-      rescue ActiveRecord::RecordNotUnique
+      def resolve_payout_conflict!(tenant_id:, payout_idempotency_key:)
         raise ValidationError.new(code: "escrow_payout_conflict", message: "Escrow payout idempotency conflict.") if payout_idempotency_key.blank?
 
-        existing = EscrowPayout.find_by!(tenant_id: outbox_event.tenant_id, idempotency_key: payout_idempotency_key)
+        existing = EscrowPayout.find_by!(tenant_id: tenant_id, idempotency_key: payout_idempotency_key)
         return existing if existing.status == "SENT"
 
         raise ValidationError.new(
@@ -155,8 +240,6 @@ module Integrations
           message: "Escrow payout idempotency conflict."
         )
       end
-
-      private
 
       def ensure_escrow_account!(tenant_id:, party:, provider:, idempotency_key:, metadata:)
         account = EscrowAccount.lock.find_by(
