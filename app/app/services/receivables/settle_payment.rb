@@ -9,6 +9,9 @@ module Receivables
     ESCROW_EXCESS_OUTBOX_IDEMPOTENCY_SUFFIX = "escrow_excess_payout".freeze
     FDIC_SETTLEMENT_OUTBOX_EVENT_TYPE = "RECEIVABLE_FIDC_SETTLEMENT_REPORTED".freeze
     FDIC_SETTLEMENT_OUTBOX_IDEMPOTENCY_SUFFIX = "fdic_settlement_report".freeze
+    BRL_CURRENCY = "BRL".freeze
+    ESCROW_EXCESS_PAYOUT_KIND = "EXCESS".freeze
+    FDIC_SETTLEMENT_OPERATION_KIND = "SETTLEMENT_REPORT".freeze
 
     Result = Struct.new(:settlement, :settlement_entries, :replayed, keyword_init: true) do
       def replayed?
@@ -491,6 +494,17 @@ module Receivables
         amount: amount,
         receivable_origin: receivable_origin
       )
+      payload = build_escrow_excess_outbox_payload(
+        settlement: settlement,
+        receivable: receivable,
+        recipient_party: recipient_party,
+        amount: amount,
+        provider: provider,
+        receivable_origin: receivable_origin,
+        payout_idempotency_key: payout_idempotency_key,
+        account_idempotency_key: account_idempotency_key,
+        payload_hash: payload_hash
+      )
 
       OutboxEvent.create!(
         tenant_id: @tenant_id,
@@ -499,33 +513,12 @@ module Receivables
         event_type: ESCROW_EXCESS_OUTBOX_EVENT_TYPE,
         status: "PENDING",
         idempotency_key: payout_idempotency_key,
-        payload: {
-          "payload_hash" => payload_hash,
-          "settlement_id" => settlement.id,
-          "receivable_id" => receivable.id,
-          "recipient_party_id" => recipient_party.id,
-          "amount" => amount,
-          "currency" => "BRL",
-          "provider" => provider,
-          "payout_kind" => "EXCESS",
-          "payment_reference" => settlement.payment_reference,
-          "payout_idempotency_key" => payout_idempotency_key,
-          "account_idempotency_key" => account_idempotency_key,
-          "provider_request_control_key" => payout_idempotency_key,
-          "request_id" => @request_id,
-          "expected_taxpayer_id" => recipient_party.document_number,
-          "receivable_origin" => receivable_origin
-        }
+        payload: payload
       )
     rescue ActiveRecord::RecordNotUnique
-      existing = OutboxEvent.find_by!(
-        tenant_id: @tenant_id,
-        idempotency_key: payout_idempotency_key
-      )
-      stored_hash = existing.payload&.dig("payload_hash").to_s
-      return if stored_hash.blank? || stored_hash == payload_hash
-
-      raise IdempotencyConflict.new(
+      assert_outbox_payload_hash_matches!(
+        idempotency_key: payout_idempotency_key,
+        payload_hash: payload_hash,
         code: "escrow_payout_idempotency_conflict",
         message: "Escrow payout idempotency key was already used with a different payload."
       )
@@ -544,6 +537,14 @@ module Receivables
         amount: amount,
         receivable_origin: receivable_origin
       )
+      payload = build_fdic_settlement_outbox_payload(
+        settlement: settlement,
+        provider: provider,
+        amount: amount,
+        receivable_origin: receivable_origin,
+        report_idempotency_key: report_idempotency_key,
+        payload_hash: payload_hash
+      )
 
       OutboxEvent.create!(
         tenant_id: @tenant_id,
@@ -552,36 +553,80 @@ module Receivables
         event_type: FDIC_SETTLEMENT_OUTBOX_EVENT_TYPE,
         status: "PENDING",
         idempotency_key: report_idempotency_key,
-        payload: {
-          "payload_hash" => payload_hash,
-          "settlement_id" => settlement.id,
-          "receivable_id" => settlement.receivable_id,
-          "receivable_allocation_id" => settlement.receivable_allocation_id,
-          "payment_reference" => settlement.payment_reference,
-          "amount" => amount,
-          "currency" => "BRL",
-          "provider" => provider,
-          "operation_kind" => "SETTLEMENT_REPORT",
-          "operation_idempotency_key" => report_idempotency_key,
-          "provider_request_control_key" => report_idempotency_key,
-          "fdic_amount" => amount,
-          "fdic_balance_before" => decimal_as_string(settlement.fdic_balance_before),
-          "fdic_balance_after" => decimal_as_string(settlement.fdic_balance_after),
-          "receivable_origin" => receivable_origin
-        }
+        payload: payload
       )
     rescue ActiveRecord::RecordNotUnique
-      existing = OutboxEvent.find_by!(
-        tenant_id: @tenant_id,
-        idempotency_key: report_idempotency_key
-      )
-      stored_hash = existing.payload&.dig("payload_hash").to_s
-      return if stored_hash.blank? || stored_hash == payload_hash
-
-      raise IdempotencyConflict.new(
+      assert_outbox_payload_hash_matches!(
+        idempotency_key: report_idempotency_key,
+        payload_hash: payload_hash,
         code: "fdic_settlement_idempotency_conflict",
         message: "FDIC settlement idempotency key was already used with a different payload."
       )
+    end
+
+    def build_escrow_excess_outbox_payload(
+      settlement:,
+      receivable:,
+      recipient_party:,
+      amount:,
+      provider:,
+      receivable_origin:,
+      payout_idempotency_key:,
+      account_idempotency_key:,
+      payload_hash:
+    )
+      {
+        "payload_hash" => payload_hash,
+        "settlement_id" => settlement.id,
+        "receivable_id" => receivable.id,
+        "recipient_party_id" => recipient_party.id,
+        "amount" => amount,
+        "currency" => BRL_CURRENCY,
+        "provider" => provider,
+        "payout_kind" => ESCROW_EXCESS_PAYOUT_KIND,
+        "payment_reference" => settlement.payment_reference,
+        "payout_idempotency_key" => payout_idempotency_key,
+        "account_idempotency_key" => account_idempotency_key,
+        "provider_request_control_key" => payout_idempotency_key,
+        "request_id" => @request_id,
+        "expected_taxpayer_id" => recipient_party.document_number,
+        "receivable_origin" => receivable_origin
+      }
+    end
+
+    def build_fdic_settlement_outbox_payload(
+      settlement:,
+      provider:,
+      amount:,
+      receivable_origin:,
+      report_idempotency_key:,
+      payload_hash:
+    )
+      {
+        "payload_hash" => payload_hash,
+        "settlement_id" => settlement.id,
+        "receivable_id" => settlement.receivable_id,
+        "receivable_allocation_id" => settlement.receivable_allocation_id,
+        "payment_reference" => settlement.payment_reference,
+        "amount" => amount,
+        "currency" => BRL_CURRENCY,
+        "provider" => provider,
+        "operation_kind" => FDIC_SETTLEMENT_OPERATION_KIND,
+        "operation_idempotency_key" => report_idempotency_key,
+        "provider_request_control_key" => report_idempotency_key,
+        "fdic_amount" => amount,
+        "fdic_balance_before" => decimal_as_string(settlement.fdic_balance_before),
+        "fdic_balance_after" => decimal_as_string(settlement.fdic_balance_after),
+        "receivable_origin" => receivable_origin
+      }
+    end
+
+    def assert_outbox_payload_hash_matches!(idempotency_key:, payload_hash:, code:, message:)
+      existing = OutboxEvent.find_by!(tenant_id: @tenant_id, idempotency_key: idempotency_key)
+      stored_hash = existing.payload&.dig("payload_hash").to_s
+      return if stored_hash.blank? || stored_hash == payload_hash
+
+      raise IdempotencyConflict.new(code: code, message: message)
     end
 
     def create_action_log!(action_type:, success:, target_id:, metadata:)
@@ -680,21 +725,26 @@ module Receivables
     end
 
     def receivable_origin_payload(receivable)
-      ownership = HospitalOwnership
-        .where(tenant_id: @tenant_id, hospital_party_id: receivable.debtor_party_id, active: true)
-        .includes(:organization_party)
-        .first
+      hospital_party = receivable.debtor_party
+      ownership = active_hospital_ownership(hospital_party_id: receivable.debtor_party_id)
 
       {
         "receivable_id" => receivable.id,
         "external_reference" => receivable.external_reference,
         "hospital_party_id" => receivable.debtor_party_id,
-        "hospital_legal_name" => receivable.debtor_party.legal_name,
-        "hospital_document_number" => receivable.debtor_party.document_number,
+        "hospital_legal_name" => hospital_party.legal_name,
+        "hospital_document_number" => hospital_party.document_number,
         "organization_party_id" => ownership&.organization_party_id,
         "organization_legal_name" => ownership&.organization_party&.legal_name,
         "organization_document_number" => ownership&.organization_party&.document_number
       }.compact
+    end
+
+    def active_hospital_ownership(hospital_party_id:)
+      HospitalOwnership
+        .where(tenant_id: @tenant_id, hospital_party_id: hospital_party_id, active: true)
+        .includes(:organization_party)
+        .first
     end
 
     def canonical_json(value)
