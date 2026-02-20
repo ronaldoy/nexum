@@ -10,6 +10,7 @@ module Physicians
         replayed
       end
     end
+    CallInputs = Struct.new(:payload, :payload_hash, keyword_init: true)
 
     class ValidationError < StandardError
       attr_reader :code
@@ -45,87 +46,113 @@ module Physicians
     def call(raw_payload)
       raise_validation_error!("missing_idempotency_key", "Idempotency-Key is required.") if @idempotency_key.blank?
 
-      payload = normalize_payload(raw_payload)
-      payload_hash = physician_payload_hash(payload)
-
-      ActiveRecord::Base.transaction do
-        existing_party = Party.where(
-          tenant_id: @tenant_id,
-          kind: "PHYSICIAN_PF",
-          document_number: payload.fetch(:document_number)
-        ).lock.first
-        existing_party ||= Party.where(
-          tenant_id: @tenant_id,
-          kind: "PHYSICIAN_PF",
-          external_ref: payload[:external_ref]
-        ).lock.first if payload[:external_ref].present?
-
-        if existing_party
-          physician = Physician.where(tenant_id: @tenant_id, party_id: existing_party.id).lock.first
-          if physician.blank?
-            raise_validation_error!("physician_profile_missing", "Physician profile is missing for existing party.")
-          end
-
-          ensure_matching_replay!(physician: physician, payload_hash: payload_hash, payload: payload)
-          create_action_log!(
-            action_type: "PHYSICIAN_CREATE_REPLAYED",
-            success: true,
-            target_id: physician.id,
-            metadata: { replayed: true, idempotency_key: @idempotency_key }
-          )
-          return Result.new(physician: physician, party: existing_party, replayed: true)
-        end
-
-        party = Party.create!(
-          tenant_id: @tenant_id,
-          kind: "PHYSICIAN_PF",
-          external_ref: payload[:external_ref],
-          legal_name: payload.fetch(:full_name),
-          display_name: payload[:display_name].presence || payload.fetch(:full_name),
-          document_type: "CPF",
-          document_number: payload.fetch(:document_number),
-          metadata: normalize_hash_metadata(payload[:party_metadata]).merge(
-            PAYLOAD_HASH_METADATA_KEY => payload_hash,
-            "idempotency_key" => @idempotency_key
-          )
-        )
-
-        physician = Physician.create!(
-          tenant_id: @tenant_id,
-          party: party,
-          full_name: payload.fetch(:full_name),
-          email: payload.fetch(:email),
-          phone: payload[:phone],
-          crm_number: payload[:crm_number],
-          crm_state: payload[:crm_state],
-          active: true,
-          metadata: normalize_hash_metadata(payload[:metadata]).merge(
-            PAYLOAD_HASH_METADATA_KEY => payload_hash,
-            "idempotency_key" => @idempotency_key
-          )
-        )
-
-        create_action_log!(
-          action_type: "PHYSICIAN_CREATED",
-          success: true,
-          target_id: physician.id,
-          metadata: {
-            replayed: false,
-            idempotency_key: @idempotency_key,
-            party_id: party.id,
-            document_number: payload.fetch(:document_number)
-          }
-        )
-
-        Result.new(physician: physician, party: party, replayed: false)
-      end
+      inputs = build_call_inputs(raw_payload)
+      ActiveRecord::Base.transaction { create_or_replay(inputs) }
     rescue ActiveRecord::RecordNotUnique
-      replay_after_race(payload: payload, payload_hash: payload_hash)
+      replay_after_race(payload: inputs&.payload || normalize_payload(raw_payload), payload_hash: inputs&.payload_hash.to_s)
     rescue ActiveRecord::RecordInvalid => error
       raise ValidationError.new(code: "invalid_physician_payload", message: error.record.errors.full_messages.to_sentence)
     end
 
     private
+
+    def build_call_inputs(raw_payload)
+      payload = normalize_payload(raw_payload)
+      payload_hash = physician_payload_hash(payload)
+      CallInputs.new(payload:, payload_hash:)
+    end
+
+    def create_or_replay(inputs)
+      existing_party = find_existing_party(inputs.payload)
+      return replay_existing_party(existing_party:, inputs:) if existing_party
+
+      create_new_physician(inputs)
+    end
+
+    def find_existing_party(payload)
+      existing_party = Party.where(
+        tenant_id: @tenant_id,
+        kind: "PHYSICIAN_PF",
+        document_number: payload.fetch(:document_number)
+      ).lock.first
+      return existing_party if existing_party
+      return nil if payload[:external_ref].blank?
+
+      Party.where(
+        tenant_id: @tenant_id,
+        kind: "PHYSICIAN_PF",
+        external_ref: payload[:external_ref]
+      ).lock.first
+    end
+
+    def replay_existing_party(existing_party:, inputs:)
+      physician = Physician.where(tenant_id: @tenant_id, party_id: existing_party.id).lock.first
+      if physician.blank?
+        raise_validation_error!("physician_profile_missing", "Physician profile is missing for existing party.")
+      end
+
+      ensure_matching_replay!(physician: physician, payload_hash: inputs.payload_hash, payload: inputs.payload)
+      create_action_log!(
+        action_type: "PHYSICIAN_CREATE_REPLAYED",
+        success: true,
+        target_id: physician.id,
+        metadata: { replayed: true, idempotency_key: @idempotency_key }
+      )
+      Result.new(physician: physician, party: existing_party, replayed: true)
+    end
+
+    def create_new_physician(inputs)
+      party = create_physician_party!(inputs)
+      physician = create_physician_profile!(inputs, party)
+      create_action_log!(
+        action_type: "PHYSICIAN_CREATED",
+        success: true,
+        target_id: physician.id,
+        metadata: {
+          replayed: false,
+          idempotency_key: @idempotency_key,
+          party_id: party.id,
+          document_number: inputs.payload.fetch(:document_number)
+        }
+      )
+
+      Result.new(physician: physician, party: party, replayed: false)
+    end
+
+    def create_physician_party!(inputs)
+      payload = inputs.payload
+      Party.create!(
+        tenant_id: @tenant_id,
+        kind: "PHYSICIAN_PF",
+        external_ref: payload[:external_ref],
+        legal_name: payload.fetch(:full_name),
+        display_name: payload[:display_name].presence || payload.fetch(:full_name),
+        document_type: "CPF",
+        document_number: payload.fetch(:document_number),
+        metadata: normalize_hash_metadata(payload[:party_metadata]).merge(
+          PAYLOAD_HASH_METADATA_KEY => inputs.payload_hash,
+          "idempotency_key" => @idempotency_key
+        )
+      )
+    end
+
+    def create_physician_profile!(inputs, party)
+      payload = inputs.payload
+      Physician.create!(
+        tenant_id: @tenant_id,
+        party: party,
+        full_name: payload.fetch(:full_name),
+        email: payload.fetch(:email),
+        phone: payload[:phone],
+        crm_number: payload[:crm_number],
+        crm_state: payload[:crm_state],
+        active: true,
+        metadata: normalize_hash_metadata(payload[:metadata]).merge(
+          PAYLOAD_HASH_METADATA_KEY => inputs.payload_hash,
+          "idempotency_key" => @idempotency_key
+        )
+      )
+    end
 
     def normalize_payload(raw_payload)
       payload = raw_payload.to_h.symbolize_keys

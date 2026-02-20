@@ -14,6 +14,17 @@ module Ledger
     end
 
     class AuditLogError < ValidationError; end
+    CallInputs = Struct.new(
+      :original_txn_id,
+      :compensation_txn_id,
+      :compensation_reference,
+      :posted_at,
+      :source_type,
+      :source_id,
+      :reason,
+      :metadata,
+      keyword_init: true
+    )
 
     def initialize(
       tenant_id:,
@@ -45,43 +56,84 @@ module Ledger
       reason:,
       metadata: {}
     )
-      validate_call_inputs!(reason:, compensation_reference:, source_type:, source_id:)
-      normalized_posted_at = normalize_posted_at(posted_at)
-      original_entries = load_original_entries!(original_txn_id)
-      compensation_metadata = build_compensation_metadata!(
-        metadata: metadata,
+      inputs = build_call_inputs(
         original_txn_id: original_txn_id,
         compensation_txn_id: compensation_txn_id,
         compensation_reference: compensation_reference,
-        reason: reason
-      )
-      entries = build_compensation_entries(original_entries: original_entries, compensation_metadata: compensation_metadata)
-      result = post_compensation_transaction(
-        compensation_txn_id: compensation_txn_id,
-        compensation_reference: compensation_reference,
-        posted_at: normalized_posted_at,
+        posted_at: posted_at,
         source_type: source_type,
         source_id: source_id,
-        original_entries: original_entries,
-        entries: entries
+        reason: reason,
+        metadata: metadata
       )
-      create_action_log!(
-        action_type: COMPENSATION_POSTED_ACTION,
-        success: true,
-        target_id: compensation_txn_id,
-        metadata: compensation_metadata
-      )
-      result
+
+      execute_compensation(inputs)
     rescue StandardError => error
       create_action_log_safely!(action_type: COMPENSATION_FAILED_ACTION, success: false, target_id: compensation_txn_id, metadata: failure_metadata(
-        original_txn_id: original_txn_id,
-        compensation_reference: compensation_reference,
+        original_txn_id: inputs&.original_txn_id || original_txn_id,
+        compensation_reference: inputs&.compensation_reference || compensation_reference,
         error: error
       ))
       raise
     end
 
     private
+
+    def build_call_inputs(
+      original_txn_id:,
+      compensation_txn_id:,
+      compensation_reference:,
+      posted_at:,
+      source_type:,
+      source_id:,
+      reason:,
+      metadata:
+    )
+      validate_call_inputs!(reason:, compensation_reference:, source_type:, source_id:)
+
+      CallInputs.new(
+        original_txn_id: original_txn_id,
+        compensation_txn_id: compensation_txn_id,
+        compensation_reference: compensation_reference,
+        posted_at: normalize_posted_at(posted_at),
+        source_type: source_type,
+        source_id: source_id,
+        reason: reason,
+        metadata: metadata
+      )
+    end
+
+    def execute_compensation(inputs)
+      original_entries = load_original_entries!(inputs.original_txn_id)
+      compensation_metadata = build_compensation_metadata!(
+        metadata: inputs.metadata,
+        original_txn_id: inputs.original_txn_id,
+        compensation_txn_id: inputs.compensation_txn_id,
+        compensation_reference: inputs.compensation_reference,
+        reason: inputs.reason
+      )
+      entries = build_compensation_entries(original_entries: original_entries, compensation_metadata: compensation_metadata)
+      result = post_compensation_transaction(
+        compensation_txn_id: inputs.compensation_txn_id,
+        compensation_reference: inputs.compensation_reference,
+        posted_at: inputs.posted_at,
+        source_type: inputs.source_type,
+        source_id: inputs.source_id,
+        original_entries: original_entries,
+        entries: entries
+      )
+      log_compensation_success!(compensation_txn_id: inputs.compensation_txn_id, compensation_metadata: compensation_metadata)
+      result
+    end
+
+    def log_compensation_success!(compensation_txn_id:, compensation_metadata:)
+      create_action_log!(
+        action_type: COMPENSATION_POSTED_ACTION,
+        success: true,
+        target_id: compensation_txn_id,
+        metadata: compensation_metadata
+      )
+    end
 
     def validate_call_inputs!(reason:, compensation_reference:, source_type:, source_id:)
       raise_validation_error!("reason_required", "reason is required.") if reason.to_s.strip.blank?

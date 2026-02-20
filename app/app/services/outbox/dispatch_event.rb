@@ -24,6 +24,7 @@ module Outbox
         skipped == true
       end
     end
+    DispatchContext = Struct.new(:outbox_event, :latest_attempt, :attempt_number, :occurred_at, keyword_init: true)
 
     DeliveryError = Class.new(StandardError) do
       attr_reader :code
@@ -41,24 +42,42 @@ module Outbox
     end
 
     def call(outbox_event_id:)
-      now = @clock.call
+      context = nil
 
       ActiveRecord::Base.transaction do
-        outbox_event = OutboxEvent.lock.find(outbox_event_id)
-        latest_attempt = latest_attempt_for(outbox_event)
-
-        return terminal_skip_result(latest_attempt) if terminal_state?(latest_attempt)
-        return retry_not_due_result(latest_attempt) if retry_not_due_yet?(latest_attempt, now)
+        context = build_dispatch_context(outbox_event_id: outbox_event_id, occurred_at: @clock.call)
+        skip_result = skip_result_for(context)
+        return skip_result if skip_result
 
         process_dispatch_attempt(
-          outbox_event: outbox_event,
-          attempt_number: next_attempt_number(latest_attempt),
-          occurred_at: now
+          outbox_event: context.outbox_event,
+          attempt_number: context.attempt_number,
+          occurred_at: context.occurred_at
         )
       end
     end
 
     private
+
+    def build_dispatch_context(outbox_event_id:, occurred_at:)
+      outbox_event = OutboxEvent.lock.find(outbox_event_id)
+      latest_attempt = latest_attempt_for(outbox_event)
+      attempt_number = next_attempt_number(latest_attempt)
+
+      DispatchContext.new(
+        outbox_event: outbox_event,
+        latest_attempt: latest_attempt,
+        attempt_number: attempt_number,
+        occurred_at: occurred_at
+      )
+    end
+
+    def skip_result_for(context)
+      return terminal_skip_result(context.latest_attempt) if terminal_state?(context.latest_attempt)
+      return retry_not_due_result(context.latest_attempt) if retry_not_due_yet?(context.latest_attempt, context.occurred_at)
+
+      nil
+    end
 
     def latest_attempt_for(outbox_event)
       OutboxDispatchAttempt

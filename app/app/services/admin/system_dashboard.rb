@@ -106,9 +106,24 @@ module Admin
     end
 
     def call
-      tenants = Tenant.order(:slug).to_a
-      tenant_rows = tenants.map { |tenant| build_tenant_row(tenant) }
+      tenants = load_tenants
+      tenant_rows = build_tenant_rows(tenants)
+      build_dashboard_payload(tenants: tenants, tenant_rows: tenant_rows)
+    end
 
+    private
+
+    attr_reader :actor_id, :role
+
+    def load_tenants
+      Tenant.order(:slug).to_a
+    end
+
+    def build_tenant_rows(tenants)
+      tenants.map { |tenant| build_tenant_row(tenant) }
+    end
+
+    def build_dashboard_payload(tenants:, tenant_rows:)
       {
         generated_at: Time.current,
         totals: build_totals(tenant_rows),
@@ -116,10 +131,6 @@ module Admin
         recent_reconciliation_exceptions: build_recent_reconciliation_exceptions(tenants: tenants)
       }
     end
-
-    private
-
-    attr_reader :actor_id, :role
 
     def build_tenant_row(tenant)
       with_tenant_database_context(tenant_id: tenant.id, actor_id: actor_id, role: role) do
