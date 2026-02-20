@@ -1,5 +1,9 @@
 module Ledger
   class PostCompensation
+    COMPENSATION_REQUESTED_ACTION = "LEDGER_COMPENSATION_REQUESTED".freeze
+    COMPENSATION_POSTED_ACTION = "LEDGER_COMPENSATION_POSTED".freeze
+    COMPENSATION_FAILED_ACTION = "LEDGER_COMPENSATION_FAILED".freeze
+
     class ValidationError < StandardError
       attr_reader :code
 
@@ -41,52 +45,104 @@ module Ledger
       reason:,
       metadata: {}
     )
+      validate_call_inputs!(reason:, compensation_reference:, source_type:, source_id:)
+      normalized_posted_at = normalize_posted_at(posted_at)
+      original_entries = load_original_entries!(original_txn_id)
+      compensation_metadata = build_compensation_metadata!(
+        metadata: metadata,
+        original_txn_id: original_txn_id,
+        compensation_txn_id: compensation_txn_id,
+        compensation_reference: compensation_reference,
+        reason: reason
+      )
+      entries = build_compensation_entries(original_entries: original_entries, compensation_metadata: compensation_metadata)
+      result = post_compensation_transaction(
+        compensation_txn_id: compensation_txn_id,
+        compensation_reference: compensation_reference,
+        posted_at: normalized_posted_at,
+        source_type: source_type,
+        source_id: source_id,
+        original_entries: original_entries,
+        entries: entries
+      )
+      create_action_log!(
+        action_type: COMPENSATION_POSTED_ACTION,
+        success: true,
+        target_id: compensation_txn_id,
+        metadata: compensation_metadata
+      )
+      result
+    rescue StandardError => error
+      create_action_log_safely!(action_type: COMPENSATION_FAILED_ACTION, success: false, target_id: compensation_txn_id, metadata: failure_metadata(
+        original_txn_id: original_txn_id,
+        compensation_reference: compensation_reference,
+        error: error
+      ))
+      raise
+    end
+
+    private
+
+    def validate_call_inputs!(reason:, compensation_reference:, source_type:, source_id:)
       raise_validation_error!("reason_required", "reason is required.") if reason.to_s.strip.blank?
       raise_validation_error!("compensation_reference_required", "compensation_reference is required.") if compensation_reference.to_s.strip.blank?
       validate_compensation_source!(source_type:, source_id:)
-      posted_at = normalize_posted_at(posted_at)
+    end
 
-      original_entries = LedgerEntry
+    def load_original_entries!(original_txn_id)
+      entries = LedgerEntry
         .where(tenant_id: @tenant_id, txn_id: original_txn_id)
         .order(:entry_position, :created_at)
         .to_a
+      raise_validation_error!("original_transaction_not_found", "original transaction was not found.") if entries.empty?
 
-      if original_entries.empty?
-        raise_validation_error!("original_transaction_not_found", "original transaction was not found.")
-      end
+      entries
+    end
 
-      base_metadata = normalize_metadata(metadata).merge(
+    def build_compensation_metadata!(metadata:, original_txn_id:, compensation_txn_id:, compensation_reference:, reason:)
+      base_metadata = base_compensation_metadata(
+        metadata: metadata,
+        original_txn_id: original_txn_id,
+        compensation_reference: compensation_reference,
+        reason: reason
+      )
+      audit_log = create_action_log!(
+        action_type: COMPENSATION_REQUESTED_ACTION,
+        success: true,
+        target_id: compensation_txn_id,
+        metadata: base_metadata
+      )
+      metadata_with_audit = base_metadata.deep_dup
+      metadata_with_audit["compensation"]["audit_action_log_id"] = audit_log.id
+      metadata_with_audit
+    end
+
+    def base_compensation_metadata(metadata:, original_txn_id:, compensation_reference:, reason:)
+      normalize_metadata(metadata).merge(
         "compensation" => {
           "original_txn_id" => original_txn_id.to_s,
           "reason" => reason.to_s,
           "compensation_reference" => compensation_reference.to_s
         }
       )
-      audit_log = create_action_log!(
-        action_type: "LEDGER_COMPENSATION_REQUESTED",
-        success: true,
-        target_id: compensation_txn_id,
-        metadata: base_metadata
-      )
-      compensation_metadata = base_metadata.deep_dup
-      compensation_metadata["compensation"]["audit_action_log_id"] = audit_log.id
+    end
 
-      entries = original_entries.map do |entry|
-        {
-          account_code: entry.account_code,
-          entry_side: opposite_side(entry.entry_side),
-          amount: entry.amount.to_d,
-          party_id: entry.party_id,
-          metadata: compensation_metadata.merge("original_entry_id" => entry.id)
-        }
-      end
+    def build_compensation_entries(original_entries:, compensation_metadata:)
+      original_entries.map { |entry| compensation_entry(original_entry: entry, compensation_metadata: compensation_metadata) }
+    end
 
-      result = PostTransaction.new(
-        tenant_id: @tenant_id,
-        request_id: @request_id,
-        actor_party_id: @actor_party_id,
-        actor_role: @channel
-      ).call(
+    def compensation_entry(original_entry:, compensation_metadata:)
+      {
+        account_code: original_entry.account_code,
+        entry_side: opposite_side(original_entry.entry_side),
+        amount: original_entry.amount.to_d,
+        party_id: original_entry.party_id,
+        metadata: compensation_metadata.merge("original_entry_id" => original_entry.id)
+      }
+    end
+
+    def post_compensation_transaction(compensation_txn_id:, compensation_reference:, posted_at:, source_type:, source_id:, original_entries:, entries:)
+      post_transaction_service.call(
         txn_id: compensation_txn_id,
         receivable_id: original_entries.first.receivable_id,
         payment_reference: compensation_payment_reference(compensation_reference),
@@ -95,32 +151,16 @@ module Ledger
         source_id: source_id,
         entries: entries
       )
-      create_action_log!(
-        action_type: "LEDGER_COMPENSATION_POSTED",
-        success: true,
-        target_id: compensation_txn_id,
-        metadata: compensation_metadata
-      )
-
-      result
-    rescue StandardError => error
-      create_action_log_safely!(
-        action_type: "LEDGER_COMPENSATION_FAILED",
-        success: false,
-        target_id: compensation_txn_id,
-        metadata: {
-          compensation: {
-            original_txn_id: original_txn_id.to_s,
-            compensation_reference: compensation_reference.to_s
-          },
-          error_class: error.class.name,
-          error_message: error.message
-        }
-      )
-      raise
     end
 
-    private
+    def post_transaction_service
+      @post_transaction_service ||= PostTransaction.new(
+        tenant_id: @tenant_id,
+        request_id: @request_id,
+        actor_party_id: @actor_party_id,
+        actor_role: @channel
+      )
+    end
 
     def compensation_payment_reference(compensation_reference)
       "COMPENSATION:#{compensation_reference}"
@@ -154,8 +194,34 @@ module Ledger
       raise_validation_error!("invalid_metadata", "metadata must be an object.")
     end
 
+    def failure_metadata(original_txn_id:, compensation_reference:, error:)
+      {
+        compensation: {
+          original_txn_id: original_txn_id.to_s,
+          compensation_reference: compensation_reference.to_s
+        },
+        error_class: error.class.name,
+        error_message: error.message
+      }
+    end
+
     def create_action_log!(action_type:, success:, target_id:, metadata:)
       ActionIpLog.create!(
+        action_log_attributes(
+          action_type: action_type,
+          success: success,
+          target_id: target_id,
+          metadata: metadata
+        )
+      )
+    rescue ActiveRecord::RecordInvalid => error
+      raise_audit_log_error!(action_type: action_type, message: error.record.errors.full_messages.join(", "))
+    rescue ActiveRecord::ActiveRecordError => error
+      raise_audit_log_error!(action_type: action_type, message: error.message)
+    end
+
+    def action_log_attributes(action_type:, success:, target_id:, metadata:)
+      {
         tenant_id: @tenant_id,
         actor_party_id: @actor_party_id,
         action_type: action_type,
@@ -170,16 +236,13 @@ module Ledger
         success: success,
         occurred_at: Time.current,
         metadata: metadata
-      )
-    rescue ActiveRecord::RecordInvalid => error
+      }
+    end
+
+    def raise_audit_log_error!(action_type:, message:)
       raise AuditLogError.new(
         code: "audit_log_write_failed",
-        message: "failed to create action log #{action_type}: #{error.record.errors.full_messages.join(', ')}"
-      )
-    rescue ActiveRecord::ActiveRecordError => error
-      raise AuditLogError.new(
-        code: "audit_log_write_failed",
-        message: "failed to create action log #{action_type}: #{error.message}"
+        message: "failed to create action log #{action_type}: #{message}"
       )
     end
 
@@ -193,9 +256,13 @@ module Ledger
     rescue StandardError => error
       return unless defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
 
+      log_action_log_failure(action_type: action_type, target_id: target_id, error: error)
+    end
+
+    def log_action_log_failure(action_type:, target_id:, error:)
       Rails.logger.error(
         "ledger_compensation_action_log_failure action=#{action_type} tenant_id=#{@tenant_id} " \
-        "target_id=#{target_id} error_class=#{error.class.name} error_message=#{error.message}"
+          "target_id=#{target_id} error_class=#{error.class.name} error_message=#{error.message}"
       )
     end
 
