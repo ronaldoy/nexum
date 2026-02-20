@@ -1,0 +1,9 @@
+# SMTP Probe Definitions
+# Add your SMTP health check probes here
+#
+# Required fields:
+#   - name: Unique identifier for the probe
+#   - host: SMTP server hostname
+
+# - name: Example Mail Server
+#   host: mail.example.com

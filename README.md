@@ -21,6 +21,7 @@ The system supports:
 ## Core architecture
 
 - Backend: Rails 8.1 monolith (`app/`), pinned to stable patch release.
+- Backend: Rails 8.2 edge monolith (`app/`), pinned to immutable SHA pre-stable.
 - DB: PostgreSQL with enforced RLS + `FORCE ROW LEVEL SECURITY`.
 - Money/rate precision:
   - Ruby: `BigDecimal`
@@ -158,6 +159,7 @@ For account opening, provide provider-specific payload in party metadata:
 - Generated DB model docs: `docs/database_model.md`
 - Planned migration strategy for `users.id` UUID transition: `docs/user_id_uuid_migration_plan.md`
 - Changelog and release notes source: `CHANGELOG.md`
+- Upright monitor guide: `monitoring/upright/README.md`
 
 Regenerate API and DB docs:
 
@@ -184,6 +186,26 @@ rv ruby run -- -S bin/rails server
 - Release workflow (tag-driven): `.github/workflows/release.yml`
 - Dependabot: `.github/dependabot.yml`
 - Kamal scaffold: `app/config/deploy.yml`
+- Upright monitor deploy scaffold: `monitoring/upright/config/deploy.yml`
+
+## Monitoring (37signals Upright)
+
+- Dedicated monitor service: `monitoring/upright`
+- Tooling: Upright + Prometheus + Alertmanager + OpenTelemetry collector (via Kamal accessories)
+- Nexum probe definitions: `monitoring/upright/probes/http_probes.yml.erb`
+- Probe scheduling: `monitoring/upright/config/recurring.yml`
+- Site topology: `monitoring/upright/config/sites.yml`
+
+Quick start:
+
+```bash
+cd monitoring/upright
+cp .env.example .env
+rv clean-install
+docker compose up -d
+rv ruby run -- -S bin/rails db:prepare
+ADMIN_PASSWORD=dev-upright UPRIGHT_HOSTNAME=upright.localhost NEXUM_APP_BASE_URL=http://localhost:3000 rv ruby run -- -S bin/dev
+```
 
 Release policy:
 - open a changelog entry under `## [Unreleased]`

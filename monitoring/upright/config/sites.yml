@@ -1,0 +1,26 @@
+# Upright Site Configuration
+# Define the geographic locations where probes run
+# Domain is automatically inferred as {code}.{hostname}
+
+shared:
+  sites:
+    - code: gru
+      city: Sao Paulo
+      country: BR
+      geohash: 6gyf4bf
+
+# Multi-site example:
+#
+# shared:
+#   sites:
+#     - code: ams
+#       city: Amsterdam
+#       country: NL
+#       geohash: u17982
+#       provider: digitalocean
+#
+#     - code: nyc
+#       city: New York City
+#       country: US
+#       geohash: dr5reg
+#       provider: digitalocean

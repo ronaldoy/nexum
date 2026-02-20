@@ -1,0 +1,9 @@
+# Traceroute Probe Definitions
+# Add your traceroute probes here
+#
+# Required fields:
+#   - name: Unique identifier for the probe
+#   - host: Hostname or IP address to trace
+
+# - name: Example Service
+#   host: example.com

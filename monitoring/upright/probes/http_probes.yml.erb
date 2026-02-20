@@ -1,0 +1,27 @@
+# HTTP Probe Definitions
+# Add your HTTP health check probes here
+#
+# Required fields:
+#   - name: Unique identifier for the probe
+#   - url: The URL to check
+#
+# Optional fields:
+#   - expected_status: HTTP status code to expect (default: 200-399)
+#   - basic_auth_credentials: Key in Rails credentials for basic auth
+#   - proxy: Key in Rails credentials for proxy settings
+
+<%
+  nexum_base_url = ENV.fetch("NEXUM_APP_BASE_URL", "https://app.nexum.capital").chomp("/")
+%>
+
+- name: Nexum Up
+  url: <%= "#{nexum_base_url}/up" %>
+  expected_status: 200
+
+- name: Nexum Ready
+  url: <%= "#{nexum_base_url}/ready" %>
+  expected_status: 200
+
+- name: Nexum Session New
+  url: <%= "#{nexum_base_url}/session/new" %>
+  expected_status: 200

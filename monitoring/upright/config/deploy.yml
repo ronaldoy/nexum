@@ -1,0 +1,128 @@
+# Upright Kamal Configuration
+# Deploy with: bin/kamal deploy
+
+service: nexum-upright
+image: ghcr.io/nexum-capital/nexum-upright
+
+servers:
+  web:
+    hosts:
+      - <%= ENV.fetch("UPRIGHT_WEB_HOST") %>: [saopaulo]
+      # Add more sites:
+      # - nyc.upright.example.com: [new_york]
+      # - sfo.upright.example.com: [san_francisco]
+  jobs:
+    hosts:
+      - <%= ENV.fetch("UPRIGHT_JOB_HOST", ENV.fetch("UPRIGHT_WEB_HOST")) %>: [saopaulo]
+      # Add more sites:
+      # - nyc.upright.example.com: [new_york]
+      # - sfo.upright.example.com: [san_francisco]
+    cmd: bundle exec bin/jobs
+
+ssh:
+  user: <%= ENV.fetch("KAMAL_SSH_USER", "app") %>
+
+registry:
+  server: ghcr.io
+  username: <%= ENV.fetch("KAMAL_REGISTRY_USERNAME") %>
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+builder:
+  arch: amd64
+
+proxy:
+  app_port: 3000
+  ssl: true
+  hosts:
+    - <%= "*.#{ENV.fetch("UPRIGHT_HOSTNAME")}" %>
+  healthcheck:
+    path: /up
+    interval: 10
+    timeout: 5
+
+env:
+  clear:
+    RAILS_ENV: production
+    TZ: America/Sao_Paulo
+    RAILS_LOG_TO_STDOUT: "1"
+    RAILS_SERVE_STATIC_FILES: "1"
+    UPRIGHT_HOSTNAME: <%= ENV.fetch("UPRIGHT_HOSTNAME") %>
+    NEXUM_APP_BASE_URL: <%= ENV.fetch("NEXUM_APP_BASE_URL", "https://app.nexum.capital") %>
+    PLAYWRIGHT_SERVER_URL: ws://nexum-upright-playwright:53333/playwright
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://nexum-upright-otel_collector:4318/v1/traces
+    PROMETHEUS_URL: http://nexum-upright-prometheus:9090
+    ALERTMANAGER_URL: http://nexum-upright-alertmanager:9093
+  secret:
+    - RAILS_MASTER_KEY
+    - ADMIN_PASSWORD
+    - UPRIGHT_POSTGRES_HOST
+    - UPRIGHT_POSTGRES_PORT
+    - UPRIGHT_POSTGRES_DB
+    - UPRIGHT_POSTGRES_CACHE_DB
+    - UPRIGHT_POSTGRES_QUEUE_DB
+    - UPRIGHT_POSTGRES_CABLE_DB
+    - UPRIGHT_POSTGRES_USER
+    - UPRIGHT_POSTGRES_PASSWORD
+  tags:
+    saopaulo:
+      SITE_SUBDOMAIN: gru
+    # Add more sites:
+    # new_york:
+    #   SITE_SUBDOMAIN: nyc
+    # san_francisco:
+    #   SITE_SUBDOMAIN: sfo
+
+volumes:
+  - "nexum_upright_storage:/rails/storage"
+
+accessories:
+  otel_collector:
+    image: otel/opentelemetry-collector-contrib:0.126.0
+    files:
+      - config/otel_collector.yml:/etc/otelcol-contrib/config.yaml
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/docker/containers:/var/lib/docker/containers
+    options:
+      user: 0
+    roles:
+      - jobs
+
+  playwright:
+    image: jacoblincool/playwright:chromium-server-1.55.0
+    port: "127.0.0.1:53333:53333"
+    roles:
+      - jobs
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    hosts:
+      - <%= ENV.fetch("UPRIGHT_WEB_HOST") %>
+    cmd: >-
+      --config.file=/etc/prometheus/prometheus.yml
+      --storage.tsdb.path=/prometheus
+      --storage.tsdb.retention.time=30d
+      --web.enable-otlp-receiver
+      --web.enable-lifecycle
+    files:
+      - config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - config/prometheus/rules/upright.rules.yml:/etc/prometheus/rules/upright.rules.yml
+    volumes:
+      - prometheus_data:/prometheus
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    hosts:
+      - <%= ENV.fetch("UPRIGHT_WEB_HOST") %>
+    cmd: --config.file=/etc/alertmanager/alertmanager.yml
+    files:
+      - config/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    volumes:
+      - alertmanager_data:/alertmanager
+
+aliases:
+  console: app exec -i "bin/rails console"
+  logs: app logs -f
+
+retain_containers: 3
