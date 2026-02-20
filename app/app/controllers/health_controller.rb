@@ -1,31 +1,37 @@
 class HealthController < ActionController::API
   def health
-    render json: {
-      status: "ok",
-      checks: {},
-      timestamp: Time.current.iso8601
-    }
+    render_health_response
   end
 
   def ready
     checks = database_checks
-
-    if checks.values.all? { |status| status == "ok" }
-      render json: {
-        status: "ok",
-        checks: checks,
-        timestamp: Time.current.iso8601
-      }
-    else
-      render json: {
-        status: "error",
-        checks: checks,
-        timestamp: Time.current.iso8601
-      }, status: :service_unavailable
-    end
+    render_readiness_response(checks)
   end
 
   private
+
+  def render_health_response
+    render json: health_payload(checks: {})
+  end
+
+  def render_readiness_response(checks)
+    overall_status = readiness_status(checks)
+    render_status = overall_status == "ok" ? :ok : :service_unavailable
+
+    render json: health_payload(checks: checks, status: overall_status), status: render_status
+  end
+
+  def readiness_status(checks)
+    checks.values.all? { |status| status == "ok" } ? "ok" : "error"
+  end
+
+  def health_payload(checks:, status: "ok")
+    {
+      status: status,
+      checks: checks,
+      timestamp: Time.current.iso8601
+    }
+  end
 
   def database_checks
     postgres_configs.each_with_object({}) do |db_config, output|
