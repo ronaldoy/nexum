@@ -9,102 +9,132 @@ module Api
 
       include ReceivableProvenancePayload
 
+      CREATE_PERMITTED_FIELDS = [
+        :receivable_id,
+        :receivable_allocation_id,
+        :requester_party_id,
+        :requested_amount,
+        :discount_rate,
+        :channel,
+        { metadata: {} }
+      ].freeze
+
+      CONFIRMATION_PERMITTED_FIELDS = %i[email_code whatsapp_code].freeze
+      CHALLENGE_ISSUE_PERMITTED_FIELDS = %i[email_destination whatsapp_destination].freeze
+
       def create
-        authorize_party_access!(create_params[:requester_party_id]) if create_params[:requester_party_id].present?
-        return unless enforce_string_payload_type!(create_params, :requested_amount)
-        return unless enforce_string_payload_type!(create_params, :discount_rate)
+        payload = create_params
+        authorize_requester_party_access!(payload)
+        return unless create_payload_types_valid?(payload)
 
-        result = anticipation_creation_service.call(
-          create_params.to_h,
-          default_requester_party_id: current_actor_party_id
-        )
-
-        render json: {
-          data: anticipation_payload(result.anticipation_request, replayed: result.replayed?)
-        }, status: (result.replayed? ? :ok : :created)
-      rescue AnticipationRequests::Create::IdempotencyConflict => error
+        result = anticipation_creation_result(payload)
+        render_create_response(result)
+      rescue ::AnticipationRequests::Create::IdempotencyConflict => error
         render_api_error(code: error.code, message: error.message, status: :conflict)
-      rescue AnticipationRequests::Create::ValidationError => error
+      rescue ::AnticipationRequests::Create::ValidationError => error
         render_api_error(code: error.code, message: error.message, status: :unprocessable_entity)
       end
 
       def issue_challenges
-        anticipation_request = tenant_anticipation_requests.find(params[:id])
-        authorize_party_access!(anticipation_request.requester_party_id)
+        anticipation_request = load_anticipation_request_with_access!(params[:id])
+        result = issue_challenges_result(anticipation_request)
 
-        result = challenge_issue_service.call(
-          anticipation_request_id: anticipation_request.id,
-          email_destination: challenge_issue_params[:email_destination],
-          whatsapp_destination: challenge_issue_params[:whatsapp_destination]
-        )
-
-        render json: {
-          data: {
-            anticipation_request_id: result.anticipation_request.id,
-            replayed: result.replayed?,
-            challenges: result.challenges.map do |challenge|
-              {
-                id: challenge.id,
-                delivery_channel: challenge.delivery_channel,
-                destination_masked: challenge.destination_masked,
-                status: challenge.status,
-                expires_at: challenge.expires_at&.iso8601
-              }
-            end
-          }
-        }, status: (result.replayed? ? :ok : :created)
-      rescue AnticipationRequests::IssueChallenges::IdempotencyConflict => error
+        render_issue_challenges_response(result)
+      rescue ::AnticipationRequests::IssueChallenges::IdempotencyConflict => error
         render_api_error(code: error.code, message: error.message, status: :conflict)
-      rescue AnticipationRequests::IssueChallenges::ValidationError => error
+      rescue ::AnticipationRequests::IssueChallenges::ValidationError => error
         render_api_error(code: error.code, message: error.message, status: :unprocessable_entity)
       end
 
       def confirm
-        anticipation_request = tenant_anticipation_requests.find(params[:id])
-        authorize_party_access!(anticipation_request.requester_party_id)
+        anticipation_request = load_anticipation_request_with_access!(params[:id])
+        result = anticipation_confirmation_result(anticipation_request)
 
-        result = anticipation_confirmation_service.call(
-          anticipation_request_id: anticipation_request.id,
-          email_code: confirmation_params[:email_code],
-          whatsapp_code: confirmation_params[:whatsapp_code]
-        )
-
-        render json: {
-          data: anticipation_payload(result.anticipation_request, replayed: result.replayed?)
-        }, status: :ok
-      rescue AnticipationRequests::Confirm::IdempotencyConflict => error
+        render_confirm_response(result)
+      rescue ::AnticipationRequests::Confirm::IdempotencyConflict => error
         render_api_error(code: error.code, message: error.message, status: :conflict)
-      rescue AnticipationRequests::Confirm::ValidationError => error
+      rescue ::AnticipationRequests::Confirm::ValidationError => error
         render_api_error(code: error.code, message: error.message, status: :unprocessable_entity)
       end
 
       private
 
+      def authorize_requester_party_access!(payload)
+        requester_party_id = payload[:requester_party_id]
+        authorize_party_access!(requester_party_id) if requester_party_id.present?
+      end
+
+      def create_payload_types_valid?(payload)
+        return false unless enforce_string_payload_type!(payload, :requested_amount)
+        return false unless enforce_string_payload_type!(payload, :discount_rate)
+
+        true
+      end
+
+      def anticipation_creation_result(payload)
+        anticipation_creation_service.call(
+          payload.to_h,
+          default_requester_party_id: current_actor_party_id
+        )
+      end
+
+      def render_create_response(result)
+        render json: {
+          data: payload_presenter.anticipation_request(result.anticipation_request, replayed: result.replayed?)
+        }, status: (result.replayed? ? :ok : :created)
+      end
+
+      def load_anticipation_request_with_access!(anticipation_request_id)
+        anticipation_request = tenant_anticipation_requests.find(anticipation_request_id)
+        authorize_party_access!(anticipation_request.requester_party_id)
+        anticipation_request
+      end
+
+      def issue_challenges_result(anticipation_request)
+        payload = challenge_issue_params
+        challenge_issue_service.call(
+          anticipation_request_id: anticipation_request.id,
+          email_destination: payload[:email_destination],
+          whatsapp_destination: payload[:whatsapp_destination]
+        )
+      end
+
+      def render_issue_challenges_response(result)
+        render json: { data: payload_presenter.challenge_issue(result) }, status: (result.replayed? ? :ok : :created)
+      end
+
+      def anticipation_confirmation_result(anticipation_request)
+        payload = confirmation_params
+        anticipation_confirmation_service.call(
+          anticipation_request_id: anticipation_request.id,
+          email_code: payload[:email_code],
+          whatsapp_code: payload[:whatsapp_code]
+        )
+      end
+
+      def render_confirm_response(result)
+        render json: {
+          data: payload_presenter.anticipation_request(result.anticipation_request, replayed: result.replayed?)
+        }, status: :ok
+      end
+
       def create_params
         payload = params[:anticipation_request].presence || params
-        payload.permit(
-          :receivable_id,
-          :receivable_allocation_id,
-          :requester_party_id,
-          :requested_amount,
-          :discount_rate,
-          :channel,
-          metadata: {}
-        )
+        payload.permit(*CREATE_PERMITTED_FIELDS)
       end
 
       def confirmation_params
         payload = params[:confirmation].presence || params
-        payload.permit(:email_code, :whatsapp_code)
+        payload.permit(*CONFIRMATION_PERMITTED_FIELDS)
       end
 
       def challenge_issue_params
         payload = params[:challenge_issue].presence || params
-        payload.permit(:email_destination, :whatsapp_destination)
+        payload.permit(*CHALLENGE_ISSUE_PERMITTED_FIELDS)
       end
 
-      def anticipation_creation_service
-        AnticipationRequests::Create.new(
+      def request_context_attributes
+        {
           tenant_id: Current.tenant_id,
           actor_role: Current.role,
           request_id: Current.request_id,
@@ -113,68 +143,35 @@ module Api
           user_agent: request.user_agent,
           endpoint_path: request.fullpath,
           http_method: request.method
+        }
+      end
+
+      def anticipation_creation_service
+        ::AnticipationRequests::Create.new(
+          **request_context_attributes
         )
       end
 
       def challenge_issue_service
-        AnticipationRequests::IssueChallenges.new(
-          tenant_id: Current.tenant_id,
-          actor_role: Current.role,
-          request_id: Current.request_id,
-          idempotency_key: Current.idempotency_key,
-          request_ip: request.remote_ip,
-          user_agent: request.user_agent,
-          endpoint_path: request.fullpath,
-          http_method: request.method
+        ::AnticipationRequests::IssueChallenges.new(
+          **request_context_attributes
         )
       end
 
       def anticipation_confirmation_service
-        AnticipationRequests::Confirm.new(
-          tenant_id: Current.tenant_id,
-          actor_role: Current.role,
-          request_id: Current.request_id,
-          idempotency_key: Current.idempotency_key,
-          request_ip: request.remote_ip,
-          user_agent: request.user_agent,
-          endpoint_path: request.fullpath,
-          http_method: request.method
+        ::AnticipationRequests::Confirm.new(
+          **request_context_attributes
         )
-      end
-
-      def anticipation_payload(record, replayed:)
-        {
-          id: record.id,
-          tenant_id: record.tenant_id,
-          receivable_id: record.receivable_id,
-          receivable_allocation_id: record.receivable_allocation_id,
-          requester_party_id: record.requester_party_id,
-          status: record.status,
-          channel: record.channel,
-          idempotency_key: record.idempotency_key,
-          requested_amount: decimal_money_as_string(record.requested_amount),
-          discount_rate: decimal_as_string(record.discount_rate),
-          discount_amount: decimal_money_as_string(record.discount_amount),
-          net_amount: decimal_money_as_string(record.net_amount),
-          settlement_target_date: record.settlement_target_date&.iso8601,
-          requested_at: record.requested_at&.iso8601,
-          confirmed_at: record.metadata&.dig("confirmed_at"),
-          confirmation_channels: Array(record.metadata&.dig("confirmation_channels")),
-          receivable_provenance: receivable_provenance_payload(record.receivable),
-          replayed: replayed
-        }
-      end
-
-      def decimal_money_as_string(value)
-        format("%.2f", value.to_d)
-      end
-
-      def decimal_as_string(value)
-        value.to_d.to_s("F")
       end
 
       def tenant_anticipation_requests
         AnticipationRequest.where(tenant_id: Current.tenant_id)
+      end
+
+      def payload_presenter
+        @payload_presenter ||= AnticipationRequestPayloadPresenter.new(
+          provenance_resolver: method(:receivable_provenance_payload)
+        )
       end
 
       def enforce_string_payload_type!(payload, key)
