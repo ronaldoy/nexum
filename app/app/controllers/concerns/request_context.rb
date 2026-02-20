@@ -32,7 +32,7 @@ module RequestContext
   end
 
   def resolved_actor_id
-    Current.user&.party_id || Current.user&.id
+    Current.user&.party_id || Current.user&.uuid_id || Current.user&.id
   end
 
   def resolved_role

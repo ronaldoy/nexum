@@ -202,13 +202,15 @@ module Admin
     end
 
     def serialize_token(token)
+      effective_user = token.effective_user
       {
         id: token.id,
         tenant_id: token.tenant_id,
         name: token.name,
         scopes: Array(token.scopes),
         user_id: token.user_id,
-        user_email: token.user&.email_address,
+        user_uuid_id: token.user_uuid_id,
+        user_email: effective_user&.email_address,
         created_at: token.created_at,
         expires_at: token.expires_at,
         revoked_at: token.revoked_at,

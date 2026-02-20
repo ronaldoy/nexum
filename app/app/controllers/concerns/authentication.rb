@@ -2,6 +2,7 @@ module Authentication
   extend ActiveSupport::Concern
 
   SESSION_TENANT_COOKIE_KEY = :session_tenant_id
+  SESSION_USER_UUID_COOKIE_KEY = :session_user_uuid_id
 
   included do
     before_action :require_authentication
@@ -25,23 +26,31 @@ module Authentication
 
     def resume_session
       Current.session ||= find_session_by_cookie
-      Current.user ||= Current.session&.user
+      Current.user ||= Current.session&.effective_user
     end
 
     def find_session_by_cookie
       session_id = cookies.encrypted[:session_id]
       tenant_id = cookies.encrypted[SESSION_TENANT_COOKIE_KEY]
+      user_uuid_id = cookies.encrypted[SESSION_USER_UUID_COOKIE_KEY]
       return unless session_id && tenant_id
 
       bootstrap_database_tenant_context!(tenant_id)
 
-      session = Session.find_by(id: session_id, tenant_id: tenant_id)
+      session = Session.includes(:user_by_uuid, :user).find_by(id: session_id, tenant_id: tenant_id)
       unless session
         clear_bootstrap_database_tenant_context!
         return nil
       end
 
-      unless session.user&.tenant_id.to_s == tenant_id.to_s
+      user = session.effective_user
+      unless user&.tenant_id.to_s == tenant_id.to_s
+        terminate_persisted_session(session)
+        clear_bootstrap_database_tenant_context!
+        return nil
+      end
+
+      if user_uuid_id.present? && user.uuid_id.to_s != user_uuid_id.to_s
         terminate_persisted_session(session)
         clear_bootstrap_database_tenant_context!
         return nil
@@ -83,6 +92,10 @@ module Authentication
           value: session.tenant_id,
           **session_cookie_options
         }
+        cookies.encrypted[SESSION_USER_UUID_COOKIE_KEY] = {
+          value: user.uuid_id,
+          **session_cookie_options
+        }
       end
     end
 
@@ -102,6 +115,7 @@ module Authentication
     def clear_session_cookies
       cookies.delete(:session_id)
       cookies.delete(SESSION_TENANT_COOKIE_KEY)
+      cookies.delete(SESSION_USER_UUID_COOKIE_KEY)
     end
 
     def session_cookie_options

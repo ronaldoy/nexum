@@ -23,11 +23,12 @@ module ApplicationCable
       end
 
       def set_current_identity!(session)
+        user = session.effective_user
         self.current_session = session
-        self.current_user = session.user
+        self.current_user = user
         self.current_tenant_id = session.tenant_id.to_s
-        self.current_actor_id = session.user&.party_id || session.user&.id
-        self.current_role = session.user&.role.to_s
+        self.current_actor_id = user&.party_id || user&.uuid_id || user&.id
+        self.current_role = user&.role.to_s
       end
 
       def with_database_request_context
@@ -65,14 +66,15 @@ module ApplicationCable
         return nil if session_id.blank? || tenant_id.blank?
 
         with_database_tenant_context(tenant_id) do
-          Session.find_by(id: session_id, tenant_id: tenant_id)
+          Session.includes(:user_by_uuid, :user).find_by(id: session_id, tenant_id: tenant_id)
         end
       end
 
       def valid_session?(session)
         return false if session.blank?
-        return false if session.user.blank?
-        return false if session.user.tenant_id.to_s != session.tenant_id.to_s
+        user = session.effective_user
+        return false if user.blank?
+        return false if user.tenant_id.to_s != session.tenant_id.to_s
 
         if session.expired?
           session.destroy

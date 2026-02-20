@@ -41,7 +41,7 @@ module Api
     end
 
     def resolved_actor_id
-      Current.user&.party_id || Current.user&.id || Current.api_access_token&.id
+      Current.user&.party_id || Current.user&.uuid_id || Current.user&.id || Current.api_access_token&.id
     end
 
     def resolved_role

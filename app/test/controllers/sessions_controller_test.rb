@@ -16,6 +16,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to root_path
     assert cookies[:session_id]
     assert cookies[:session_tenant_id]
+    assert cookies[:session_user_uuid_id]
 
     with_tenant_db_context(tenant_id: @user.tenant_id, actor_id: @user.id, role: @user.role) do
       assert_equal 1, ActionIpLog.where(
@@ -126,6 +127,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to root_path
     assert cookies[:session_id]
+    assert cookies[:session_user_uuid_id]
   end
 
   test "create rejects cross-site request when forgery protection is enabled" do
@@ -148,6 +150,37 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to new_session_path
     assert_equal "", cookies[:session_id]
+  end
+
+  test "resumes session using uuid-first user resolution when bigint user_id drifts" do
+    sign_in_as(@user)
+
+    drift_user = nil
+    with_tenant_db_context(tenant_id: @user.tenant_id, actor_id: @user.id, role: @user.role) do
+      drift_party = Party.create!(
+        tenant: @user.tenant,
+        kind: "SUPPLIER",
+        legal_name: "Drift User Party",
+        document_number: valid_cnpj_from_seed("session-drift-party")
+      )
+      drift_user = User.create!(
+        tenant: @user.tenant,
+        party: drift_party,
+        role: "supplier_user",
+        email_address: "drift-user@example.com",
+        password: "password",
+        password_confirmation: "password"
+      )
+
+      session_record = Session.find(Current.session.id)
+      session_record.update_columns(user_id: drift_user.id, user_uuid_id: @user.uuid_id)
+    end
+
+    get root_path
+
+    assert_response :success
+    assert_includes response.body, @user.email_address
+    refute_includes response.body, drift_user.email_address
   end
 
   private

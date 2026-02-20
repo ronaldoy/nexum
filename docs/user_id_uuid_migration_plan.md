@@ -8,8 +8,9 @@ Goal: migrate `users.id` from `bigint` to `uuid` safely, with zero data loss and
   - Phase 1 (`users.uuid_id`) via `app/db/migrate/20260219213000_add_uuid_references_for_users.rb`
   - Phase 2 (shadow UUID references on dependents)
   - Phase 3 baseline dual-write in model layer
+  - Phase 4 baseline UUID-first reads on critical auth paths (web session auth, API token auth, websocket/session identity)
 - Still pending:
-  - Phase 4+ (UUID-first reads, PK promotion, bigint cleanup)
+  - Phase 5+ (PK promotion and bigint cleanup)
 
 ## Scope
 

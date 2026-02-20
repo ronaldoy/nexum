@@ -106,6 +106,10 @@ class ApiAccessToken < ApplicationRecord
     end
   end
 
+  def effective_user
+    user_by_uuid || user
+  end
+
   def audit_issue!(audit_context: {})
     log_token_lifecycle_action!(
       action_type: TOKEN_ISSUED_ACTION,
@@ -126,16 +130,16 @@ class ApiAccessToken < ApplicationRecord
 
   def sync_user_uuid_reference
     if user.present?
-      self.user_uuid_id ||= user.uuid_id
+      self.user_uuid_id = user.uuid_id
       return
     end
 
-    if user_uuid_id.present? && user_id.blank?
+    if user_uuid_id.present?
       self.user = User.find_by(uuid_id: user_uuid_id)
       return
     end
 
-    if user_id.present? && user_uuid_id.blank?
+    if user_id.present?
       self.user_uuid_id = User.where(id: user_id).pick(:uuid_id)
     end
   end
@@ -174,9 +178,5 @@ class ApiAccessToken < ApplicationRecord
       "token_id=#{id} action_type=#{action_type} error_class=#{error.class.name} error_message=#{error.message}"
     )
     raise
-  end
-
-  def effective_user
-    user || user_by_uuid
   end
 end

@@ -23,7 +23,7 @@ The format follows Keep a Changelog and Semantic Versioning.
 - Admin passkey verification now uses explicit strong-parameter allowlist.
 - Kamal deploy config now fails closed for host and registry configuration (no insecure defaults).
 - OpenAPI/API reference and DB model documentation now include partner OAuth, physician intake, receivable creation, and partner application schema updates.
-- UUID rollout for users started in production-safe staged mode: added `users.uuid_id`, shadow UUID references on dependent tables, backfill, and dual-write model synchronization.
+- UUID rollout for users advanced to UUID-first authentication paths: session/API token/user resolution now prefers UUID references with bigint fallback.
 
 ## [0.1.0] - 2026-02-19
 

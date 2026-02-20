@@ -45,20 +45,24 @@ class Session < ApplicationRecord
     update!(admin_webauthn_verified_at: at)
   end
 
+  def effective_user
+    user_by_uuid || user
+  end
+
   private
 
   def sync_user_uuid_reference
     if user.present?
-      self.user_uuid_id ||= user.uuid_id
+      self.user_uuid_id = user.uuid_id
       return
     end
 
-    if user_uuid_id.present? && user_id.blank?
+    if user_uuid_id.present?
       self.user = User.find_by(uuid_id: user_uuid_id)
       return
     end
 
-    if user_id.present? && user_uuid_id.blank?
+    if user_id.present?
       self.user_uuid_id = User.where(id: user_id).pick(:uuid_id)
     end
   end
@@ -66,7 +70,7 @@ class Session < ApplicationRecord
   def tenant_matches_user
     return if tenant_id.blank?
 
-    effective_user = user || user_by_uuid
+    effective_user = self.effective_user
     return if effective_user.blank?
     return if effective_user.tenant_id == tenant_id
 

@@ -60,12 +60,12 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
     return false if session_id.blank? || tenant_id.blank?
 
     with_database_tenant_context(tenant_id) do
-      session = Session.find_by(id: session_id, tenant_id: tenant_id)
+      session = Session.includes(:user_by_uuid, :user).find_by(id: session_id, tenant_id: tenant_id)
       return false if session.blank? || session.expired?
       return false if session.ip_address.present? && session.ip_address != request.remote_ip
       return false if session.user_agent.present? && session.user_agent != request.user_agent.to_s
 
-      user = session.user
+      user = session.effective_user
       return false if user.blank? || user.tenant_id.to_s != tenant_id.to_s
 
       @current_tenant_id = tenant_id.to_s
@@ -86,9 +86,10 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
       return false if (Array(token.scopes) & ALLOWED_SCOPES).empty?
 
       token.touch_last_used!
+      token_user = token.effective_user
       @current_tenant_id = token.tenant_id.to_s
-      @current_actor_party_id = token.user&.party_id&.to_s
-      @current_actor_role = token.user&.role.to_s.presence || DEFAULT_ACTOR_ROLE
+      @current_actor_party_id = token_user&.party_id&.to_s
+      @current_actor_role = token_user&.role.to_s.presence || DEFAULT_ACTOR_ROLE
       true
     end
   end

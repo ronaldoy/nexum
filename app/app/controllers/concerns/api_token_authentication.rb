@@ -34,7 +34,7 @@ module ApiTokenAuthentication
     token.touch_last_used!
     Current.tenant_id = token.tenant_id
     Current.api_access_token = token
-    Current.user = token.user
+    Current.user = token.effective_user
 
     if Current.user && Current.user.tenant_id.to_s != token.tenant_id.to_s
       clear_bootstrap_database_tenant_context!

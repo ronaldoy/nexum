@@ -31,7 +31,8 @@ class SessionsController < ApplicationController
           metadata: {
             tenant_slug: tenant_slug,
             mfa_enabled: user.mfa_enabled?,
-            user_id: user.id
+            user_id: user.id,
+            user_uuid_id: user.uuid_id
           }
         )
         redirect_to new_session_path(**tenant_slug_path_params(tenant_slug)), alert: mfa_error_message_for(user)
@@ -49,7 +50,8 @@ class SessionsController < ApplicationController
             tenant_slug: tenant_slug,
             mfa_used: user.mfa_required_for_role?,
             session_id: Current.session&.id,
-            user_id: user.id
+            user_id: user.id,
+            user_uuid_id: user.uuid_id
           }
         )
       redirect_to after_authentication_url
@@ -77,7 +79,8 @@ class SessionsController < ApplicationController
       metadata: {
         reason: "user_logout",
         session_id: session_record&.id,
-        user_id: user&.id
+        user_id: user&.id,
+        user_uuid_id: user&.uuid_id
       }
     )
     terminate_session

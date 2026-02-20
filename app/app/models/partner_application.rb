@@ -195,16 +195,16 @@ class PartnerApplication < ApplicationRecord
 
   def sync_created_by_user_uuid_reference
     if created_by_user.present?
-      self.created_by_user_uuid_id ||= created_by_user.uuid_id
+      self.created_by_user_uuid_id = created_by_user.uuid_id
       return
     end
 
-    if created_by_user_uuid_id.present? && created_by_user_id.blank?
+    if created_by_user_uuid_id.present?
       self.created_by_user = User.find_by(uuid_id: created_by_user_uuid_id)
       return
     end
 
-    if created_by_user_id.present? && created_by_user_uuid_id.blank?
+    if created_by_user_id.present?
       self.created_by_user_uuid_id = User.where(id: created_by_user_id).pick(:uuid_id)
     end
   end
@@ -318,6 +318,6 @@ class PartnerApplication < ApplicationRecord
   end
 
   def effective_created_by_user
-    created_by_user || created_by_user_by_uuid
+    created_by_user_by_uuid || created_by_user
   end
 end
