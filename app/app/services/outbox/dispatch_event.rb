@@ -47,52 +47,14 @@ module Outbox
         outbox_event = OutboxEvent.lock.find(outbox_event_id)
         latest_attempt = latest_attempt_for(outbox_event)
 
-        if terminal_state?(latest_attempt)
-          return Result.new(
-            status: latest_attempt.status,
-            attempt_number: latest_attempt.attempt_number,
-            skipped: true,
-            reason: "already_terminal"
-          )
-        end
+        return terminal_skip_result(latest_attempt) if terminal_state?(latest_attempt)
+        return retry_not_due_result(latest_attempt) if retry_not_due_yet?(latest_attempt, now)
 
-        if retry_not_due_yet?(latest_attempt, now)
-          return Result.new(
-            status: latest_attempt.status,
-            attempt_number: latest_attempt.attempt_number,
-            next_attempt_at: latest_attempt.next_attempt_at,
-            skipped: true,
-            reason: "retry_not_due"
-          )
-        end
-
-        attempt_number = latest_attempt&.attempt_number.to_i + 1
-
-        begin
-          deliver!(outbox_event)
-          create_attempt!(
-            outbox_event: outbox_event,
-            attempt_number: attempt_number,
-            status: "SENT",
-            occurred_at: now
-          )
-          create_action_log!(
-            outbox_event: outbox_event,
-            action_type: DISPATCHED_ACTION,
-            success: true,
-            metadata: {
-              "attempt_number" => attempt_number
-            }
-          )
-          return Result.new(status: "SENT", attempt_number: attempt_number, skipped: false)
-        rescue DeliveryError => error
-          return handle_delivery_error!(
-            outbox_event: outbox_event,
-            attempt_number: attempt_number,
-            occurred_at: now,
-            error: error
-          )
-        end
+        process_dispatch_attempt(
+          outbox_event: outbox_event,
+          attempt_number: next_attempt_number(latest_attempt),
+          occurred_at: now
+        )
       end
     end
 
@@ -116,6 +78,52 @@ module Outbox
       latest_attempt.next_attempt_at > now
     end
 
+    def terminal_skip_result(latest_attempt)
+      Result.new(
+        status: latest_attempt.status,
+        attempt_number: latest_attempt.attempt_number,
+        skipped: true,
+        reason: "already_terminal"
+      )
+    end
+
+    def retry_not_due_result(latest_attempt)
+      Result.new(
+        status: latest_attempt.status,
+        attempt_number: latest_attempt.attempt_number,
+        next_attempt_at: latest_attempt.next_attempt_at,
+        skipped: true,
+        reason: "retry_not_due"
+      )
+    end
+
+    def next_attempt_number(latest_attempt)
+      latest_attempt&.attempt_number.to_i + 1
+    end
+
+    def process_dispatch_attempt(outbox_event:, attempt_number:, occurred_at:)
+      deliver!(outbox_event)
+      record_dispatch_success(outbox_event: outbox_event, attempt_number: attempt_number, occurred_at: occurred_at)
+    rescue DeliveryError => error
+      handle_delivery_error!(
+        outbox_event: outbox_event,
+        attempt_number: attempt_number,
+        occurred_at: occurred_at,
+        error: error
+      )
+    end
+
+    def record_dispatch_success(outbox_event:, attempt_number:, occurred_at:)
+      create_attempt!(
+        outbox_event: outbox_event,
+        attempt_number: attempt_number,
+        status: "SENT",
+        occurred_at: occurred_at
+      )
+      create_dispatch_action_log!(outbox_event: outbox_event, action_type: DISPATCHED_ACTION, attempt_number: attempt_number)
+      Result.new(status: "SENT", attempt_number: attempt_number, skipped: false)
+    end
+
     def deliver!(outbox_event)
       simulate_failure = ActiveModel::Type::Boolean.new.cast(
         outbox_event.payload&.dig("simulate_dispatch_failure")
@@ -133,29 +141,31 @@ module Outbox
     end
 
     def handle_delivery_error!(outbox_event:, attempt_number:, occurred_at:, error:)
-      if attempt_number >= @max_attempts
-        create_attempt!(
-          outbox_event: outbox_event,
-          attempt_number: attempt_number,
-          status: "DEAD_LETTER",
-          occurred_at: occurred_at,
-          error_code: error.code,
-          error_message: error.message
-        )
-        create_action_log!(
-          outbox_event: outbox_event,
-          action_type: DEAD_LETTERED_ACTION,
-          success: false,
-          metadata: {
-            "attempt_number" => attempt_number,
-            "error_code" => error.code,
-            "error_message" => error.message
-          }
-        )
-        return Result.new(status: "DEAD_LETTER", attempt_number: attempt_number, skipped: false)
-      end
+      return record_dead_letter_attempt(outbox_event:, attempt_number:, occurred_at:, error:) if attempt_number >= @max_attempts
 
-      backoff_seconds = @backoff_strategy.call(attempt_number).to_i
+      record_retry_scheduled_attempt(outbox_event:, attempt_number:, occurred_at:, error:)
+    end
+
+    def record_dead_letter_attempt(outbox_event:, attempt_number:, occurred_at:, error:)
+      create_attempt!(
+        outbox_event: outbox_event,
+        attempt_number: attempt_number,
+        status: "DEAD_LETTER",
+        occurred_at: occurred_at,
+        error_code: error.code,
+        error_message: error.message
+      )
+      create_dispatch_action_log!(
+        outbox_event: outbox_event,
+        action_type: DEAD_LETTERED_ACTION,
+        attempt_number: attempt_number,
+        error: error
+      )
+      Result.new(status: "DEAD_LETTER", attempt_number: attempt_number, skipped: false)
+    end
+
+    def record_retry_scheduled_attempt(outbox_event:, attempt_number:, occurred_at:, error:)
+      backoff_seconds = backoff_seconds_for(attempt_number)
       next_attempt_at = occurred_at + backoff_seconds.seconds
       create_attempt!(
         outbox_event: outbox_event,
@@ -167,22 +177,33 @@ module Outbox
         error_message: error.message,
         metadata: { "backoff_seconds" => backoff_seconds }
       )
-      create_action_log!(
+      create_dispatch_action_log!(
         outbox_event: outbox_event,
         action_type: RETRY_SCHEDULED_ACTION,
-        success: false,
-        metadata: {
-          "attempt_number" => attempt_number,
-          "error_code" => error.code,
-          "error_message" => error.message,
-          "next_attempt_at" => next_attempt_at.utc.iso8601(6)
-        }
-      )
-      Result.new(
-        status: "RETRY_SCHEDULED",
         attempt_number: attempt_number,
-        next_attempt_at: next_attempt_at,
-        skipped: false
+        error: error,
+        next_attempt_at: next_attempt_at
+      )
+      Result.new(status: "RETRY_SCHEDULED", attempt_number: attempt_number, next_attempt_at: next_attempt_at, skipped: false)
+    end
+
+    def backoff_seconds_for(attempt_number)
+      @backoff_strategy.call(attempt_number).to_i
+    end
+
+    def create_dispatch_action_log!(outbox_event:, action_type:, attempt_number:, error: nil, next_attempt_at: nil)
+      metadata = {
+        "attempt_number" => attempt_number
+      }
+      metadata["error_code"] = error.code if error
+      metadata["error_message"] = error.message if error
+      metadata["next_attempt_at"] = next_attempt_at.utc.iso8601(6) if next_attempt_at
+
+      create_action_log!(
+        outbox_event: outbox_event,
+        action_type: action_type,
+        success: action_type == DISPATCHED_ACTION,
+        metadata: metadata
       )
     end
 
@@ -230,7 +251,14 @@ module Outbox
       parsed = Integer(value, exception: false)
       return parsed if parsed.present? && parsed.positive?
 
-      configured = Integer(
+      configured = configured_max_attempts
+      return configured if configured.present? && configured.positive?
+
+      DEFAULT_MAX_ATTEMPTS
+    end
+
+    def configured_max_attempts
+      Integer(
         Rails.app.creds.option(
           :outbox,
           :max_dispatch_attempts,
@@ -238,9 +266,6 @@ module Outbox
         ),
         exception: false
       )
-      return configured if configured.present? && configured.positive?
-
-      DEFAULT_MAX_ATTEMPTS
     end
 
     def default_backoff_seconds(attempt_number)
