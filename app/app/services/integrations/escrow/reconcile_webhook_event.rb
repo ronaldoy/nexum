@@ -2,6 +2,7 @@ module Integrations
   module Escrow
     class ReconcileWebhookEvent
       Result = Struct.new(:status, :target_type, :target_id, :metadata, keyword_init: true)
+      Target = Struct.new(:kind, :record, keyword_init: true)
 
       SUCCESSFUL_PAYOUT_STATUSES = %w[SENT SUCCESS SUCCESSFUL COMPLETED PROCESSING_PAYMENT].freeze
       FAILED_PAYOUT_STATUSES = %w[FAILED ERROR REJECTED CANCELED CANCELLED].freeze
@@ -22,16 +23,34 @@ module Integrations
       end
 
       def call
-        payout = find_payout
-        return processed_result_for_payout(payout) if payout
+        target = resolve_target
+        return ignored_result if target.blank?
 
-        account = find_account
-        return processed_result_for_account(account) if account
-
-        ignored_result
+        process_target(target)
       end
 
       private
+
+      def resolve_target
+        payout = find_payout
+        return Target.new(kind: :payout, record: payout) if payout
+
+        account = find_account
+        return Target.new(kind: :account, record: account) if account
+
+        nil
+      end
+
+      def process_target(target)
+        case target.kind
+        when :payout
+          processed_result_for_payout(target.record)
+        when :account
+          processed_result_for_account(target.record)
+        else
+          ignored_result
+        end
+      end
 
       def find_payout
         scope = payout_scope
@@ -259,39 +278,43 @@ module Integrations
       end
 
       def payout_transfer_id_candidates
-        [
+        normalized_candidates(
           @payload["end_to_end_id"],
           @payload["transaction_id"],
           @payload["pix_transfer_id"],
           @payload.dig("pix_transfer", "end_to_end_id"),
           @payload.dig("pix_transfer", "transaction_id")
-        ].map { |value| normalize_identifier(value) }.compact.uniq
+        )
       end
 
       def request_control_key_candidates
-        [
+        normalized_candidates(
           @payload["request_control_key"],
           @payload["external_reference"],
           @payload["idempotency_key"],
           @payload.dig("pix_transfer", "request_control_key")
-        ].map { |value| normalize_identifier(value) }.compact.uniq
+        )
       end
 
       def account_id_candidates
-        [
+        normalized_candidates(
           @payload["account_key"],
           @payload["provider_account_id"],
           @payload.dig("account", "account_key"),
           @payload.dig("account_info", "account_key")
-        ].map { |value| normalize_identifier(value) }.compact.uniq
+        )
       end
 
       def account_request_id_candidates
-        [
+        normalized_candidates(
           @payload["account_request_key"],
           @payload["provider_request_id"],
           @payload.dig("account", "account_request_key")
-        ].map { |value| normalize_identifier(value) }.compact.uniq
+        )
+      end
+
+      def normalized_candidates(*values)
+        values.map { |value| normalize_identifier(value) }.compact.uniq
       end
 
       def raw_status

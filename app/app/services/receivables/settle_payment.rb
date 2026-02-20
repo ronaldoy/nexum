@@ -74,10 +74,6 @@ module Receivables
     end
 
     def call(receivable_id:, paid_amount:, receivable_allocation_id: nil, paid_at: Time.current, payment_reference: nil, metadata: {})
-      inputs = nil
-      settlement = nil
-      settlement_entries = []
-
       inputs = build_call_inputs(
         receivable_id: receivable_id,
         receivable_allocation_id: receivable_allocation_id,
@@ -87,59 +83,11 @@ module Receivables
         metadata: metadata
       )
 
-      replay_result = nil
-
-      ActiveRecord::Base.transaction do
-        existing = find_existing_settlement(inputs.payment_reference)
-        if existing
-          replay_result = build_replay_result(
-            existing: existing,
-            inputs: inputs,
-            receivable_id: receivable_id,
-            receivable_allocation_id: receivable_allocation_id
-          )
-          next
-        end
-
-        receivable, allocation = load_receivable_and_allocation(
-          receivable_id: receivable_id,
-          receivable_allocation_id: receivable_allocation_id
-        )
-        distribution = calculate_distribution(
-          amount: inputs.amount,
-          receivable: receivable,
-          allocation: allocation,
-          paid_time: inputs.paid_time
-        )
-
-        settlement = create_settlement_record!(
-          receivable: receivable,
-          allocation: allocation,
-          inputs: inputs,
-          distribution: distribution
-        )
-
-        settlement_entries = create_settlement_entries!(
-          settlement: settlement,
-          obligations: distribution.obligations,
-          fdic_amount: distribution.fdic_amount,
-          settled_at: inputs.paid_time
-        )
-
-        run_post_settlement_workflow!(
-          settlement: settlement,
-          receivable: receivable,
-          allocation: allocation,
-          settlement_entries: settlement_entries,
-          distribution: distribution,
-          paid_time: inputs.paid_time,
-          payment_reference: inputs.payment_reference
-        )
-      end
-
-      return replay_result if replay_result
-
-      Result.new(settlement:, settlement_entries:, replayed: false)
+      process_settlement(
+        inputs: inputs,
+        receivable_id: receivable_id,
+        receivable_allocation_id: receivable_allocation_id
+      )
     rescue ActiveRecord::RecordNotFound => error
       create_failure_log(error:, receivable_id:, payment_reference: inputs&.payment_reference)
       raise
@@ -147,29 +95,93 @@ module Receivables
       create_failure_log(error:, receivable_id:, payment_reference: inputs&.payment_reference)
       raise
     rescue ActiveRecord::RecordNotUnique
-      existing = ReceivablePaymentSettlement.where(tenant_id: @tenant_id, idempotency_key: @idempotency_key).first
-      if existing
-        ensure_matching_replay!(
-          existing: existing,
-          payload_hash: inputs&.payload_hash.to_s,
-          receivable_id: receivable_id,
-          receivable_allocation_id: receivable_allocation_id,
-          paid_amount: inputs&.amount.to_d
-        )
-        return Result.new(
-          settlement: existing,
-          settlement_entries: existing.anticipation_settlement_entries.order(created_at: :asc).to_a,
-          replayed: true
-        )
-      end
-
-      raise
+      recover_after_unique_violation(
+        inputs: inputs,
+        receivable_id: receivable_id,
+        receivable_allocation_id: receivable_allocation_id
+      )
     rescue ActiveRecord::ActiveRecordError => error
       create_failure_log(error:, receivable_id:, payment_reference: inputs&.payment_reference)
       raise
     end
 
     private
+
+    def process_settlement(inputs:, receivable_id:, receivable_allocation_id:)
+      ActiveRecord::Base.transaction do
+        existing = find_existing_settlement(inputs.payment_reference)
+        return build_replay_result(
+          existing: existing,
+          inputs: inputs,
+          receivable_id: receivable_id,
+          receivable_allocation_id: receivable_allocation_id
+        ) if existing
+
+        create_new_settlement_result(
+          inputs: inputs,
+          receivable_id: receivable_id,
+          receivable_allocation_id: receivable_allocation_id
+        )
+      end
+    end
+
+    def create_new_settlement_result(inputs:, receivable_id:, receivable_allocation_id:)
+      receivable, allocation = load_receivable_and_allocation(
+        receivable_id: receivable_id,
+        receivable_allocation_id: receivable_allocation_id
+      )
+      distribution = calculate_distribution(
+        amount: inputs.amount,
+        receivable: receivable,
+        allocation: allocation,
+        paid_time: inputs.paid_time
+      )
+
+      settlement = create_settlement_record!(
+        receivable: receivable,
+        allocation: allocation,
+        inputs: inputs,
+        distribution: distribution
+      )
+
+      settlement_entries = create_settlement_entries!(
+        settlement: settlement,
+        obligations: distribution.obligations,
+        fdic_amount: distribution.fdic_amount,
+        settled_at: inputs.paid_time
+      )
+
+      run_post_settlement_workflow!(
+        settlement: settlement,
+        receivable: receivable,
+        allocation: allocation,
+        settlement_entries: settlement_entries,
+        distribution: distribution,
+        paid_time: inputs.paid_time,
+        payment_reference: inputs.payment_reference
+      )
+
+      Result.new(settlement: settlement, settlement_entries: settlement_entries, replayed: false)
+    end
+
+    def recover_after_unique_violation(inputs:, receivable_id:, receivable_allocation_id:)
+      existing = ReceivablePaymentSettlement.where(tenant_id: @tenant_id, idempotency_key: @idempotency_key).first
+      raise unless existing
+
+      ensure_matching_replay!(
+        existing: existing,
+        payload_hash: inputs&.payload_hash.to_s,
+        receivable_id: receivable_id,
+        receivable_allocation_id: receivable_allocation_id,
+        paid_amount: inputs&.amount.to_d
+      )
+
+      Result.new(
+        settlement: existing,
+        settlement_entries: settlement_entries_for(existing),
+        replayed: true
+      )
+    end
 
     def build_call_inputs(receivable_id:, receivable_allocation_id:, paid_amount:, paid_at:, payment_reference:, metadata:)
       raise_validation_error!("missing_idempotency_key", "Idempotency-Key is required.") if @idempotency_key.blank?
@@ -217,9 +229,13 @@ module Receivables
       )
       Result.new(
         settlement: existing,
-        settlement_entries: existing.anticipation_settlement_entries.order(created_at: :asc).to_a,
+        settlement_entries: settlement_entries_for(existing),
         replayed: true
       )
+    end
+
+    def settlement_entries_for(settlement)
+      settlement.anticipation_settlement_entries.order(created_at: :asc).to_a
     end
 
     def load_receivable_and_allocation(receivable_id:, receivable_allocation_id:)
@@ -417,35 +433,56 @@ module Receivables
       remaining_fdic = fdic_amount
       entries = []
 
-      obligations.each do |entry|
+      obligations.each do |obligation|
         break if remaining_fdic <= 0
 
-        anticipation_request = entry[:anticipation_request]
-        outstanding = entry[:outstanding]
-        settled_amount = round_money([ remaining_fdic, outstanding ].min)
-        next if settled_amount <= 0
-
-        settlement_entry = AnticipationSettlementEntry.create!(
-          tenant_id: @tenant_id,
-          receivable_payment_settlement: settlement,
-          anticipation_request: anticipation_request,
-          settled_amount: settled_amount,
-          settled_at: settled_at,
-          metadata: {
-            receivable_id: settlement.receivable_id,
-            receivable_allocation_id: settlement.receivable_allocation_id
-          }
+        settlement_entry, remaining_fdic = settle_fdic_obligation!(
+          settlement: settlement,
+          obligation: obligation,
+          remaining_fdic: remaining_fdic,
+          settled_at: settled_at
         )
-        entries << settlement_entry
-
-        remaining_fdic = round_money(remaining_fdic - settled_amount)
-        remaining_request_outstanding = round_money(outstanding - settled_amount)
-        if remaining_request_outstanding <= 0 && anticipation_request.status != "SETTLED"
-          anticipation_request.transition_status!("SETTLED", settled_at: settled_at)
-        end
+        entries << settlement_entry if settlement_entry
       end
 
       entries
+    end
+
+    def settle_fdic_obligation!(settlement:, obligation:, remaining_fdic:, settled_at:)
+      anticipation_request = obligation[:anticipation_request]
+      outstanding = obligation[:outstanding]
+      settled_amount = round_money([ remaining_fdic, outstanding ].min)
+      return [ nil, remaining_fdic ] if settled_amount <= 0
+
+      settlement_entry = AnticipationSettlementEntry.create!(
+        tenant_id: @tenant_id,
+        receivable_payment_settlement: settlement,
+        anticipation_request: anticipation_request,
+        settled_amount: settled_amount,
+        settled_at: settled_at,
+        metadata: {
+          receivable_id: settlement.receivable_id,
+          receivable_allocation_id: settlement.receivable_allocation_id
+        }
+      )
+
+      remaining_fdic_after = round_money(remaining_fdic - settled_amount)
+      mark_anticipation_settled_if_fully_paid!(
+        anticipation_request: anticipation_request,
+        outstanding: outstanding,
+        settled_amount: settled_amount,
+        settled_at: settled_at
+      )
+
+      [ settlement_entry, remaining_fdic_after ]
+    end
+
+    def mark_anticipation_settled_if_fully_paid!(anticipation_request:, outstanding:, settled_amount:, settled_at:)
+      remaining_request_outstanding = round_money(outstanding - settled_amount)
+      return unless remaining_request_outstanding <= 0
+      return if anticipation_request.status == "SETTLED"
+
+      anticipation_request.transition_status!("SETTLED", settled_at: settled_at)
     end
 
     def post_ledger_entries!(settlement:, receivable:, allocation:, cnpj_amount:, fdic_amount:, beneficiary_amount:, paid_at:)
@@ -609,21 +646,16 @@ module Receivables
         payload_hash: payload_hash
       )
 
-      OutboxEvent.create!(
+      create_outbox_event_with_conflict_check!(
         tenant_id: @tenant_id,
         aggregate_type: TARGET_TYPE,
         aggregate_id: settlement.id,
         event_type: ESCROW_EXCESS_OUTBOX_EVENT_TYPE,
-        status: "PENDING",
         idempotency_key: payout_idempotency_key,
-        payload: payload
-      )
-    rescue ActiveRecord::RecordNotUnique
-      assert_outbox_payload_hash_matches!(
-        idempotency_key: payout_idempotency_key,
+        payload: payload,
         payload_hash: payload_hash,
-        code: "escrow_payout_idempotency_conflict",
-        message: "Escrow payout idempotency key was already used with a different payload."
+        conflict_code: "escrow_payout_idempotency_conflict",
+        conflict_message: "Escrow payout idempotency key was already used with a different payload."
       )
     end
 
@@ -649,21 +681,45 @@ module Receivables
         payload_hash: payload_hash
       )
 
-      OutboxEvent.create!(
+      create_outbox_event_with_conflict_check!(
         tenant_id: @tenant_id,
         aggregate_type: TARGET_TYPE,
         aggregate_id: settlement.id,
         event_type: FDIC_SETTLEMENT_OUTBOX_EVENT_TYPE,
-        status: "PENDING",
         idempotency_key: report_idempotency_key,
+        payload: payload,
+        payload_hash: payload_hash,
+        conflict_code: "fdic_settlement_idempotency_conflict",
+        conflict_message: "FDIC settlement idempotency key was already used with a different payload."
+      )
+    end
+
+    def create_outbox_event_with_conflict_check!(
+      tenant_id:,
+      aggregate_type:,
+      aggregate_id:,
+      event_type:,
+      idempotency_key:,
+      payload:,
+      payload_hash:,
+      conflict_code:,
+      conflict_message:
+    )
+      OutboxEvent.create!(
+        tenant_id: tenant_id,
+        aggregate_type: aggregate_type,
+        aggregate_id: aggregate_id,
+        event_type: event_type,
+        status: "PENDING",
+        idempotency_key: idempotency_key,
         payload: payload
       )
     rescue ActiveRecord::RecordNotUnique
       assert_outbox_payload_hash_matches!(
-        idempotency_key: report_idempotency_key,
+        idempotency_key: idempotency_key,
         payload_hash: payload_hash,
-        code: "fdic_settlement_idempotency_conflict",
-        message: "FDIC settlement idempotency key was already used with a different payload."
+        code: conflict_code,
+        message: conflict_message
       )
     end
 
