@@ -10,58 +10,22 @@ module Api
         before_action :set_oauth_response_headers
 
         def create
-          unless grant_type == "client_credentials"
-            render_oauth_error(code: "unsupported_grant_type", description: "Only client_credentials is supported.", status: :bad_request)
-            return
-          end
+          return render_unsupported_grant_type unless client_credentials_grant?
 
           credentials = client_credentials
-          if credentials[:client_id].blank? || credentials[:client_secret].blank?
-            render_oauth_error(code: "invalid_client", description: "Client authentication failed.", status: :unauthorized)
-            return
-          end
+          return render_invalid_client unless client_credentials_present?(credentials)
 
-          application = PartnerApplication
-            .where(tenant_id: Current.tenant_id, client_id: credentials[:client_id], active: true)
-            .first
+          application = find_active_application(credentials.fetch(:client_id))
+          return render_invalid_client if application.blank?
 
-          if application.blank?
-            render_oauth_error(code: "invalid_client", description: "Client authentication failed.", status: :unauthorized)
-            return
-          end
-
-          application.authenticate_secret!(credentials[:client_secret])
-          Current.partner_application = application
-
-          issued = application.issue_access_token!(
-            requested_scopes: oauth_params[:scope],
-            audit_context: {
-              actor_party_id: nil,
-              ip_address: request.remote_ip,
-              user_agent: request.user_agent,
-              request_id: request.request_id,
-              endpoint_path: request.fullpath,
-              http_method: request.method,
-              channel: "API",
-              metadata: {
-                "grant_type" => grant_type,
-                "tenant_slug" => params[:tenant_slug]
-              }
-            }
-          )
-
-          render json: {
-            access_token: issued.fetch(:raw_token),
-            token_type: "Bearer",
-            expires_in: application.token_ttl_minutes.minutes.to_i,
-            scope: issued.fetch(:scopes).join(" ")
-          }, status: :ok
+          issued = issue_access_token(application:, client_secret: credentials.fetch(:client_secret))
+          render_token_response(application:, issued:)
         rescue PartnerApplication::AuthenticationError
-          render_oauth_error(code: "invalid_client", description: "Client authentication failed.", status: :unauthorized)
+          render_invalid_client
         rescue PartnerApplication::ScopeError => error
-          render_oauth_error(code: "invalid_scope", description: error.message, status: :bad_request)
+          render_invalid_scope(error.message)
         rescue ActiveRecord::RecordInvalid => error
-          render_oauth_error(code: "invalid_request", description: error.record.errors.full_messages.to_sentence, status: :unprocessable_entity)
+          render_invalid_request(error.record.errors.full_messages.to_sentence)
         end
 
         private
@@ -78,8 +42,16 @@ module Api
           "oauth_client"
         end
 
+        def client_credentials_grant?
+          grant_type == "client_credentials"
+        end
+
         def oauth_params
           params.permit(:grant_type, :client_id, :client_secret, :scope)
+        end
+
+        def client_credentials_present?(credentials)
+          credentials[:client_id].present? && credentials[:client_secret].present?
         end
 
         def client_credentials
@@ -110,6 +82,44 @@ module Api
           oauth_params[:grant_type].to_s
         end
 
+        def find_active_application(client_id)
+          PartnerApplication.where(tenant_id: Current.tenant_id, client_id: client_id, active: true).first
+        end
+
+        def issue_access_token(application:, client_secret:)
+          application.authenticate_secret!(client_secret)
+          Current.partner_application = application
+          application.issue_access_token!(
+            requested_scopes: oauth_params[:scope],
+            audit_context: token_audit_context
+          )
+        end
+
+        def token_audit_context
+          {
+            actor_party_id: nil,
+            ip_address: request.remote_ip,
+            user_agent: request.user_agent,
+            request_id: request.request_id,
+            endpoint_path: request.fullpath,
+            http_method: request.method,
+            channel: "API",
+            metadata: {
+              "grant_type" => grant_type,
+              "tenant_slug" => params[:tenant_slug]
+            }
+          }
+        end
+
+        def render_token_response(application:, issued:)
+          render json: {
+            access_token: issued.fetch(:raw_token),
+            token_type: "Bearer",
+            expires_in: application.token_ttl_minutes.minutes.to_i,
+            scope: issued.fetch(:scopes).join(" ")
+          }, status: :ok
+        end
+
         def set_oauth_response_headers
           response.headers["Cache-Control"] = "no-store"
           response.headers["Pragma"] = "no-cache"
@@ -121,6 +131,30 @@ module Api
             description: "Authentication context could not be established.",
             status: :service_unavailable
           )
+        end
+
+        def render_unsupported_grant_type
+          render_oauth_error(
+            code: "unsupported_grant_type",
+            description: "Only client_credentials is supported.",
+            status: :bad_request
+          )
+        end
+
+        def render_invalid_client
+          render_oauth_error(
+            code: "invalid_client",
+            description: "Client authentication failed.",
+            status: :unauthorized
+          )
+        end
+
+        def render_invalid_scope(description)
+          render_oauth_error(code: "invalid_scope", description: description, status: :bad_request)
+        end
+
+        def render_invalid_request(description)
+          render_oauth_error(code: "invalid_request", description: description, status: :unprocessable_entity)
         end
 
         def render_oauth_error(code:, description:, status:)

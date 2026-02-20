@@ -21,31 +21,42 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   def create
     payload_hash = direct_upload_payload_hash
 
-    with_database_context(
-      tenant_id: @current_tenant_id,
-      actor_id: @current_actor_party_id,
-      role: @current_actor_role
-    ) do
-      existing_blob = find_idempotent_blob
-      if existing_blob.present?
-        return render_existing_idempotent_blob(existing_blob, payload_hash)
-      end
-
-      blob = ActiveStorage::Blob.create_before_direct_upload!(
-        **blob_args(payload_hash: payload_hash)
-      )
-      render json: direct_upload_json(blob).merge("replayed" => false)
-    rescue ActiveRecord::RecordNotUnique
-      existing_blob = find_idempotent_blob
-      raise ActiveRecord::RecordNotFound, "idempotent blob not found after unique violation" if existing_blob.blank?
-
-      render_existing_idempotent_blob(existing_blob, payload_hash)
-    end
+    with_actor_database_context { process_direct_upload(payload_hash: payload_hash) }
   rescue ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid
     render_context_unavailable
   end
 
   private
+
+  def with_actor_database_context(&block)
+    with_database_context(
+      tenant_id: @current_tenant_id,
+      actor_id: @current_actor_party_id,
+      role: @current_actor_role,
+      &block
+    )
+  end
+
+  def process_direct_upload(payload_hash:)
+    existing_blob = find_idempotent_blob
+    return render_existing_idempotent_blob(existing_blob, payload_hash) if existing_blob.present?
+
+    blob = create_direct_upload_blob!(payload_hash:)
+    render_direct_upload(blob:, replayed: false)
+  rescue ActiveRecord::RecordNotUnique
+    replay_after_unique_violation(payload_hash:)
+  end
+
+  def create_direct_upload_blob!(payload_hash:)
+    ActiveStorage::Blob.create_before_direct_upload!(**blob_args(payload_hash: payload_hash))
+  end
+
+  def replay_after_unique_violation(payload_hash:)
+    existing_blob = find_idempotent_blob
+    raise ActiveRecord::RecordNotFound, "idempotent blob not found after unique violation" if existing_blob.blank?
+
+    render_existing_idempotent_blob(existing_blob, payload_hash)
+  end
 
   def authenticate_direct_upload_actor!
     return if authenticate_from_session!
@@ -55,22 +66,16 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   end
 
   def authenticate_from_session!
-    session_id = cookies.encrypted[:session_id]
-    tenant_id = cookies.encrypted[:session_tenant_id]
+    session_id, tenant_id = session_cookie_values
     return false if session_id.blank? || tenant_id.blank?
 
     with_database_tenant_context(tenant_id) do
-      session = Session.includes(:user).find_by(id: session_id, tenant_id: tenant_id)
-      return false if session.blank? || session.expired?
-      return false if session.ip_address.present? && session.ip_address != request.remote_ip
-      return false if session.user_agent.present? && session.user_agent != request.user_agent.to_s
-
+      session = find_session(session_id:, tenant_id:)
+      return false unless valid_session_record?(session)
       user = session.user
-      return false if user.blank? || user.tenant_id.to_s != tenant_id.to_s
+      return false unless valid_session_user?(user, tenant_id)
 
-      @current_tenant_id = tenant_id.to_s
-      @current_actor_party_id = user.party_id&.to_s
-      @current_actor_role = user.role.to_s
+      assign_actor_from_session(tenant_id:, user:)
       true
     end
   end
@@ -82,16 +87,51 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
 
     with_database_tenant_context(tenant_id) do
       token = ApiAccessToken.authenticate(raw_token)
-      return false if token.blank?
-      return false if (Array(token.scopes) & ALLOWED_SCOPES).empty?
+      return false unless token_authenticated_for_direct_upload?(token)
 
       token.touch_last_used!
-      token_user = token.user
-      @current_tenant_id = token.tenant_id.to_s
-      @current_actor_party_id = token_user&.party_id&.to_s
-      @current_actor_role = token_user&.role.to_s.presence || DEFAULT_ACTOR_ROLE
+      assign_actor_from_token(token)
       true
     end
+  end
+
+  def session_cookie_values
+    [ cookies.encrypted[:session_id], cookies.encrypted[:session_tenant_id] ]
+  end
+
+  def find_session(session_id:, tenant_id:)
+    Session.includes(:user).find_by(id: session_id, tenant_id: tenant_id)
+  end
+
+  def valid_session_record?(session)
+    return false if session.blank? || session.expired?
+    return false if session.ip_address.present? && session.ip_address != request.remote_ip
+    return false if session.user_agent.present? && session.user_agent != request.user_agent.to_s
+
+    true
+  end
+
+  def valid_session_user?(user, tenant_id)
+    user.present? && user.tenant_id.to_s == tenant_id.to_s
+  end
+
+  def assign_actor_from_session(tenant_id:, user:)
+    @current_tenant_id = tenant_id.to_s
+    @current_actor_party_id = user.party_id&.to_s
+    @current_actor_role = user.role.to_s
+  end
+
+  def token_authenticated_for_direct_upload?(token)
+    return false if token.blank?
+
+    (Array(token.scopes) & ALLOWED_SCOPES).present?
+  end
+
+  def assign_actor_from_token(token)
+    token_user = token.user
+    @current_tenant_id = token.tenant_id.to_s
+    @current_actor_party_id = token_user&.party_id&.to_s
+    @current_actor_role = token_user&.role.to_s.presence || DEFAULT_ACTOR_ROLE
   end
 
   def bearer_token
@@ -103,21 +143,9 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
 
   def enforce_upload_limits!
     blob = params[:blob]
-    unless blob.is_a?(ActionController::Parameters) || blob.is_a?(Hash)
-      render json: { error: { code: "invalid_blob_payload", message: "blob payload is required." } }, status: :unprocessable_entity
-      return
-    end
-
-    byte_size = blob[:byte_size].to_i
-    if byte_size <= 0 || byte_size > max_upload_bytes
-      render json: { error: { code: "file_too_large", message: "File exceeds upload size limit." } }, status: :content_too_large
-      return
-    end
-
-    content_type = blob[:content_type].to_s.downcase
-    unless allowed_content_types.include?(content_type)
-      render json: { error: { code: "invalid_content_type", message: "File content type is not allowed." } }, status: :unprocessable_entity
-    end
+    return render_invalid_blob_payload unless valid_blob_payload?(blob)
+    return render_file_too_large unless valid_upload_size?(blob)
+    render_invalid_content_type unless valid_upload_content_type?(blob)
   end
 
   def require_idempotency_key!
@@ -185,7 +213,11 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
       }, status: :conflict
     end
 
-    render json: direct_upload_json(existing_blob).merge("replayed" => true)
+    render_direct_upload(blob: existing_blob, replayed: true)
+  end
+
+  def render_direct_upload(blob:, replayed:)
+    render json: direct_upload_json(blob).merge("replayed" => replayed)
   end
 
   def direct_upload_json(blob)
@@ -208,6 +240,31 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
     return configured.to_i if configured.to_i.positive?
 
     DEFAULT_MAX_UPLOAD_BYTES
+  end
+
+  def valid_blob_payload?(blob)
+    blob.is_a?(ActionController::Parameters) || blob.is_a?(Hash)
+  end
+
+  def valid_upload_size?(blob)
+    byte_size = blob[:byte_size].to_i
+    byte_size.positive? && byte_size <= max_upload_bytes
+  end
+
+  def valid_upload_content_type?(blob)
+    allowed_content_types.include?(blob[:content_type].to_s.downcase)
+  end
+
+  def render_invalid_blob_payload
+    render json: { error: { code: "invalid_blob_payload", message: "blob payload is required." } }, status: :unprocessable_entity
+  end
+
+  def render_file_too_large
+    render json: { error: { code: "file_too_large", message: "File exceeds upload size limit." } }, status: :content_too_large
+  end
+
+  def render_invalid_content_type
+    render json: { error: { code: "invalid_content_type", message: "File content type is not allowed." } }, status: :unprocessable_entity
   end
 
   def render_unauthorized
