@@ -7,6 +7,19 @@ module Integrations
       FUNDING_EVENT_TYPE = "ANTICIPATION_FIDC_FUNDING_REQUESTED".freeze
       SETTLEMENT_EVENT_TYPE = "RECEIVABLE_FIDC_SETTLEMENT_REPORTED".freeze
       PAYLOAD_HASH_METADATA_KEY = "_payload_hash".freeze
+      DispatchInputs = Struct.new(
+        :operation_type,
+        :payload,
+        :provider_code,
+        :provider,
+        :operation_idempotency_key,
+        :amount,
+        :currency,
+        :payload_hash,
+        :source,
+        :provider_request_control_key,
+        keyword_init: true
+      )
 
       OPERATION_TYPES_BY_EVENT = {
         FUNDING_EVENT_TYPE => "FUNDING_REQUEST",
@@ -20,6 +33,59 @@ module Integrations
         operation_idempotency_key = nil
         operation = nil
 
+        inputs = build_dispatch_inputs(outbox_event)
+        payload = inputs.payload
+        operation_idempotency_key = inputs.operation_idempotency_key
+
+        operation = find_or_initialize_operation(
+          tenant_id: outbox_event.tenant_id,
+          idempotency_key: operation_idempotency_key
+        )
+        return operation if operation_already_sent?(operation:, payload_hash: inputs.payload_hash)
+
+        persist_pending_operation!(
+          operation: operation,
+          outbox_event: outbox_event,
+          source: inputs.source,
+          provider_code: inputs.provider_code,
+          operation_type: inputs.operation_type,
+          amount: inputs.amount,
+          currency: inputs.currency,
+          payload_hash: inputs.payload_hash,
+          payload: inputs.payload
+        )
+
+        provider_result = dispatch_provider!(
+          provider: inputs.provider,
+          operation_type: inputs.operation_type,
+          tenant_id: outbox_event.tenant_id,
+          source: inputs.source,
+          payload: inputs.payload,
+          idempotency_key: inputs.provider_request_control_key
+        )
+        persisted = persist_and_validate_success!(
+          operation: operation,
+          provider_result: provider_result,
+          payload: inputs.payload
+        )
+        log_dispatch_success!(outbox_event:, operation: persisted)
+        persisted
+      rescue Error => error
+        persist_failure!(operation: operation, outbox_event: outbox_event, payload: payload, error: error)
+        raise
+      rescue KeyError => error
+        raise ValidationError.new(
+          code: "fdic_payload_invalid",
+          message: "FDIC payload is missing required fields.",
+          details: { missing_key: error.key }
+        )
+      rescue ActiveRecord::RecordNotUnique
+        resolve_operation_conflict!(tenant_id: outbox_event.tenant_id, operation_idempotency_key: operation_idempotency_key)
+      end
+
+      private
+
+      def build_dispatch_inputs(outbox_event)
         operation_type = resolve_operation_type!(outbox_event.event_type)
         payload = normalize_metadata(outbox_event.payload || {})
         provider_code = resolve_provider_code(tenant_id: outbox_event.tenant_id, payload: payload)
@@ -40,53 +106,22 @@ module Integrations
           payload: payload
         )
 
-        operation = find_or_initialize_operation(
-          tenant_id: outbox_event.tenant_id,
-          idempotency_key: operation_idempotency_key
-        )
-        return operation if operation_already_sent?(operation:, payload_hash:)
-
-        persist_pending_operation!(
-          operation: operation,
-          outbox_event: outbox_event,
-          source: source,
-          provider_code: provider_code,
+        DispatchInputs.new(
           operation_type: operation_type,
+          payload: payload,
+          provider_code: provider_code,
+          provider: provider,
+          operation_idempotency_key: operation_idempotency_key,
           amount: amount,
           currency: currency,
           payload_hash: payload_hash,
-          payload: payload
-        )
-
-        provider_result = dispatch_provider!(
-          provider: provider,
-          operation_type: operation_type,
-          tenant_id: outbox_event.tenant_id,
           source: source,
-          payload: payload,
-          idempotency_key: provider_request_control_key(payload:, operation_idempotency_key:)
+          provider_request_control_key: provider_request_control_key(
+            payload: payload,
+            operation_idempotency_key: operation_idempotency_key
+          )
         )
-        persisted = persist_and_validate_success!(
-          operation: operation,
-          provider_result: provider_result,
-          payload: payload
-        )
-        log_dispatch_success!(outbox_event:, operation: persisted)
-        persisted
-      rescue Error => error
-        persist_failure!(operation: operation, outbox_event: outbox_event, payload: payload, error: error)
-        raise
-      rescue KeyError => error
-        raise ValidationError.new(
-          code: "fdic_payload_invalid",
-          message: "FDIC payload is missing required fields.",
-          details: { missing_key: error.key }
-        )
-      rescue ActiveRecord::RecordNotUnique
-        resolve_operation_conflict!(tenant_id: outbox_event.tenant_id, operation_idempotency_key: operation_idempotency_key)
       end
-
-      private
 
       def resolve_operation_type!(event_type)
         operation_type = OPERATION_TYPES_BY_EVENT[event_type]
@@ -229,10 +264,7 @@ module Integrations
           settlement = ReceivablePaymentSettlement.where(tenant_id: tenant_id).lock.find(settlement_id)
           { anticipation_request: nil, settlement: settlement }
         else
-          raise ValidationError.new(
-            code: "fdic_operation_type_invalid",
-            message: "FDIC operation type is invalid."
-          )
+          raise invalid_operation_type_error
         end
       end
 
@@ -253,11 +285,15 @@ module Integrations
             idempotency_key: idempotency_key
           )
         else
-          raise ValidationError.new(
-            code: "fdic_operation_type_invalid",
-            message: "FDIC operation type is invalid."
-          )
+          raise invalid_operation_type_error
         end
+      end
+
+      def invalid_operation_type_error
+        ValidationError.new(
+          code: "fdic_operation_type_invalid",
+          message: "FDIC operation type is invalid."
+        )
       end
 
       def persist_success!(operation:, provider_result:, payload:)
