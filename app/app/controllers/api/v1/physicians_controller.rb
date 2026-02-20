@@ -6,45 +6,59 @@ module Api
         show: "physicians:read"
       )
 
-      def create
-        result = physician_create_service.call(physician_params.to_h)
+      CREATE_PERMITTED_FIELDS = [
+        :full_name,
+        :display_name,
+        :email,
+        :phone,
+        :document_number,
+        :external_ref,
+        :crm_number,
+        :crm_state,
+        { metadata: {} },
+        { party_metadata: {} }
+      ].freeze
 
-        render json: {
-          data: physician_payload(result.physician, result.party).merge(replayed: result.replayed?)
-        }, status: (result.replayed? ? :ok : :created)
-      rescue Physicians::Create::IdempotencyConflict => error
+      def create
+        result = physician_creation_result
+        render_create_response(result)
+      rescue ::Physicians::Create::IdempotencyConflict => error
         render_api_error(code: error.code, message: error.message, status: :conflict)
-      rescue Physicians::Create::ValidationError => error
+      rescue ::Physicians::Create::ValidationError => error
         render_api_error(code: error.code, message: error.message, status: :unprocessable_entity)
       end
 
       def show
-        physician = tenant_physicians.find(params[:id])
-        render json: {
-          data: physician_payload(physician, physician.party)
-        }
+        render_show_response(load_physician_with_access!(params[:id]))
       end
 
       private
 
-      def physician_params
-        payload = params[:physician].presence || params
-        payload.permit(
-          :full_name,
-          :display_name,
-          :email,
-          :phone,
-          :document_number,
-          :external_ref,
-          :crm_number,
-          :crm_state,
-          metadata: {},
-          party_metadata: {}
-        )
+      def physician_creation_result
+        physician_create_service.call(physician_params.to_h)
       end
 
-      def physician_create_service
-        Physicians::Create.new(
+      def render_create_response(result)
+        render json: {
+          data: payload_presenter.physician(result.physician, result.party).merge(replayed: result.replayed?)
+        }, status: (result.replayed? ? :ok : :created)
+      end
+
+      def load_physician_with_access!(physician_id)
+        tenant_physicians.find(physician_id)
+      end
+
+      def render_show_response(physician)
+        render json: { data: payload_presenter.physician(physician, physician.party) }
+      end
+
+      def physician_params
+        payload = params[:physician].presence || params
+        payload.permit(*CREATE_PERMITTED_FIELDS)
+      end
+
+      def request_context_attributes
+        {
           tenant_id: Current.tenant_id,
           actor_role: Current.role,
           request_id: Current.request_id,
@@ -53,6 +67,12 @@ module Api
           user_agent: request.user_agent,
           endpoint_path: request.fullpath,
           http_method: request.method
+        }
+      end
+
+      def physician_create_service
+        ::Physicians::Create.new(
+          **request_context_attributes
         )
       end
 
@@ -60,33 +80,19 @@ module Api
         scope = Physician.where(tenant_id: Current.tenant_id).includes(:party)
         return scope if privileged_actor?
 
-        actor_party_id = current_actor_party_id
-        raise AuthorizationError.new(code: "actor_party_required", message: "Access denied.") if actor_party_id.blank?
-
+        actor_party_id = require_actor_party_id!
         scope.where(party_id: actor_party_id)
       end
 
-      def physician_payload(physician, party)
-        {
-          id: physician.id,
-          tenant_id: physician.tenant_id,
-          party: {
-            id: party.id,
-            external_ref: party.external_ref,
-            kind: party.kind,
-            legal_name: party.legal_name,
-            display_name: party.display_name,
-            document_type: party.document_type,
-            document_number: party.document_number
-          },
-          full_name: physician.full_name,
-          email: physician.email,
-          phone: physician.phone,
-          crm_number: physician.crm_number,
-          crm_state: physician.crm_state,
-          active: physician.active,
-          metadata: physician.metadata || {}
-        }
+      def require_actor_party_id!
+        actor_party_id = current_actor_party_id
+        return actor_party_id if actor_party_id.present?
+
+        raise AuthorizationError.new(code: "actor_party_required", message: "Access denied.")
+      end
+
+      def payload_presenter
+        @payload_presenter ||= PhysicianPayloadPresenter.new
       end
     end
   end
