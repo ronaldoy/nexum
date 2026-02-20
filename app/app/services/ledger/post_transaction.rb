@@ -29,7 +29,7 @@ module Ledger
     def call(txn_id:, posted_at:, source_type:, source_id:, entries:, receivable_id: nil, payment_reference: nil)
       validate_entries!(entries)
       validate_reconciliation_reference!(source_type:, payment_reference:)
-      payload_hash = idempotency_payload_hash(
+      payload_hash = idempotency_payload_hash_for_call(
         source_type: source_type,
         source_id: source_id,
         receivable_id: receivable_id,
@@ -37,63 +37,37 @@ module Ledger
         entries: entries
       )
 
-      ActiveRecord::Base.transaction do
-        lock_txn_id!(txn_id)
+      with_locked_transaction(txn_id:) do
+        existing_txn = find_locked_transaction_by_txn_id(txn_id)
+        return replay_existing_transaction!(
+          ledger_transaction: existing_txn,
+          payload_hash: payload_hash,
+          source_type: source_type,
+          source_id: source_id,
+          receivable_id: receivable_id,
+          payment_reference: payment_reference
+        ) if existing_txn
 
-        existing_txn = LedgerTransaction.lock.find_by(tenant_id: @tenant_id, txn_id: txn_id)
-        if existing_txn
-          return replay_existing_transaction!(
-            ledger_transaction: existing_txn,
-            payload_hash: payload_hash,
-            source_type: source_type,
-            source_id: source_id,
-            receivable_id: receivable_id,
-            payment_reference: payment_reference
-          )
-        end
-
-        total_entries = entries.size
-        ledger_transaction = LedgerTransaction.create!(
-          tenant_id: @tenant_id,
+        ledger_transaction = create_ledger_transaction!(
           txn_id: txn_id,
           source_type: source_type,
           source_id: source_id,
           receivable_id: receivable_id,
           payment_reference: payment_reference,
-          actor_party_id: @actor_party_id,
-          actor_role: @actor_role,
-          request_id: @request_id,
           payload_hash: payload_hash,
-          entry_count: total_entries,
           posted_at: posted_at,
-          metadata: {}
+          total_entries: entries.size
         )
-
-        now = Time.current
-        rows = entries.each_with_index.map do |entry, index|
-          {
-            id: SecureRandom.uuid,
-            tenant_id: @tenant_id,
-            txn_id: txn_id,
-            entry_position: index + 1,
-            txn_entry_count: total_entries,
-            receivable_id: receivable_id,
-            account_code: entry[:account_code],
-            entry_side: entry[:entry_side],
-            amount: round_money(entry[:amount]),
-            currency: "BRL",
-            party_id: entry[:party_id],
-            payment_reference: payment_reference,
-            source_type: source_type,
-            source_id: source_id,
-            metadata: build_entry_metadata(entry[:metadata], payload_hash: payload_hash),
-            posted_at: posted_at,
-            created_at: now,
-            updated_at: now
-          }
-        end
-
-        LedgerEntry.insert_all!(rows)
+        insert_ledger_entries!(
+          entries: entries,
+          txn_id: txn_id,
+          source_type: source_type,
+          source_id: source_id,
+          receivable_id: receivable_id,
+          payment_reference: payment_reference,
+          payload_hash: payload_hash,
+          posted_at: posted_at
+        )
 
         fetch_entries!(ledger_transaction)
       end
@@ -110,6 +84,88 @@ module Ledger
 
     private
 
+    def idempotency_payload_hash_for_call(source_type:, source_id:, receivable_id:, payment_reference:, entries:)
+      idempotency_payload_hash(
+        source_type: source_type,
+        source_id: source_id,
+        receivable_id: receivable_id,
+        payment_reference: payment_reference,
+        entries: entries
+      )
+    end
+
+    def with_locked_transaction(txn_id:)
+      ActiveRecord::Base.transaction do
+        lock_txn_id!(txn_id)
+        yield
+      end
+    end
+
+    def find_locked_transaction_by_txn_id(txn_id)
+      LedgerTransaction.lock.find_by(tenant_id: @tenant_id, txn_id: txn_id)
+    end
+
+    def create_ledger_transaction!(txn_id:, source_type:, source_id:, receivable_id:, payment_reference:, payload_hash:, posted_at:, total_entries:)
+      LedgerTransaction.create!(
+        tenant_id: @tenant_id,
+        txn_id: txn_id,
+        source_type: source_type,
+        source_id: source_id,
+        receivable_id: receivable_id,
+        payment_reference: payment_reference,
+        actor_party_id: @actor_party_id,
+        actor_role: @actor_role,
+        request_id: @request_id,
+        payload_hash: payload_hash,
+        entry_count: total_entries,
+        posted_at: posted_at,
+        metadata: {}
+      )
+    end
+
+    def insert_ledger_entries!(entries:, txn_id:, source_type:, source_id:, receivable_id:, payment_reference:, payload_hash:, posted_at:)
+      LedgerEntry.insert_all!(
+        build_ledger_entry_rows(
+          entries: entries,
+          txn_id: txn_id,
+          source_type: source_type,
+          source_id: source_id,
+          receivable_id: receivable_id,
+          payment_reference: payment_reference,
+          payload_hash: payload_hash,
+          posted_at: posted_at
+        )
+      )
+    end
+
+    def build_ledger_entry_rows(entries:, txn_id:, source_type:, source_id:, receivable_id:, payment_reference:, payload_hash:, posted_at:)
+      now = Time.current
+      total_entries = entries.size
+
+      entries.each_with_index.map do |entry, index|
+        {
+          id: SecureRandom.uuid,
+          tenant_id: @tenant_id,
+          txn_id: txn_id,
+          entry_position: index + 1,
+          txn_entry_count: total_entries,
+          receivable_id: receivable_id,
+          account_code: entry[:account_code],
+          entry_side: entry[:entry_side],
+          amount: round_money(entry[:amount]),
+          currency: "BRL",
+          party_id: entry[:party_id],
+          payment_reference: payment_reference,
+          source_type: source_type,
+          source_id: source_id,
+          metadata: build_entry_metadata(entry[:metadata], payload_hash: payload_hash),
+          posted_at: posted_at,
+          created_at: now,
+          updated_at: now
+        }
+      end
+    end
+
     def validate_reconciliation_reference!(source_type:, payment_reference:)
       return unless source_type.to_s == "ReceivablePaymentSettlement"
       return if payment_reference.to_s.strip.present?
@@ -122,28 +178,31 @@ module Ledger
 
     def validate_entries!(entries)
       raise_validation_error!("empty_entries", "entries must not be empty.") if entries.blank?
+      validate_entry_shape!(entries)
+      ensure_balanced_entries!(entries)
+    end
 
+    def validate_entry_shape!(entries)
       entries.each do |entry|
-        unless ChartOfAccounts.valid_code?(entry[:account_code])
-          raise_validation_error!("unknown_account_code", "unknown account code: #{entry[:account_code]}")
-        end
-
-        unless %w[DEBIT CREDIT].include?(entry[:entry_side])
-          raise_validation_error!("invalid_entry_side", "entry_side must be DEBIT or CREDIT.")
-        end
+        validate_account_code!(entry[:account_code])
+        validate_entry_side!(entry[:entry_side])
       end
+    end
 
-      debit_sum = BigDecimal("0")
-      credit_sum = BigDecimal("0")
+    def validate_account_code!(account_code)
+      return if ChartOfAccounts.valid_code?(account_code)
 
-      entries.each do |entry|
-        rounded = round_money(entry[:amount])
-        if entry[:entry_side] == "DEBIT"
-          debit_sum += rounded
-        else
-          credit_sum += rounded
-        end
-      end
+      raise_validation_error!("unknown_account_code", "unknown account code: #{account_code}")
+    end
+
+    def validate_entry_side!(entry_side)
+      return if %w[DEBIT CREDIT].include?(entry_side)
+
+      raise_validation_error!("invalid_entry_side", "entry_side must be DEBIT or CREDIT.")
+    end
+
+    def ensure_balanced_entries!(entries)
+      debit_sum, credit_sum = balance_totals(entries)
 
       return if debit_sum == credit_sum
 
@@ -151,6 +210,17 @@ module Ledger
         "unbalanced_transaction",
         "transaction is unbalanced: debits=#{debit_sum.to_s('F')} credits=#{credit_sum.to_s('F')}"
       )
+    end
+
+    def balance_totals(entries)
+      entries.each_with_object([ BigDecimal("0"), BigDecimal("0") ]) do |entry, totals|
+        rounded_amount = round_money(entry[:amount])
+        if entry[:entry_side] == "DEBIT"
+          totals[0] += rounded_amount
+        else
+          totals[1] += rounded_amount
+        end
+      end
     end
 
     def round_money(value)
