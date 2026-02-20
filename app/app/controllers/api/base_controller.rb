@@ -41,7 +41,7 @@ module Api
     end
 
     def resolved_actor_id
-      Current.user&.party_id || Current.user&.uuid_id || Current.user&.id || Current.api_access_token&.id
+      actor_identifier_candidates.find(&:present?)
     end
 
     def resolved_role
@@ -100,6 +100,15 @@ module Api
 
     def current_actor_party_id
       Current.user&.party_id
+    end
+
+    def actor_identifier_candidates
+      [
+        Current.user&.party_id,
+        Current.user&.uuid_id,
+        Current.user&.id,
+        Current.api_access_token&.id
+      ]
     end
 
     def authorize_party_access!(party_id)
