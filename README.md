@@ -20,8 +20,7 @@ The system supports:
 
 ## Core architecture
 
-- Backend: Rails 8.1 monolith (`app/`), pinned to stable patch release.
-- Backend: Rails 8.2 edge monolith (`app/`), pinned to immutable SHA pre-stable.
+- Backend: Rails 8.2 edge monolith (`app/`), tracking Rails main branch pre-stable.
 - DB: PostgreSQL with enforced RLS + `FORCE ROW LEVEL SECURITY`.
 - Money/rate precision:
   - Ruby: `BigDecimal`
@@ -204,8 +203,10 @@ cp .env.example .env
 rv clean-install
 docker compose up -d
 rv ruby run -- -S bin/rails db:prepare
-ADMIN_PASSWORD=dev-upright UPRIGHT_HOSTNAME=upright.localhost NEXUM_APP_BASE_URL=http://localhost:3000 rv ruby run -- -S bin/dev
+PORT=3100 ADMIN_PASSWORD=dev-upright UPRIGHT_HOSTNAME=upright.localhost NEXUM_APP_BASE_URL=http://localhost:3000 rv ruby run -- -S bin/dev
 ```
+
+Run Nexum (`app/`) locally on `http://localhost:3000` first so Upright probes the real app.
 
 Release policy:
 - open a changelog entry under `## [Unreleased]`

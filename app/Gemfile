@@ -1,7 +1,7 @@
 source "https://rubygems.org"
 
-# Rails 8.2 edge pinned to an immutable SHA until a stable 8.2.x release exists.
-gem "rails", github: "rails/rails", ref: "88ffabd5da302f90e54b6809c9b0843103a5d397"
+# Rails 8.2 edge on main branch until stable 8.2.x is available on RubyGems.
+gem "rails", github: "rails/rails", branch: "main"
 # The modern asset pipeline for Rails [https://github.com/rails/propshaft]
 gem "propshaft"
 # Use postgresql as the database for Active Record

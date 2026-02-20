@@ -19,13 +19,15 @@ cp .env.example .env
 rv clean-install
 docker compose up -d
 rv ruby run -- -S bin/rails db:prepare
-ADMIN_PASSWORD=dev-upright UPRIGHT_HOSTNAME=upright.localhost NEXUM_APP_BASE_URL=http://localhost:3000 rv ruby run -- -S bin/dev
+PORT=3100 ADMIN_PASSWORD=dev-upright UPRIGHT_HOSTNAME=upright.localhost NEXUM_APP_BASE_URL=http://localhost:3000 rv ruby run -- -S bin/dev
 ```
+
+Run Nexum app in another terminal on `http://localhost:3000` before starting probes.
 
 Access:
 
-- Global dashboard: `http://app.upright.localhost:3000`
-- Site view (Sao Paulo): `http://gru.upright.localhost:3000`
+- Global dashboard: `http://app.upright.localhost:3100`
+- Site view (Sao Paulo): `http://gru.upright.localhost:3100`
 
 Default login user is `admin`; password comes from `ADMIN_PASSWORD`.
 
@@ -58,4 +60,7 @@ Required variables/secrets are documented in:
 Production safety:
 
 - `UPRIGHT_HOSTNAME` is mandatory outside local environments.
-- `ADMIN_PASSWORD` must be set and cannot use the default `upright`.
+- OIDC is required in production by default (`OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`).
+- Static credentials in production require explicit emergency override:
+  - `UPRIGHT_AUTH_PROVIDER=static_credentials`
+  - `UPRIGHT_ALLOW_STATIC_AUTH_IN_PRODUCTION=true`

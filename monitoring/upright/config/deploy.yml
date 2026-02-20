@@ -2,7 +2,7 @@
 # Deploy with: bin/kamal deploy
 
 service: nexum-upright
-image: ghcr.io/nexum-capital/nexum-upright
+image: nexum-capital/nexum-upright
 
 servers:
   web:
@@ -35,7 +35,8 @@ proxy:
   app_port: 3000
   ssl: true
   hosts:
-    - <%= "*.#{ENV.fetch("UPRIGHT_HOSTNAME")}" %>
+    - <%= "app.#{ENV.fetch("UPRIGHT_HOSTNAME")}" %>
+    - <%= "gru.#{ENV.fetch("UPRIGHT_HOSTNAME")}" %>
   healthcheck:
     path: /up
     interval: 10
