@@ -4,6 +4,7 @@ module Api
       class TokensController < ActionController::API
         require "base64"
         include RequestContext
+        include IdempotencyEnforcement
 
         rescue_from RequestContext::ContextError, with: :render_request_context_error
         before_action :set_oauth_response_headers

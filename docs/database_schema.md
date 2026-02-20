@@ -13,17 +13,18 @@ erDiagram
     }
 
     users {
-        integer id PK
+        uuid uuid_id PK
         string email_address UK
         string password_digest
         uuid tenant_id FK
         uuid party_id FK
-        string role
+        boolean mfa_enabled
+        string webauthn_id
     }
 
     sessions {
         integer id PK
-        integer user_id FK
+        uuid user_uuid_id FK
         string ip_address
         string user_agent
     }
@@ -31,7 +32,7 @@ erDiagram
     api_access_tokens {
         uuid id PK
         uuid tenant_id FK
-        integer user_id FK
+        uuid user_uuid_id FK
         string name
         string token_identifier UK
         string token_digest

@@ -20,7 +20,7 @@ The system supports:
 
 ## Core architecture
 
-- Backend: Rails 8.2 monolith (`app/`).
+- Backend: Rails 8.1 monolith (`app/`), pinned to stable patch release.
 - DB: PostgreSQL with enforced RLS + `FORCE ROW LEVEL SECURITY`.
 - Money/rate precision:
   - Ruby: `BigDecimal`
@@ -192,8 +192,10 @@ Release policy:
 
 ## Demo users
 
+Local/demo only (`development` or `test`):
+
 Tenant slug: `demo-br`  
-Password: `Nexum@2026`
+Password: defined by `DEMO_SEED_PASSWORD` (or generated at seed time if unset)
 Default hospital organization seed code: `hospital-organization-main`
 
 - `hospital_org_user@demo.nexum.capital` (organization managing multiple hospitals)
@@ -201,3 +203,7 @@ Default hospital organization seed code: `hospital-organization-main`
 - `supplier_user@demo.nexum.capital`
 - `physician_user@demo.nexum.capital`
 - `fdic_user@demo.nexum.capital`
+
+Security notes:
+- `SHOW_DEMO_CREDENTIALS` controls whether demo accounts are rendered on the login page.
+- Demo seeds are blocked in production unless `ALLOW_DEMO_SEEDS=true`.

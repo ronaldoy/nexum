@@ -55,6 +55,7 @@ paths:
       operationId: issueOAuthToken
       parameters:
         - $ref: "#/components/parameters/TenantSlug"
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:

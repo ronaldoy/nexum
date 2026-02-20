@@ -5,7 +5,7 @@ Rails application for receivables anticipation platform.
 For full architecture, domain flow, and demo walkthrough see root `README.md`.
 
 ## Stack
-- Rails 8.2 edge during build (pin stable 8.2.x before launch)
+- Rails 8.1 stable (pinned patch release)
 - PostgreSQL 18.1
 - Solid Queue / Solid Cache / Solid Cable
 - Hotwire (`turbo-rails`, `stimulus-rails`)

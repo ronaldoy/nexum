@@ -1,14 +1,19 @@
 # frozen_string_literal: true
 
 require "digest"
+require "securerandom"
 
 module DemoSeeds
   module_function
 
-  PASSWORD = "Nexum@2026"
+  PASSWORD = ENV["DEMO_SEED_PASSWORD"].presence || SecureRandom.base58(24)
   SEED_VERSION = "v2"
 
   def run!
+    if Rails.env.production? && !ActiveModel::Type::Boolean.new.cast(ENV["ALLOW_DEMO_SEEDS"])
+      raise "Demo seeds are disabled in production. Set ALLOW_DEMO_SEEDS=true to enable intentionally."
+    end
+
     puts "== Nexum Capital demo seed =="
 
     tenant = Tenant.find_or_create_by!(slug: "demo-br") do |record|

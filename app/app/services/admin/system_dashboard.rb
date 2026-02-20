@@ -25,48 +25,30 @@ module Admin
 
     def build_tenant_row(tenant)
       with_tenant_database_context(tenant_id: tenant.id, actor_id: actor_id, role: role) do
-        receivables_scope = Receivable.where(tenant_id: tenant.id)
-        anticipation_scope = AnticipationRequest.where(tenant_id: tenant.id)
-        settlements_scope = ReceivablePaymentSettlement.where(tenant_id: tenant.id)
-        ownerships_scope = HospitalOwnership.where(tenant_id: tenant.id, active: true)
-        outbox_scope = OutboxEvent.where(tenant_id: tenant.id)
-        dispatch_attempts_scope = OutboxDispatchAttempt.where(tenant_id: tenant.id)
-        reconciliation_scope = ReconciliationException.where(tenant_id: tenant.id)
-        reconciliation_open_scope = reconciliation_scope.open
-        sent_outbox_ids = dispatch_attempts_scope.where(status: "SENT").select(:outbox_event_id)
-        dead_letter_outbox_ids = dispatch_attempts_scope.where(status: "DEAD_LETTER").select(:outbox_event_id)
+        metrics = tenant_metrics(tenant_id: tenant.id)
 
         {
           tenant_id: tenant.id,
           tenant_slug: tenant.slug,
           tenant_name: tenant.name,
           tenant_active: tenant.active,
-          users_count: User.where(tenant_id: tenant.id).count,
-          hospital_count: Party.where(tenant_id: tenant.id, kind: "HOSPITAL").count,
-          hospital_organization_count: ownerships_scope.select(:organization_party_id).distinct.count,
-          hospital_ownership_count: ownerships_scope.count,
-          receivable_count: receivables_scope.count,
-          receivable_gross_amount: receivables_scope.sum(:gross_amount).to_d,
-          anticipation_count: anticipation_scope.count,
-          anticipation_requested_amount: anticipation_scope.sum(:requested_amount).to_d,
-          funded_anticipation_count: anticipation_scope.where(status: %w[APPROVED FUNDED SETTLED]).count,
-          settlement_count: settlements_scope.count,
-          settlement_paid_amount: settlements_scope.sum(:paid_amount).to_d,
-          outbox_pending_count: outbox_scope.where.not(id: sent_outbox_ids).where.not(id: dead_letter_outbox_ids).count,
-          outbox_dead_letter_count: dispatch_attempts_scope.where(status: "DEAD_LETTER").count,
-          reconciliation_open_count: reconciliation_open_scope.count,
-          reconciliation_total_count: reconciliation_scope.count,
-          direct_upload_count: ActiveStorage::Blob.where(
-            "app_active_storage_blob_tenant_id(metadata) = CAST(? AS uuid)",
-            tenant.id
-          ).count,
-          last_activity_at: [
-            receivables_scope.maximum(:updated_at),
-            anticipation_scope.maximum(:updated_at),
-            settlements_scope.maximum(:updated_at),
-            reconciliation_scope.maximum(:last_seen_at),
-            ActionIpLog.where(tenant_id: tenant.id).maximum(:occurred_at)
-          ].compact.max
+          users_count: integer_value(metrics["users_count"]),
+          hospital_count: integer_value(metrics["hospital_count"]),
+          hospital_organization_count: integer_value(metrics["hospital_organization_count"]),
+          hospital_ownership_count: integer_value(metrics["hospital_ownership_count"]),
+          receivable_count: integer_value(metrics["receivable_count"]),
+          receivable_gross_amount: decimal_value(metrics["receivable_gross_amount"]),
+          anticipation_count: integer_value(metrics["anticipation_count"]),
+          anticipation_requested_amount: decimal_value(metrics["anticipation_requested_amount"]),
+          funded_anticipation_count: integer_value(metrics["funded_anticipation_count"]),
+          settlement_count: integer_value(metrics["settlement_count"]),
+          settlement_paid_amount: decimal_value(metrics["settlement_paid_amount"]),
+          outbox_pending_count: integer_value(metrics["outbox_pending_count"]),
+          outbox_dead_letter_count: integer_value(metrics["outbox_dead_letter_count"]),
+          reconciliation_open_count: integer_value(metrics["reconciliation_open_count"]),
+          reconciliation_total_count: integer_value(metrics["reconciliation_total_count"]),
+          direct_upload_count: integer_value(metrics["direct_upload_count"]),
+          last_activity_at: time_value(metrics["last_activity_at"])
         }
       end
     end
@@ -122,6 +104,65 @@ module Admin
         .sort_by { |row| row[:last_seen_at] || Time.at(0) }
         .reverse
         .first(global_limit)
+    end
+
+    def tenant_metrics(tenant_id:)
+      quoted_tenant_id = ActiveRecord::Base.connection.quote(tenant_id)
+
+      ActiveRecord::Base.connection.select_one(<<~SQL.squish)
+        SELECT
+          (SELECT COUNT(*) FROM users WHERE tenant_id = #{quoted_tenant_id}) AS users_count,
+          (SELECT COUNT(*) FROM parties WHERE tenant_id = #{quoted_tenant_id} AND kind = 'HOSPITAL') AS hospital_count,
+          (SELECT COUNT(DISTINCT organization_party_id) FROM hospital_ownerships WHERE tenant_id = #{quoted_tenant_id} AND active = TRUE) AS hospital_organization_count,
+          (SELECT COUNT(*) FROM hospital_ownerships WHERE tenant_id = #{quoted_tenant_id} AND active = TRUE) AS hospital_ownership_count,
+          (SELECT COUNT(*) FROM receivables WHERE tenant_id = #{quoted_tenant_id}) AS receivable_count,
+          (SELECT COALESCE(SUM(gross_amount), 0) FROM receivables WHERE tenant_id = #{quoted_tenant_id}) AS receivable_gross_amount,
+          (SELECT COUNT(*) FROM anticipation_requests WHERE tenant_id = #{quoted_tenant_id}) AS anticipation_count,
+          (SELECT COALESCE(SUM(requested_amount), 0) FROM anticipation_requests WHERE tenant_id = #{quoted_tenant_id}) AS anticipation_requested_amount,
+          (SELECT COUNT(*) FROM anticipation_requests WHERE tenant_id = #{quoted_tenant_id} AND status IN ('APPROVED', 'FUNDED', 'SETTLED')) AS funded_anticipation_count,
+          (SELECT COUNT(*) FROM receivable_payment_settlements WHERE tenant_id = #{quoted_tenant_id}) AS settlement_count,
+          (SELECT COALESCE(SUM(paid_amount), 0) FROM receivable_payment_settlements WHERE tenant_id = #{quoted_tenant_id}) AS settlement_paid_amount,
+          (
+            SELECT COUNT(*)
+            FROM outbox_events events
+            WHERE events.tenant_id = #{quoted_tenant_id}
+              AND NOT EXISTS (
+                SELECT 1
+                FROM outbox_dispatch_attempts attempts
+                WHERE attempts.tenant_id = events.tenant_id
+                  AND attempts.outbox_event_id = events.id
+                  AND attempts.status IN ('SENT', 'DEAD_LETTER')
+              )
+          ) AS outbox_pending_count,
+          (SELECT COUNT(*) FROM outbox_dispatch_attempts WHERE tenant_id = #{quoted_tenant_id} AND status = 'DEAD_LETTER') AS outbox_dead_letter_count,
+          (SELECT COUNT(*) FROM reconciliation_exceptions WHERE tenant_id = #{quoted_tenant_id} AND status = 'OPEN') AS reconciliation_open_count,
+          (SELECT COUNT(*) FROM reconciliation_exceptions WHERE tenant_id = #{quoted_tenant_id}) AS reconciliation_total_count,
+          (SELECT COUNT(*) FROM active_storage_blobs WHERE app_active_storage_blob_tenant_id(metadata) = CAST(#{quoted_tenant_id} AS uuid)) AS direct_upload_count,
+          (
+            SELECT GREATEST(
+              COALESCE((SELECT MAX(updated_at) FROM receivables WHERE tenant_id = #{quoted_tenant_id}), 'epoch'::timestamp),
+              COALESCE((SELECT MAX(updated_at) FROM anticipation_requests WHERE tenant_id = #{quoted_tenant_id}), 'epoch'::timestamp),
+              COALESCE((SELECT MAX(updated_at) FROM receivable_payment_settlements WHERE tenant_id = #{quoted_tenant_id}), 'epoch'::timestamp),
+              COALESCE((SELECT MAX(last_seen_at) FROM reconciliation_exceptions WHERE tenant_id = #{quoted_tenant_id}), 'epoch'::timestamp),
+              COALESCE((SELECT MAX(occurred_at) FROM action_ip_logs WHERE tenant_id = #{quoted_tenant_id}), 'epoch'::timestamp)
+            )
+          ) AS last_activity_at
+      SQL
+    end
+
+    def integer_value(value)
+      value.to_i
+    end
+
+    def decimal_value(value)
+      BigDecimal(value.to_s)
+    end
+
+    def time_value(value)
+      return nil if value.blank?
+      return nil if value.to_s == "1970-01-01 00:00:00"
+
+      value.in_time_zone
     end
 
     def with_tenant_database_context(tenant_id:, actor_id:, role:)

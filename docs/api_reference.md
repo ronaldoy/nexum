@@ -1,6 +1,6 @@
 # API Reference
 
-Generated at: 2026-02-19T18:45:32-03:00
+Generated at: 2026-02-20T10:54:36-03:00
 Source contract: `docs/openapi/v1.yaml`
 
 ## Authentication
@@ -20,7 +20,7 @@ Source contract: `docs/openapi/v1.yaml`
 | `POST` | `/api/v1/kyc_profiles` | `createKycProfile` | Create KYC profile | Yes | 201, 400, 401, 403, 409, 422 |
 | `GET` | `/api/v1/kyc_profiles/{id}` | `getKycProfile` | Fetch KYC profile | No | 200, 401, 403, 404 |
 | `POST` | `/api/v1/kyc_profiles/{id}/submit_document` | `submitKycDocument` | Submit KYC document metadata | Yes | 200, 400, 401, 403, 404, 409, 422 |
-| `POST` | `/api/v1/oauth/token/{tenant_slug}` | `issueOAuthToken` | Issue OAuth access token with client credentials | No | 200, 400, 401, 422, 503 |
+| `POST` | `/api/v1/oauth/token/{tenant_slug}` | `issueOAuthToken` | Issue OAuth access token with client credentials | Yes | 200, 400, 401, 422, 503 |
 | `POST` | `/api/v1/physicians` | `createPhysician` | Create physician profile | Yes | 200, 201, 400, 401, 403, 409, 422 |
 | `GET` | `/api/v1/physicians/{id}` | `getPhysician` | Fetch physician by id | No | 200, 401, 403, 404 |
 | `GET` | `/api/v1/receivables` | `listReceivables` | List receivables | No | 200, 401, 403 |

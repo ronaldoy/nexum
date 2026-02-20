@@ -28,4 +28,36 @@
 #       enabled: "ON"
 
 en:
-  hello: "Hello world"
+  sessions:
+    new:
+      eyebrow: "Operations Portal"
+      title: "Sign in to Nexum Capital"
+      subtitle: "Track anticipations, signed documents, and settlements in one place."
+      fields:
+        tenant_slug:
+          label: "Organization code"
+        email_address:
+          label: "Email"
+        password:
+          label: "Password"
+        otp_code:
+          label: "MFA code (privileged profiles)"
+      actions:
+        submit: "Sign in"
+        forgot_password: "Forgot your password?"
+      demo:
+        title: "Demo access"
+        subtitle: "Use the profiles below to review end-to-end flows."
+        roles:
+          hospital_org: "Hospital organization"
+          hospital_unit: "Hospital unit"
+          supplier: "Supplier"
+          physician: "Physician"
+          fdic: "FDIC"
+        users:
+          hospital_org: "hospital_org_user@demo.nexum.capital"
+          hospital_unit: "hospital_unit_user@demo.nexum.capital"
+          supplier: "supplier_user@demo.nexum.capital"
+          physician: "physician_user@demo.nexum.capital"
+          fdic: "fdic_user@demo.nexum.capital"
+        password_hint: "Demo password:"

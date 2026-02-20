@@ -1,6 +1,6 @@
 # Database Model Documentation
 
-Generated at: 2026-02-19T18:45:32-03:00
+Generated at: 2026-02-20T10:54:37-03:00
 Source schema: `app/db/structure.sql`
 
 ## Summary
@@ -272,7 +272,6 @@ Source schema: `app/db/structure.sql`
 | --- | --- | --- | --- | --- |
 | `id` | `uuid` | false | `` | - |
 | `tenant_id` | `uuid` | false | `` | `tenants.id` |
-| `user_id` | `bigint` | true | `` | `users.id` |
 | `name` | `character varying` | false | `` | - |
 | `token_identifier` | `character varying` | false | `` | - |
 | `token_digest` | `character varying` | false | `` | - |
@@ -295,7 +294,6 @@ Source schema: `app/db/structure.sql`
 - `index_api_access_tokens_on_tenant_id` (non-unique): `tenant_id`
 - `index_api_access_tokens_on_tenant_lifecycle` (non-unique): `tenant_id, revoked_at, expires_at`
 - `index_api_access_tokens_on_token_identifier` (unique): `token_identifier`
-- `index_api_access_tokens_on_user_id` (non-unique): `user_id`
 - `index_api_access_tokens_on_user_uuid_id` (non-unique): `user_uuid_id`
 
 ## `assignment_contracts`
@@ -1016,7 +1014,6 @@ Source schema: `app/db/structure.sql`
 | --- | --- | --- | --- | --- |
 | `id` | `uuid` | false | `` | - |
 | `tenant_id` | `uuid` | false | `` | `tenants.id` |
-| `created_by_user_id` | `bigint` | true | `` | `users.id` |
 | `name` | `character varying` | false | `` | - |
 | `client_id` | `character varying` | false | `` | - |
 | `client_secret_digest` | `character varying` | false | `` | - |
@@ -1041,7 +1038,6 @@ Source schema: `app/db/structure.sql`
 ### Indexes
 
 - `index_partner_applications_on_client_id` (unique): `client_id`
-- `index_partner_applications_on_created_by_user_id` (non-unique): `created_by_user_id`
 - `index_partner_applications_on_created_by_user_uuid_id` (non-unique): `created_by_user_uuid_id`
 - `index_partner_applications_on_tenant_id` (non-unique): `tenant_id`
 - `index_partner_applications_tenant_active_created` (non-unique): `tenant_id, active, created_at`
@@ -1603,20 +1599,18 @@ Source schema: `app/db/structure.sql`
 | Column | SQL Type | Null | Default | FK |
 | --- | --- | --- | --- | --- |
 | `id` | `bigint` | false | `` | - |
-| `user_id` | `bigint` | false | `` | `users.id` |
 | `ip_address` | `character varying` | true | `` | - |
 | `user_agent` | `character varying` | true | `` | - |
 | `created_at` | `timestamp(6) without time zone` | false | `` | - |
 | `updated_at` | `timestamp(6) without time zone` | false | `` | - |
 | `tenant_id` | `uuid` | false | `` | `tenants.id` |
 | `admin_webauthn_verified_at` | `timestamp(6) without time zone` | true | `` | - |
-| `user_uuid_id` | `uuid` | true | `` | `users.uuid_id` |
+| `user_uuid_id` | `uuid` | false | `` | `users.uuid_id` |
 
 ### Indexes
 
 - `index_sessions_on_tenant_id` (non-unique): `tenant_id`
-- `index_sessions_on_tenant_id_and_user_id` (non-unique): `tenant_id, user_id`
-- `index_sessions_on_user_id` (non-unique): `user_id`
+- `index_sessions_on_tenant_id_and_user_uuid_id` (non-unique): `tenant_id, user_uuid_id`
 - `index_sessions_on_user_uuid_id` (non-unique): `user_uuid_id`
 
 ## `tenants`
@@ -1663,26 +1657,26 @@ Source schema: `app/db/structure.sql`
 | --- | --- | --- | --- | --- |
 | `id` | `uuid` | false | `` | - |
 | `tenant_id` | `uuid` | false | `` | `tenants.id` |
-| `user_id` | `bigint` | false | `` | `users.id` |
 | `role_id` | `uuid` | false | `` | `roles.id` |
-| `assigned_by_user_id` | `bigint` | true | `` | `users.id` |
 | `assigned_at` | `timestamp(6) without time zone` | false | `` | - |
 | `metadata` | `jsonb` | false | `{}` | - |
 | `created_at` | `timestamp(6) without time zone` | false | `` | - |
 | `updated_at` | `timestamp(6) without time zone` | false | `` | - |
+| `user_uuid_id` | `uuid` | false | `` | `users.uuid_id` |
+| `assigned_by_user_uuid_id` | `uuid` | true | `` | `users.uuid_id` |
 
 ### Indexes
 
-- `index_user_roles_on_assigned_by_user_id` (non-unique): `assigned_by_user_id`
+- `index_user_roles_on_assigned_by_user_uuid_id` (non-unique): `assigned_by_user_uuid_id`
 - `index_user_roles_on_role_id` (non-unique): `role_id`
 - `index_user_roles_on_tenant_id` (non-unique): `tenant_id`
 - `index_user_roles_on_tenant_role` (non-unique): `tenant_id, role_id`
-- `index_user_roles_on_tenant_user` (unique): `tenant_id, user_id`
-- `index_user_roles_on_user_id` (non-unique): `user_id`
+- `index_user_roles_on_tenant_user_uuid` (unique): `tenant_id, user_uuid_id`
+- `index_user_roles_on_user_uuid_id` (non-unique): `user_uuid_id`
 
 ## `users`
 
-- Primary key: `id`
+- Primary key: `uuid_id`
 - RLS enabled: `true`
 - RLS forced: `true`
 - Append-only guard: `false`
@@ -1694,7 +1688,6 @@ Source schema: `app/db/structure.sql`
 
 | Column | SQL Type | Null | Default | FK |
 | --- | --- | --- | --- | --- |
-| `id` | `bigint` | false | `` | - |
 | `email_address` | `text` | false | `` | - |
 | `password_digest` | `character varying` | false | `` | - |
 | `created_at` | `timestamp(6) without time zone` | false | `` | - |
@@ -1713,7 +1706,6 @@ Source schema: `app/db/structure.sql`
 - `index_users_on_party_id` (non-unique): `party_id`
 - `index_users_on_tenant_id` (non-unique): `tenant_id`
 - `index_users_on_tenant_id_and_webauthn_id` (unique): `tenant_id, webauthn_id` WHERE (webauthn_id IS NOT NULL)
-- `index_users_on_uuid_id` (unique): `uuid_id`
 
 ## `webauthn_credentials`
 
@@ -1731,7 +1723,6 @@ Source schema: `app/db/structure.sql`
 | --- | --- | --- | --- | --- |
 | `id` | `uuid` | false | `` | - |
 | `tenant_id` | `uuid` | false | `` | `tenants.id` |
-| `user_id` | `bigint` | false | `` | `users.id` |
 | `webauthn_id` | `character varying` | false | `` | - |
 | `public_key` | `text` | false | `` | - |
 | `sign_count` | `bigint` | false | `0` | - |
@@ -1740,6 +1731,7 @@ Source schema: `app/db/structure.sql`
 | `metadata` | `jsonb` | false | `{}` | - |
 | `created_at` | `timestamp(6) without time zone` | false | `` | - |
 | `updated_at` | `timestamp(6) without time zone` | false | `` | - |
+| `user_uuid_id` | `uuid` | false | `` | `users.uuid_id` |
 
 ### Check Constraints
 
@@ -1749,5 +1741,5 @@ Source schema: `app/db/structure.sql`
 
 - `index_webauthn_credentials_on_tenant_credential` (unique): `tenant_id, webauthn_id`
 - `index_webauthn_credentials_on_tenant_id` (non-unique): `tenant_id`
-- `index_webauthn_credentials_on_tenant_user_credential` (unique): `tenant_id, user_id, webauthn_id`
-- `index_webauthn_credentials_on_user_id` (non-unique): `user_id`
+- `index_webauthn_credentials_on_tenant_user_uuid_credential` (unique): `tenant_id, user_uuid_id, webauthn_id`
+- `index_webauthn_credentials_on_user_uuid_id` (non-unique): `user_uuid_id`

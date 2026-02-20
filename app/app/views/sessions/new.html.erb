@@ -1,63 +1,65 @@
 <main class="auth-shell">
   <section class="auth-card">
     <header>
-      <p class="auth-eyebrow">Portal de Operações</p>
-      <h1>Entrar na Nexum Capital</h1>
-      <p class="auth-subtitle">Acompanhe antecipações, documentos assinados e liquidações em um único fluxo.</p>
+      <p class="auth-eyebrow"><%= t("sessions.new.eyebrow") %></p>
+      <h1><%= t("sessions.new.title") %></h1>
+      <p class="auth-subtitle"><%= t("sessions.new.subtitle") %></p>
     </header>
 
     <%= form_with url: session_path, class: "auth-form" do |form| %>
       <div class="field">
-        <%= form.label :tenant_slug, "Código da organização" %>
+        <%= form.label :tenant_slug, t("sessions.new.fields.tenant_slug.label") %>
         <%= form.text_field :tenant_slug, required: true, autofocus: true, autocomplete: "organization", placeholder: "ex: hospital-alpha", value: params[:tenant_slug] %>
       </div>
 
       <div class="field">
-        <%= form.label :email_address, "E-mail" %>
+        <%= form.label :email_address, t("sessions.new.fields.email_address.label") %>
         <%= form.email_field :email_address, required: true, autocomplete: "username", placeholder: "voce@empresa.com.br", value: params[:email_address] %>
       </div>
 
       <div class="field">
-        <%= form.label :password, "Senha" %>
+        <%= form.label :password, t("sessions.new.fields.password.label") %>
         <%= form.password_field :password, required: true, autocomplete: "current-password", placeholder: "Digite sua senha", maxlength: 72 %>
       </div>
 
       <div class="field">
-        <%= form.label :otp_code, "Código MFA (perfis privilegiados)" %>
+        <%= form.label :otp_code, t("sessions.new.fields.otp_code.label") %>
         <%= form.text_field :otp_code, autocomplete: "one-time-code", inputmode: "numeric", placeholder: "000000" %>
       </div>
 
-      <%= form.submit "Entrar no portal", class: "button button-primary" %>
+      <%= form.submit t("sessions.new.actions.submit"), class: "button button-primary" %>
     <% end %>
 
-    <p class="auth-secondary-link"><%= link_to "Esqueceu sua senha?", new_password_path(tenant_slug: params[:tenant_slug]) %></p>
+    <p class="auth-secondary-link"><%= link_to t("sessions.new.actions.forgot_password"), new_password_path(tenant_slug: params[:tenant_slug]) %></p>
   </section>
 
-  <aside class="demo-card">
-    <h2>Acessos de demonstração</h2>
-    <p>Use os perfis abaixo para revisar o fluxo ponta a ponta.</p>
-    <ul class="demo-credentials">
-      <li>
-        <h3>Organização hospitalar</h3>
-        <p><code>hospital_org_user@demo.nexum.capital</code></p>
-      </li>
-      <li>
-        <h3>Unidade hospitalar</h3>
-        <p><code>hospital_unit_user@demo.nexum.capital</code></p>
-      </li>
-      <li>
-        <h3>Fornecedor</h3>
-        <p><code>supplier_user@demo.nexum.capital</code></p>
-      </li>
-      <li>
-        <h3>Médico</h3>
-        <p><code>physician_user@demo.nexum.capital</code></p>
-      </li>
-      <li>
-        <h3>FDIC</h3>
-        <p><code>fdic_user@demo.nexum.capital</code></p>
-      </li>
-    </ul>
-    <p class="demo-password">Senha padrão: <code>Nexum@2026</code></p>
-  </aside>
+  <% if ActiveModel::Type::Boolean.new.cast(ENV["SHOW_DEMO_CREDENTIALS"]) %>
+    <aside class="demo-card">
+      <h2><%= t("sessions.new.demo.title") %></h2>
+      <p><%= t("sessions.new.demo.subtitle") %></p>
+      <ul class="demo-credentials">
+        <li>
+          <h3><%= t("sessions.new.demo.roles.hospital_org") %></h3>
+          <p><code><%= t("sessions.new.demo.users.hospital_org") %></code></p>
+        </li>
+        <li>
+          <h3><%= t("sessions.new.demo.roles.hospital_unit") %></h3>
+          <p><code><%= t("sessions.new.demo.users.hospital_unit") %></code></p>
+        </li>
+        <li>
+          <h3><%= t("sessions.new.demo.roles.supplier") %></h3>
+          <p><code><%= t("sessions.new.demo.users.supplier") %></code></p>
+        </li>
+        <li>
+          <h3><%= t("sessions.new.demo.roles.physician") %></h3>
+          <p><code><%= t("sessions.new.demo.users.physician") %></code></p>
+        </li>
+        <li>
+          <h3><%= t("sessions.new.demo.roles.fdic") %></h3>
+          <p><code><%= t("sessions.new.demo.users.fdic") %></code></p>
+        </li>
+      </ul>
+      <p class="demo-password"><%= t("sessions.new.demo.password_hint") %> <code><%= ENV.fetch("DEMO_SEED_PASSWORD", "configure DEMO_SEED_PASSWORD") %></code></p>
+    </aside>
+  <% end %>
 </main>

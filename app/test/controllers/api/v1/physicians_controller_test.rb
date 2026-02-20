@@ -138,6 +138,7 @@ module Api
         end
 
         post api_v1_oauth_token_path(tenant_slug: @tenant.slug),
+          headers: { "Idempotency-Key" => "idem-oauth-partner-physician-001" },
           params: {
             grant_type: "client_credentials",
             client_id: partner_application.client_id,

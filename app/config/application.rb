@@ -27,6 +27,9 @@ module Nexum
     # in config/environments, which are processed later.
     #
     config.time_zone = ENV.fetch("APP_TIMEZONE", "America/Sao_Paulo")
+    config.i18n.default_locale = :"pt-BR"
+    config.i18n.available_locales = [ :"pt-BR", :en ]
+    config.i18n.fallbacks = [ :en ]
     config.active_record.default_timezone = :utc
     config.active_record.schema_format = :sql
     config.beginning_of_week = :monday

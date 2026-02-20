@@ -305,7 +305,9 @@ module Api
         return scope if privileged_actor?
 
         actor_party_id = current_actor_party_id
-        raise AuthorizationError, "actor_party_required" if actor_party_id.blank?
+        if actor_party_id.blank?
+          raise AuthorizationError.new(code: "actor_party_required", message: "Access denied.")
+        end
 
         visibility_sql = <<~SQL.squish
           receivables.debtor_party_id = :actor_party_id

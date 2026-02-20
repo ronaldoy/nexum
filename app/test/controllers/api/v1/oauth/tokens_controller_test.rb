@@ -23,6 +23,7 @@ module Api
 
         test "issues bearer token with client_credentials" do
           post api_v1_oauth_token_path(tenant_slug: @tenant.slug),
+            headers: default_headers,
             params: {
               grant_type: "client_credentials",
               client_id: @partner_application.client_id,
@@ -41,7 +42,7 @@ module Api
           encoded_credentials = Base64.strict_encode64("#{@partner_application.client_id}:#{@client_secret}")
 
           post api_v1_oauth_token_path(tenant_slug: @tenant.slug),
-            headers: { "Authorization" => "Basic #{encoded_credentials}" },
+            headers: default_headers.merge("Authorization" => "Basic #{encoded_credentials}"),
             params: {
               grant_type: "client_credentials",
               scope: "receivables:write"
@@ -55,6 +56,7 @@ module Api
 
         test "rejects invalid client secret" do
           post api_v1_oauth_token_path(tenant_slug: @tenant.slug),
+            headers: default_headers,
             params: {
               grant_type: "client_credentials",
               client_id: @partner_application.client_id,
@@ -67,6 +69,7 @@ module Api
 
         test "rejects scope outside partner application allowlist" do
           post api_v1_oauth_token_path(tenant_slug: @tenant.slug),
+            headers: default_headers,
             params: {
               grant_type: "client_credentials",
               client_id: @partner_application.client_id,
@@ -80,10 +83,29 @@ module Api
 
         test "rejects missing client credentials" do
           post api_v1_oauth_token_path(tenant_slug: @tenant.slug),
+            headers: default_headers,
             params: { grant_type: "client_credentials" }
 
           assert_response :unauthorized
           assert_equal "invalid_client", response.parsed_body["error"]
+        end
+
+        test "requires idempotency key" do
+          post api_v1_oauth_token_path(tenant_slug: @tenant.slug),
+            params: {
+              grant_type: "client_credentials",
+              client_id: @partner_application.client_id,
+              client_secret: @client_secret
+            }
+
+          assert_response :unprocessable_entity
+          assert_equal "missing_idempotency_key", response.parsed_body.dig("error", "code")
+        end
+
+        private
+
+        def default_headers
+          { "Idempotency-Key" => SecureRandom.uuid }
         end
       end
     end

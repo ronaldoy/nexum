@@ -1,0 +1,42 @@
+pt-BR:
+  date:
+    formats:
+      short: "%d/%m/%Y"
+      long: "%d de %B de %Y"
+  time:
+    formats:
+      short: "%d/%m/%Y %H:%M"
+      long: "%d/%m/%Y %H:%M:%S"
+  sessions:
+    new:
+      eyebrow: "Portal de Operações"
+      title: "Entrar na Nexum Capital"
+      subtitle: "Acompanhe antecipações, documentos assinados e liquidações em um único fluxo."
+      fields:
+        tenant_slug:
+          label: "Código da organização"
+        email_address:
+          label: "E-mail"
+        password:
+          label: "Senha"
+        otp_code:
+          label: "Código MFA (perfis privilegiados)"
+      actions:
+        submit: "Entrar no portal"
+        forgot_password: "Esqueceu sua senha?"
+      demo:
+        title: "Acessos de demonstração"
+        subtitle: "Use os perfis abaixo para revisar o fluxo ponta a ponta."
+        roles:
+          hospital_org: "Organização hospitalar"
+          hospital_unit: "Unidade hospitalar"
+          supplier: "Fornecedor"
+          physician: "Médico"
+          fdic: "FDIC"
+        users:
+          hospital_org: "hospital_org_user@demo.nexum.capital"
+          hospital_unit: "hospital_unit_user@demo.nexum.capital"
+          supplier: "supplier_user@demo.nexum.capital"
+          physician: "physician_user@demo.nexum.capital"
+          fdic: "fdic_user@demo.nexum.capital"
+        password_hint: "Senha de demonstração:"

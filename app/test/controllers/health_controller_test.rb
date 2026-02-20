@@ -17,7 +17,8 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     body = response.parsed_body
     assert_equal "ok", body["status"]
-    assert_equal "ok", body.dig("checks", "database")
+    assert body["checks"].is_a?(Hash)
+    assert_equal "ok", body.dig("checks", "primary")
     assert body["timestamp"].present?
   end
 end
