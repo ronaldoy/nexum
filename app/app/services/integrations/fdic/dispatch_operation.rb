@@ -16,32 +16,17 @@ module Integrations
       SENT_STATUSES = %w[SENT SUCCESS ACCEPTED COMPLETED].freeze
 
       def call(outbox_event:)
-        operation_type = OPERATION_TYPES_BY_EVENT[outbox_event.event_type]
-        if operation_type.blank?
-          raise ValidationError.new(
-            code: "fdic_event_type_not_supported",
-            message: "FDIC dispatcher does not support event type #{outbox_event.event_type.inspect}."
-          )
-        end
+        payload = {}
+        operation_idempotency_key = nil
+        operation = nil
 
+        operation_type = resolve_operation_type!(outbox_event.event_type)
         payload = normalize_metadata(outbox_event.payload || {})
-        provider_code = ProviderConfig.normalize_provider(
-          payload["provider"].presence || ProviderConfig.default_provider(tenant_id: outbox_event.tenant_id)
-        )
+        provider_code = resolve_provider_code(tenant_id: outbox_event.tenant_id, payload: payload)
         provider = ProviderRegistry.fetch(provider_code: provider_code)
-
-        operation_idempotency_key = payload["operation_idempotency_key"].to_s.presence ||
-          outbox_event.idempotency_key.to_s.presence ||
-          "#{outbox_event.id}:fdic_operation"
-
-        amount = round_money(parse_decimal(payload.fetch("amount"), field: "amount"))
-        raise ValidationError.new(code: "invalid_amount", message: "amount must be greater than zero.") if amount <= 0
-
-        currency = payload.fetch("currency", "BRL").to_s.upcase
-        if currency != "BRL"
-          raise ValidationError.new(code: "invalid_currency", message: "FDIC operation currency must be BRL.")
-        end
-
+        operation_idempotency_key = resolve_operation_idempotency_key(outbox_event:, payload:)
+        amount = resolve_amount!(payload)
+        currency = resolve_currency!(payload)
         payload_hash = payload_hash_for(
           operation_type: operation_type,
           payload: payload,
@@ -49,23 +34,111 @@ module Integrations
           currency: currency,
           provider: provider_code
         )
-
         source = resolve_source!(
           tenant_id: outbox_event.tenant_id,
           operation_type: operation_type,
           payload: payload
         )
 
-        operation = FdicOperation.lock.find_or_initialize_by(
+        operation = find_or_initialize_operation(
           tenant_id: outbox_event.tenant_id,
           idempotency_key: operation_idempotency_key
         )
+        return operation if operation_already_sent?(operation:, payload_hash:)
 
-        if operation.persisted?
-          ensure_payload_compatibility!(operation: operation, payload_hash: payload_hash)
-          return operation if operation.sent?
-        end
+        persist_pending_operation!(
+          operation: operation,
+          outbox_event: outbox_event,
+          source: source,
+          provider_code: provider_code,
+          operation_type: operation_type,
+          amount: amount,
+          currency: currency,
+          payload_hash: payload_hash,
+          payload: payload
+        )
 
+        provider_result = dispatch_provider!(
+          provider: provider,
+          operation_type: operation_type,
+          tenant_id: outbox_event.tenant_id,
+          source: source,
+          payload: payload,
+          idempotency_key: provider_request_control_key(payload:, operation_idempotency_key:)
+        )
+        persisted = persist_and_validate_success!(
+          operation: operation,
+          provider_result: provider_result,
+          payload: payload
+        )
+        log_dispatch_success!(outbox_event:, operation: persisted)
+        persisted
+      rescue Error => error
+        persist_failure!(operation: operation, outbox_event: outbox_event, payload: payload, error: error)
+        raise
+      rescue KeyError => error
+        raise ValidationError.new(
+          code: "fdic_payload_invalid",
+          message: "FDIC payload is missing required fields.",
+          details: { missing_key: error.key }
+        )
+      rescue ActiveRecord::RecordNotUnique
+        resolve_operation_conflict!(tenant_id: outbox_event.tenant_id, operation_idempotency_key: operation_idempotency_key)
+      end
+
+      private
+
+      def resolve_operation_type!(event_type)
+        operation_type = OPERATION_TYPES_BY_EVENT[event_type]
+        return operation_type if operation_type.present?
+
+        raise ValidationError.new(
+          code: "fdic_event_type_not_supported",
+          message: "FDIC dispatcher does not support event type #{event_type.inspect}."
+        )
+      end
+
+      def resolve_provider_code(tenant_id:, payload:)
+        ProviderConfig.normalize_provider(
+          payload["provider"].presence || ProviderConfig.default_provider(tenant_id: tenant_id)
+        )
+      end
+
+      def resolve_operation_idempotency_key(outbox_event:, payload:)
+        payload["operation_idempotency_key"].to_s.presence ||
+          outbox_event.idempotency_key.to_s.presence ||
+          "#{outbox_event.id}:fdic_operation"
+      end
+
+      def resolve_amount!(payload)
+        amount = round_money(parse_decimal(payload.fetch("amount"), field: "amount"))
+        return amount if amount.positive?
+
+        raise ValidationError.new(code: "invalid_amount", message: "amount must be greater than zero.")
+      end
+
+      def resolve_currency!(payload)
+        currency = payload.fetch("currency", "BRL").to_s.upcase
+        return currency if currency == "BRL"
+
+        raise ValidationError.new(code: "invalid_currency", message: "FDIC operation currency must be BRL.")
+      end
+
+      def find_or_initialize_operation(tenant_id:, idempotency_key:)
+        FdicOperation.lock.find_or_initialize_by(
+          tenant_id: tenant_id,
+          idempotency_key: idempotency_key
+        )
+      end
+
+      def operation_already_sent?(operation:, payload_hash:)
+        return false unless operation.persisted?
+
+        ensure_payload_compatibility!(operation: operation, payload_hash: payload_hash)
+        operation.sent?
+      end
+
+      def persist_pending_operation!(operation:, outbox_event:, source:, provider_code:, operation_type:, amount:, currency:, payload_hash:, payload:)
         operation.assign_attributes(
           tenant_id: outbox_event.tenant_id,
           anticipation_request_id: source[:anticipation_request]&.id,
@@ -83,57 +156,46 @@ module Integrations
           })
         )
         operation.save! if operation.new_record? || operation.changed?
+      end
 
-        provider_request_control_key = payload["provider_request_control_key"].to_s.presence || operation_idempotency_key
-        provider_result = dispatch_provider!(
-          provider: provider,
-          operation_type: operation_type,
-          tenant_id: outbox_event.tenant_id,
-          source: source,
-          payload: payload,
-          idempotency_key: provider_request_control_key
-        )
+      def provider_request_control_key(payload:, operation_idempotency_key:)
+        payload["provider_request_control_key"].to_s.presence || operation_idempotency_key
+      end
 
+      def persist_and_validate_success!(operation:, provider_result:, payload:)
         persisted = persist_success!(
           operation: operation,
           provider_result: provider_result,
           payload: payload
         )
-        if persisted.status != "SENT"
-          raise ValidationError.new(
-            code: "fdic_operation_not_sent",
-            message: "FDIC operation did not reach a sent state.",
-            details: { status: persisted.status }
-          )
-        end
+        return persisted if persisted.status == "SENT"
 
+        raise ValidationError.new(
+          code: "fdic_operation_not_sent",
+          message: "FDIC operation did not reach a sent state.",
+          details: { status: persisted.status }
+        )
+      end
+
+      def log_dispatch_success!(outbox_event:, operation:)
         create_action_log!(
           outbox_event: outbox_event,
           action_type: "FDIC_OPERATION_DISPATCHED",
           success: true,
-          target_id: persisted.id,
+          target_id: operation.id,
           metadata: {
-            "operation_type" => persisted.operation_type,
-            "provider" => persisted.provider,
-            "provider_reference" => persisted.provider_reference,
-            "idempotency_key" => persisted.idempotency_key,
-            "amount" => persisted.amount.to_d.to_s("F"),
-            "currency" => persisted.currency
+            "operation_type" => operation.operation_type,
+            "provider" => operation.provider,
+            "provider_reference" => operation.provider_reference,
+            "idempotency_key" => operation.idempotency_key,
+            "amount" => operation.amount.to_d.to_s("F"),
+            "currency" => operation.currency
           }
         )
+      end
 
-        persisted
-      rescue Error => error
-        persist_failure!(operation: operation, outbox_event: outbox_event, payload: payload, error: error)
-        raise
-      rescue KeyError => error
-        raise ValidationError.new(
-          code: "fdic_payload_invalid",
-          message: "FDIC payload is missing required fields.",
-          details: { missing_key: error.key }
-        )
-      rescue ActiveRecord::RecordNotUnique
-        existing = FdicOperation.find_by!(tenant_id: outbox_event.tenant_id, idempotency_key: operation_idempotency_key)
+      def resolve_operation_conflict!(tenant_id:, operation_idempotency_key:)
+        existing = FdicOperation.find_by!(tenant_id: tenant_id, idempotency_key: operation_idempotency_key)
         return existing if existing.sent?
 
         raise ValidationError.new(
@@ -141,8 +203,6 @@ module Integrations
           message: "FDIC operation idempotency conflict."
         )
       end
-
-      private
 
       def resolve_source!(tenant_id:, operation_type:, payload:)
         case operation_type
