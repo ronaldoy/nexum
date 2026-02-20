@@ -178,17 +178,22 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
 
   def blob_args(payload_hash:)
     args = params.expect(blob: [ :filename, :byte_size, :checksum, :content_type, metadata: {} ]).to_h.symbolize_keys
-    metadata = args[:metadata].is_a?(Hash) ? args[:metadata] : {}
+    args.merge(metadata: direct_upload_metadata(raw_metadata: args[:metadata], payload_hash: payload_hash))
+  end
 
-    args.merge(
-      metadata: metadata.merge(
-        "tenant_id" => @current_tenant_id.to_s,
-        "actor_party_id" => @current_actor_party_id.to_s,
-        "direct_upload_idempotency_key" => @idempotency_key,
-        "direct_upload_payload_hash" => payload_hash,
-        "uploaded_at" => Time.current.utc.iso8601(6)
-      )
-    )
+  def direct_upload_metadata(raw_metadata:, payload_hash:)
+    metadata = raw_metadata.is_a?(Hash) ? raw_metadata : {}
+    metadata.merge(base_direct_upload_metadata(payload_hash: payload_hash))
+  end
+
+  def base_direct_upload_metadata(payload_hash:)
+    {
+      "tenant_id" => @current_tenant_id.to_s,
+      "actor_party_id" => @current_actor_party_id.to_s,
+      "direct_upload_idempotency_key" => @idempotency_key,
+      "direct_upload_payload_hash" => payload_hash,
+      "uploaded_at" => Time.current.utc.iso8601(6)
+    }
   end
 
   def find_idempotent_blob
