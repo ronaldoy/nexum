@@ -28,29 +28,27 @@ module Fdic
     end
 
     def call(anticipation_request:, due_at:)
-      requested_amount = anticipation_request.requested_amount.to_d
-      discount_amount = anticipation_request.discount_amount.to_d
+      requested_amount, discount_amount = requested_and_discount_amounts(anticipation_request)
       settled_amount = settled_amount_for(anticipation_request)
-
-      contractual_obligation = FinancialRounding.money(requested_amount + discount_amount)
-      contractual_outstanding = positive_money(contractual_obligation - settled_amount)
-
       term_business_days, elapsed_business_days = business_day_window(
         start_time: anticipation_request.requested_at || @valuation_time,
         due_at:
       )
+      contractual_obligation, contractual_outstanding = contractual_exposure_values(
+        requested_amount: requested_amount,
+        discount_amount: discount_amount,
+        settled_amount: settled_amount
+      )
+      accrued_discount, accrued_outstanding = accrued_exposure_values(
+        requested_amount: requested_amount,
+        discount_amount: discount_amount,
+        settled_amount: settled_amount,
+        term_business_days: term_business_days,
+        elapsed_business_days: elapsed_business_days
+      )
 
-      accrued_discount = if term_business_days.positive?
-        accrual_fraction = BigDecimal(elapsed_business_days.to_s) / BigDecimal(term_business_days.to_s)
-        FinancialRounding.money(discount_amount * accrual_fraction)
-      else
-        FinancialRounding.money(discount_amount)
-      end
-      accrued_obligation = FinancialRounding.money(requested_amount + accrued_discount)
-      accrued_outstanding = positive_money(accrued_obligation - settled_amount)
-
-      Result.new(
-        exposed: OPEN_STATUSES.include?(anticipation_request.status),
+      exposure_result(
+        anticipation_request: anticipation_request,
         contractual_obligation: contractual_obligation,
         settled_amount: settled_amount,
         contractual_outstanding: contractual_outstanding,
@@ -62,6 +60,56 @@ module Fdic
     end
 
     private
+
+    def requested_and_discount_amounts(anticipation_request)
+      [ anticipation_request.requested_amount.to_d, anticipation_request.discount_amount.to_d ]
+    end
+
+    def contractual_exposure_values(requested_amount:, discount_amount:, settled_amount:)
+      contractual_obligation = FinancialRounding.money(requested_amount + discount_amount)
+      contractual_outstanding = positive_money(contractual_obligation - settled_amount)
+      [ contractual_obligation, contractual_outstanding ]
+    end
+
+    def accrued_exposure_values(requested_amount:, discount_amount:, settled_amount:, term_business_days:, elapsed_business_days:)
+      accrued_discount = accrued_discount_value(
+        discount_amount: discount_amount,
+        term_business_days: term_business_days,
+        elapsed_business_days: elapsed_business_days
+      )
+      accrued_obligation = FinancialRounding.money(requested_amount + accrued_discount)
+      accrued_outstanding = positive_money(accrued_obligation - settled_amount)
+      [ accrued_discount, accrued_outstanding ]
+    end
+
+    def accrued_discount_value(discount_amount:, term_business_days:, elapsed_business_days:)
+      return FinancialRounding.money(discount_amount) unless term_business_days.positive?
+
+      accrual_fraction = BigDecimal(elapsed_business_days.to_s) / BigDecimal(term_business_days.to_s)
+      FinancialRounding.money(discount_amount * accrual_fraction)
+    end
+
+    def exposure_result(
+      anticipation_request:,
+      contractual_obligation:,
+      settled_amount:,
+      contractual_outstanding:,
+      accrued_discount:,
+      accrued_outstanding:,
+      term_business_days:,
+      elapsed_business_days:
+    )
+      Result.new(
+        exposed: OPEN_STATUSES.include?(anticipation_request.status),
+        contractual_obligation: contractual_obligation,
+        settled_amount: settled_amount,
+        contractual_outstanding: contractual_outstanding,
+        accrued_discount: accrued_discount,
+        accrued_outstanding: accrued_outstanding,
+        term_business_days: term_business_days,
+        elapsed_business_days: elapsed_business_days
+      )
+    end
 
     def settled_amount_for(anticipation_request)
       settled_total = if anticipation_request.association(:anticipation_settlement_entries).loaded?
