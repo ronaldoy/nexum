@@ -233,53 +233,59 @@ module Admin
     end
 
     def render_create_success(issued)
-      respond_to do |format|
-        format.html do
-          flash[:notice] = "Aplicação parceira criada com sucesso."
-          flash[:partner_application_client_id] = issued.fetch(:application).client_id
-          flash[:partner_application_client_secret] = issued.fetch(:client_secret)
-          redirect_to admin_partner_applications_path(tenant_id: @selected_tenant.id)
-        end
+      application = issued.fetch(:application)
+      client_secret = issued.fetch(:client_secret)
 
-        format.json do
-          render json: {
-            data: serialize_partner_application(issued.fetch(:application)).merge(
-              client_secret: issued.fetch(:client_secret)
-            )
-          }, status: :created
-        end
-      end
+      render_partner_application_success(
+        application: application,
+        status: :created,
+        notice: "Aplicação parceira criada com sucesso.",
+        client_secret: client_secret
+      )
     end
 
     def render_rotate_secret_success(application:, client_secret:)
+      render_partner_application_success(
+        application: application,
+        status: :ok,
+        notice: "Segredo rotacionado com sucesso.",
+        client_secret: client_secret
+      )
+    end
+
+    def render_deactivate_success(application)
+      render_partner_application_success(
+        application: application,
+        status: :ok,
+        notice: "Aplicação parceira desativada."
+      )
+    end
+
+    def render_partner_application_success(application:, status:, notice:, client_secret: nil)
       respond_to do |format|
         format.html do
-          flash[:notice] = "Segredo rotacionado com sucesso."
-          flash[:partner_application_client_id] = application.client_id
-          flash[:partner_application_client_secret] = client_secret
-          redirect_to admin_partner_applications_path(tenant_id: @selected_tenant.id)
+          flash[:notice] = notice
+          assign_partner_application_secret_flash(application:, client_secret:)
+          redirect_to selected_tenant_partner_applications_path
         end
 
         format.json do
-          render json: {
-            data: serialize_partner_application(application).merge(client_secret: client_secret)
-          }, status: :ok
+          payload = serialize_partner_application(application)
+          payload[:client_secret] = client_secret if client_secret.present?
+          render json: { data: payload }, status: status
         end
       end
     end
 
-    def render_deactivate_success(application)
-      respond_to do |format|
-        format.html do
-          redirect_to admin_partner_applications_path(tenant_id: @selected_tenant.id), notice: "Aplicação parceira desativada."
-        end
+    def assign_partner_application_secret_flash(application:, client_secret:)
+      return if client_secret.blank?
 
-        format.json do
-          render json: {
-            data: serialize_partner_application(application)
-          }, status: :ok
-        end
-      end
+      flash[:partner_application_client_id] = application.client_id
+      flash[:partner_application_client_secret] = client_secret
+    end
+
+    def selected_tenant_partner_applications_path
+      admin_partner_applications_path(tenant_id: @selected_tenant.id)
     end
 
     def serialize_partner_application(application)
@@ -322,7 +328,7 @@ module Admin
     def handle_not_found
       respond_to do |format|
         format.html do
-          redirect_to admin_partner_applications_path(tenant_id: @selected_tenant.id),
+          redirect_to selected_tenant_partner_applications_path,
             alert: "Aplicação parceira não encontrada para o tenant selecionado."
         end
 
