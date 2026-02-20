@@ -23,27 +23,74 @@ module Integrations
 
       def call
         payout = find_payout
-        if payout
-          reconcile_payout!(payout)
-          return Result.new(
-            status: "PROCESSED",
-            target_type: "EscrowPayout",
-            target_id: payout.id,
-            metadata: { "provider_event_id" => @provider_event_id }
-          )
-        end
+        return processed_result_for_payout(payout) if payout
 
         account = find_account
-        if account
-          reconcile_account!(account)
-          return Result.new(
-            status: "PROCESSED",
-            target_type: "EscrowAccount",
-            target_id: account.id,
-            metadata: { "provider_event_id" => @provider_event_id }
-          )
-        end
+        return processed_result_for_account(account) if account
 
+        ignored_result
+      end
+
+      private
+
+      def find_payout
+        scope = payout_scope
+        payout = find_payout_by_transfer_id(scope)
+        return payout if payout
+
+        find_payout_by_request_control_key(scope)
+      end
+
+      def find_account
+        scope = account_scope
+        account = find_account_by_provider_account_id(scope)
+        return account if account
+
+        find_account_by_provider_request_id(scope)
+      end
+
+      def reconcile_payout!(payout)
+        status = raw_status
+        mapped_status = map_payout_status(status)
+        payout.with_lock { apply_payout_reconciliation!(payout:, status:, mapped_status:) }
+        log_payout_reconciled!(payout:, status:, mapped_status:)
+      end
+
+      def reconcile_account!(account)
+        status = raw_status
+        mapped_status = map_account_status(status)
+        account.with_lock { apply_account_reconciliation!(account:, status:, mapped_status:) }
+        log_account_reconciled!(account:, status:, mapped_status:)
+      end
+
+      def payout_scope
+        EscrowPayout.where(tenant_id: @tenant_id, provider: @provider)
+      end
+
+      def account_scope
+        EscrowAccount.where(tenant_id: @tenant_id, provider: @provider)
+      end
+
+      def processed_result_for_payout(payout)
+        reconcile_payout!(payout)
+        processed_result(target_type: "EscrowPayout", target_id: payout.id)
+      end
+
+      def processed_result_for_account(account)
+        reconcile_account!(account)
+        processed_result(target_type: "EscrowAccount", target_id: account.id)
+      end
+
+      def processed_result(target_type:, target_id:)
+        Result.new(
+          status: "PROCESSED",
+          target_type: target_type,
+          target_id: target_id,
+          metadata: { "provider_event_id" => @provider_event_id }
+        )
+      end
+
+      def ignored_result
         create_action_log!(
           action_type: "ESCROW_WEBHOOK_IGNORED",
           success: true,
@@ -53,7 +100,6 @@ module Integrations
             "reason" => "resource_not_found"
           }
         )
-
         Result.new(
           status: "IGNORED",
           target_type: nil,
@@ -65,21 +111,24 @@ module Integrations
         )
       end
 
-      private
-
-      def find_payout
-        scope = EscrowPayout.where(tenant_id: @tenant_id, provider: @provider)
-
+      def find_payout_by_transfer_id(scope)
         transfer_ids = payout_transfer_id_candidates
-        payout = scope.where(provider_transfer_id: transfer_ids).order(created_at: :desc).first if transfer_ids.any?
-        return payout if payout
+        return nil if transfer_ids.empty?
 
+        scope.where(provider_transfer_id: transfer_ids).order(created_at: :desc).first
+      end
+
+      def find_payout_by_request_control_key(scope)
         control_keys = request_control_key_candidates
         return nil if control_keys.empty?
 
         payout = scope.where(idempotency_key: control_keys).order(created_at: :desc).first
         return payout if payout
 
+        find_payout_by_payload_control_key(scope, control_keys)
+      end
+
+      def find_payout_by_payload_control_key(scope, control_keys)
         control_keys.each do |control_key|
           payout = scope
             .where("metadata -> 'payload' ->> 'provider_request_control_key' = ?", control_key)
@@ -87,61 +136,98 @@ module Integrations
             .first
           return payout if payout
         end
-
         nil
       end
 
-      def find_account
-        scope = EscrowAccount.where(tenant_id: @tenant_id, provider: @provider)
-
+      def find_account_by_provider_account_id(scope)
         account_ids = account_id_candidates
-        account = scope.where(provider_account_id: account_ids).order(created_at: :desc).first if account_ids.any?
-        return account if account
+        return nil if account_ids.empty?
 
+        scope.where(provider_account_id: account_ids).order(created_at: :desc).first
+      end
+
+      def find_account_by_provider_request_id(scope)
         request_ids = account_request_id_candidates
         return nil if request_ids.empty?
 
         scope.where(provider_request_id: request_ids).order(created_at: :desc).first
       end
 
-      def reconcile_payout!(payout)
-        payout.with_lock do
-          mapped_status = map_payout_status(raw_status)
-          transfer_id = payout_transfer_id_candidates.first
-          now = Time.current
+      def apply_payout_reconciliation!(payout:, status:, mapped_status:)
+        payout.update!(payout_reconciliation_attributes(payout:, status:, mapped_status:))
+      end
 
-          attrs = {
-            metadata: merge_metadata(payout.metadata, {
-              "webhook_reconciliation" => {
-                "provider" => @provider,
-                "provider_event_id" => @provider_event_id,
-                "status" => raw_status,
-                "received_at" => now.iso8601(6),
-                "payload" => @payload
-              }
-            })
+      def payout_reconciliation_attributes(payout:, status:, mapped_status:)
+        now = Time.current
+        attrs = {
+          metadata: merge_metadata(payout.metadata, webhook_reconciliation_metadata(status: status, received_at: now))
+        }
+        transfer_id = payout_transfer_id_candidates.first
+        attrs[:provider_transfer_id] = transfer_id if transfer_id.present? && payout.provider_transfer_id.blank?
+        attrs.merge!(payout_status_attributes(payout:, mapped_status:, now: now))
+        attrs
+      end
+
+      def payout_status_attributes(payout:, mapped_status:, now:)
+        case mapped_status
+        when "SENT"
+          {
+            status: "SENT",
+            processed_at: now,
+            last_error_code: nil,
+            last_error_message: nil
           }
+        when "FAILED"
+          return {} if payout.status == "SENT"
 
-          attrs[:provider_transfer_id] = transfer_id if transfer_id.present? && payout.provider_transfer_id.blank?
-
-          case mapped_status
-          when "SENT"
-            attrs[:status] = "SENT"
-            attrs[:processed_at] = now
-            attrs[:last_error_code] = nil
-            attrs[:last_error_message] = nil
-          when "FAILED"
-            unless payout.status == "SENT"
-              attrs[:status] = "FAILED"
-              attrs[:processed_at] = now
-              attrs[:last_error_code] = payout_error_code
-              attrs[:last_error_message] = payout_error_message
-            end
-          end
-
-          payout.update!(attrs)
+          {
+            status: "FAILED",
+            processed_at: now,
+            last_error_code: payout_error_code,
+            last_error_message: payout_error_message
+          }
+        else
+          {}
         end
+      end
 
+      def apply_account_reconciliation!(account:, status:, mapped_status:)
+        account.update!(account_reconciliation_attributes(account:, status:, mapped_status:))
+      end
+
+      def account_reconciliation_attributes(account:, status:, mapped_status:)
+        now = Time.current
+        attrs = {
+          last_synced_at: now,
+          metadata: merge_metadata(account.metadata, webhook_reconciliation_metadata(status: status, received_at: now))
+        }
+        attrs.merge!(account_identifier_attributes(account))
+        attrs[:status] = mapped_status if mapped_status.present?
+        attrs
+      end
+
+      def account_identifier_attributes(account)
+        attrs = {}
+        provider_account_id = account_id_candidates.first
+        provider_request_id = account_request_id_candidates.first
+        attrs[:provider_account_id] = provider_account_id if provider_account_id.present? && account.provider_account_id.blank?
+        attrs[:provider_request_id] = provider_request_id if provider_request_id.present? && account.provider_request_id.blank?
+        attrs
+      end
+
+      def webhook_reconciliation_metadata(status:, received_at:)
+        {
+          "webhook_reconciliation" => {
+            "provider" => @provider,
+            "provider_event_id" => @provider_event_id,
+            "status" => status,
+            "received_at" => received_at.iso8601(6),
+            "payload" => @payload
+          }
+        }
+      end
+
+      def log_payout_reconciled!(payout:, status:, mapped_status:)
         create_action_log!(
           action_type: "ESCROW_PAYOUT_WEBHOOK_RECONCILED",
           success: true,
@@ -150,41 +236,14 @@ module Integrations
           metadata: {
             "provider" => @provider,
             "provider_event_id" => @provider_event_id,
-            "status" => raw_status,
+            "status" => status,
             "provider_transfer_id" => payout_transfer_id_candidates.first,
-            "mapped_status" => map_payout_status(raw_status)
+            "mapped_status" => mapped_status
           }
         )
       end
 
-      def reconcile_account!(account)
-        account.with_lock do
-          mapped_status = map_account_status(raw_status)
-          now = Time.current
-
-          attrs = {
-            last_synced_at: now,
-            metadata: merge_metadata(account.metadata, {
-              "webhook_reconciliation" => {
-                "provider" => @provider,
-                "provider_event_id" => @provider_event_id,
-                "status" => raw_status,
-                "received_at" => now.iso8601(6),
-                "payload" => @payload
-              }
-            })
-          }
-
-          provider_account_id = account_id_candidates.first
-          provider_request_id = account_request_id_candidates.first
-          attrs[:provider_account_id] = provider_account_id if provider_account_id.present? && account.provider_account_id.blank?
-          attrs[:provider_request_id] = provider_request_id if provider_request_id.present? && account.provider_request_id.blank?
-
-          attrs[:status] = mapped_status if mapped_status.present?
-
-          account.update!(attrs)
-        end
-
+      def log_account_reconciled!(account:, status:, mapped_status:)
         create_action_log!(
           action_type: "ESCROW_ACCOUNT_WEBHOOK_RECONCILED",
           success: true,
@@ -193,8 +252,8 @@ module Integrations
           metadata: {
             "provider" => @provider,
             "provider_event_id" => @provider_event_id,
-            "status" => raw_status,
-            "mapped_status" => map_account_status(raw_status)
+            "status" => status,
+            "mapped_status" => mapped_status
           }
         )
       end
@@ -273,7 +332,17 @@ module Integrations
       end
 
       def create_action_log!(action_type:, success:, target_type: nil, target_id: nil, metadata: {})
-        ActionIpLog.create!(
+        ActionIpLog.create!(action_log_attributes(
+          action_type: action_type,
+          success: success,
+          target_type: target_type,
+          target_id: target_id,
+          metadata: metadata
+        ))
+      end
+
+      def action_log_attributes(action_type:, success:, target_type:, target_id:, metadata:)
+        {
           tenant_id: @tenant_id,
           action_type: action_type,
           ip_address: @request_ip.presence || "0.0.0.0",
@@ -287,7 +356,7 @@ module Integrations
           success: success,
           occurred_at: Time.current,
           metadata: normalize_metadata(metadata)
-        )
+        }
       end
 
       def merge_metadata(existing, incoming)
