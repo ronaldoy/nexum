@@ -4,6 +4,18 @@ module Integrations
       EVENT_TYPE = "ANTICIPATION_ESCROW_PAYOUT_REQUESTED".freeze
       TARGET_TYPE = "EscrowPayout".freeze
       PAYABLE_PARTY_KINDS = %w[SUPPLIER PHYSICIAN_PF LEGAL_ENTITY_PJ].freeze
+      DispatchInputs = Struct.new(
+        :payload,
+        :source,
+        :recipient_party,
+        :amount,
+        :provider_code,
+        :provider,
+        :payout_idempotency_key,
+        :account_idempotency_key,
+        :provider_request_control_key,
+        keyword_init: true
+      )
 
       def call(outbox_event:)
         payload = {}
@@ -14,23 +26,13 @@ module Integrations
         payout = nil
         payout_idempotency_key = nil
 
-        payload = normalize_metadata(outbox_event.payload || {})
-        source = resolve_source_records(tenant_id: outbox_event.tenant_id, payload: payload)
-        recipient_party = resolve_recipient_party!(
-          tenant_id: outbox_event.tenant_id,
-          payload: payload,
-          anticipation_request: source[:anticipation_request],
-          settlement: source[:settlement]
-        )
-        amount = resolve_amount!(payload)
-        ensure_excess_amount_matches_settlement!(payload:, settlement: source[:settlement], amount:)
-
-        provider_context = resolve_provider_context(tenant_id: outbox_event.tenant_id, payload: payload)
-        provider_code = provider_context.fetch(:provider_code)
-        provider = provider_context.fetch(:provider)
-
-        payout_idempotency_key = resolve_payout_idempotency_key(outbox_event:, payload:)
-        account_idempotency_key = resolve_account_idempotency_key(payload:, recipient_party:)
+        inputs = build_dispatch_inputs(outbox_event)
+        payload = inputs.payload
+        source = inputs.source
+        recipient_party = inputs.recipient_party
+        amount = inputs.amount
+        provider_context = { provider_code: inputs.provider_code }
+        payout_idempotency_key = inputs.payout_idempotency_key
 
         payout = find_or_initialize_payout(
           tenant_id: outbox_event.tenant_id,
@@ -41,8 +43,8 @@ module Integrations
         escrow_account = ensure_escrow_account!(
           tenant_id: outbox_event.tenant_id,
           party: recipient_party,
-          provider: provider,
-          idempotency_key: account_idempotency_key,
+          provider: inputs.provider,
+          idempotency_key: inputs.account_idempotency_key,
           metadata: payload
         )
         persist_pending_payout!(
@@ -51,20 +53,20 @@ module Integrations
           source: source,
           recipient_party: recipient_party,
           escrow_account: escrow_account,
-          provider_code: provider_code,
+          provider_code: inputs.provider_code,
           amount: amount,
           payload: payload
         )
 
-        payout_result = provider.create_payout!(
+        payout_result = inputs.provider.create_payout!(
           tenant_id: outbox_event.tenant_id,
           escrow_account: escrow_account,
           recipient_party: recipient_party,
           amount: amount,
           currency: "BRL",
-          idempotency_key: provider_request_control_key(payload:, payout_idempotency_key: payout_idempotency_key),
+          idempotency_key: inputs.provider_request_control_key,
           metadata: payload.merge(
-            "provider_request_control_key" => provider_request_control_key(payload:, payout_idempotency_key: payout_idempotency_key)
+            "provider_request_control_key" => inputs.provider_request_control_key
           )
         )
 
@@ -75,7 +77,7 @@ module Integrations
           settlement: source[:settlement],
           recipient_party: recipient_party,
           escrow_account: escrow_account,
-          provider_code: provider_code,
+          provider_code: inputs.provider_code,
           amount: amount,
           payout_result: payout_result,
           payload: payload
@@ -88,7 +90,7 @@ module Integrations
           anticipation_request: source[:anticipation_request],
           settlement: source[:settlement],
           recipient_party: recipient_party,
-          provider_code: provider_code,
+          provider_code: inputs.provider_code,
           amount: amount
         )
 
@@ -117,6 +119,38 @@ module Integrations
       end
 
       private
+
+      def build_dispatch_inputs(outbox_event)
+        payload = normalize_metadata(outbox_event.payload || {})
+        source = resolve_source_records(tenant_id: outbox_event.tenant_id, payload: payload)
+        recipient_party = resolve_recipient_party!(
+          tenant_id: outbox_event.tenant_id,
+          payload: payload,
+          anticipation_request: source[:anticipation_request],
+          settlement: source[:settlement]
+        )
+        amount = resolve_amount!(payload)
+        ensure_excess_amount_matches_settlement!(payload:, settlement: source[:settlement], amount:)
+
+        provider_context = resolve_provider_context(tenant_id: outbox_event.tenant_id, payload: payload)
+        payout_idempotency_key = resolve_payout_idempotency_key(outbox_event:, payload:)
+        account_idempotency_key = resolve_account_idempotency_key(payload:, recipient_party:)
+
+        DispatchInputs.new(
+          payload: payload,
+          source: source,
+          recipient_party: recipient_party,
+          amount: amount,
+          provider_code: provider_context.fetch(:provider_code),
+          provider: provider_context.fetch(:provider),
+          payout_idempotency_key: payout_idempotency_key,
+          account_idempotency_key: account_idempotency_key,
+          provider_request_control_key: provider_request_control_key(
+            payload: payload,
+            payout_idempotency_key: payout_idempotency_key
+          )
+        )
+      end
 
       def resolve_source_records(tenant_id:, payload:)
         anticipation_request_id = payload["anticipation_request_id"].to_s.presence
