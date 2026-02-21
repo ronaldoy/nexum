@@ -145,20 +145,18 @@ module Admin
         tenant_slug: tenant.slug,
         tenant_name: tenant.name,
         tenant_active: tenant.active
-      }.merge(integer_row_metrics(metrics)).merge(decimal_row_metrics(metrics)).merge(
+      }.merge(
+        metrics_by_fields(metrics:, fields: INTEGER_ROW_FIELDS, converter: method(:integer_value))
+      ).merge(
+        metrics_by_fields(metrics:, fields: DECIMAL_ROW_FIELDS, converter: method(:decimal_value))
+      ).merge(
         last_activity_at: time_value(metrics["last_activity_at"])
       )
     end
 
-    def integer_row_metrics(metrics)
-      INTEGER_ROW_FIELDS.each_with_object({}) do |field, output|
-        output[field.to_sym] = integer_value(metrics[field])
-      end
-    end
-
-    def decimal_row_metrics(metrics)
-      DECIMAL_ROW_FIELDS.each_with_object({}) do |field, output|
-        output[field.to_sym] = decimal_value(metrics[field])
+    def metrics_by_fields(metrics:, fields:, converter:)
+      fields.each_with_object({}) do |field, output|
+        output[field.to_sym] = converter.call(metrics[field])
       end
     end
 
@@ -178,15 +176,21 @@ module Admin
     def integer_totals(rows)
       INTEGER_TOTAL_FIELDS.each_with_object({}) do |field, output|
         source_key = INTEGER_TOTAL_SOURCE_KEYS.fetch(field.to_sym)
-        output[field.to_sym] = rows.sum { |row| row[source_key] }
+        output[field.to_sym] = sum_rows(rows, source_key: source_key)
       end
     end
 
     def decimal_totals(rows)
       DECIMAL_TOTAL_FIELDS.each_with_object({}) do |field, output|
         source_key = DECIMAL_TOTAL_SOURCE_KEYS.fetch(field.to_sym)
-        output[field.to_sym] = rows.sum(BigDecimal("0")) { |row| row[source_key] }
+        output[field.to_sym] = sum_rows(rows, source_key: source_key, initial: BigDecimal("0"))
       end
+    end
+
+    def sum_rows(rows, source_key:, initial: nil)
+      return rows.sum { |row| row[source_key] } if initial.nil?
+
+      rows.sum(initial) { |row| row[source_key] }
     end
 
     def build_recent_reconciliation_exceptions(tenants:, global_limit: 20, per_tenant_limit: 10)

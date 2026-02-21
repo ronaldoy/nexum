@@ -69,15 +69,24 @@ module Ledger
 
       execute_compensation(inputs)
     rescue StandardError => error
-      create_action_log_safely!(action_type: COMPENSATION_FAILED_ACTION, success: false, target_id: compensation_txn_id, metadata: failure_metadata(
-        original_txn_id: inputs&.original_txn_id || original_txn_id,
-        compensation_reference: inputs&.compensation_reference || compensation_reference,
-        error: error
-      ))
+      create_action_log_safely!(
+        action_type: COMPENSATION_FAILED_ACTION,
+        success: false,
+        target_id: resolve_failure_target_id(inputs:, fallback_target_id: compensation_txn_id),
+        metadata: failure_metadata(
+          original_txn_id: inputs&.original_txn_id || original_txn_id,
+          compensation_reference: inputs&.compensation_reference || compensation_reference,
+          error: error
+        )
+      )
       raise
     end
 
     private
+
+    def resolve_failure_target_id(inputs:, fallback_target_id:)
+      inputs&.compensation_txn_id || fallback_target_id
+    end
 
     def build_call_inputs(
       original_txn_id:,
@@ -114,11 +123,7 @@ module Ledger
       )
       entries = build_compensation_entries(original_entries: original_entries, compensation_metadata: compensation_metadata)
       result = post_compensation_transaction(
-        compensation_txn_id: inputs.compensation_txn_id,
-        compensation_reference: inputs.compensation_reference,
-        posted_at: inputs.posted_at,
-        source_type: inputs.source_type,
-        source_id: inputs.source_id,
+        inputs: inputs,
         original_entries: original_entries,
         entries: entries
       )
@@ -193,14 +198,14 @@ module Ledger
       }
     end
 
-    def post_compensation_transaction(compensation_txn_id:, compensation_reference:, posted_at:, source_type:, source_id:, original_entries:, entries:)
+    def post_compensation_transaction(inputs:, original_entries:, entries:)
       post_transaction_service.call(
-        txn_id: compensation_txn_id,
+        txn_id: inputs.compensation_txn_id,
         receivable_id: original_entries.first.receivable_id,
-        payment_reference: compensation_payment_reference(compensation_reference),
-        posted_at: posted_at,
-        source_type: source_type,
-        source_id: source_id,
+        payment_reference: compensation_payment_reference(inputs.compensation_reference),
+        posted_at: inputs.posted_at,
+        source_type: inputs.source_type,
+        source_id: inputs.source_id,
         entries: entries
       )
     end

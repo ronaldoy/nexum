@@ -135,10 +135,8 @@ module Receivables
       receivable_kind = ReceivableKind.where(tenant_id: @tenant_id, code: payload.fetch(:receivable_kind_code)).first
       raise_validation_error!("receivable_kind_not_found", "Receivable kind is invalid.") if receivable_kind.blank?
 
-      debtor_party = Party.where(tenant_id: @tenant_id).find(payload.fetch(:debtor_party_id))
-      creditor_party = Party.where(tenant_id: @tenant_id).find(payload.fetch(:creditor_party_id))
-      beneficiary_party = Party.where(tenant_id: @tenant_id).find(payload.fetch(:beneficiary_party_id))
-      validate_debtor_party!(debtor_party)
+      parties = load_creation_parties(payload)
+      validate_debtor_party!(parties.fetch(:debtor_party))
 
       gross_amount = round_money(parse_decimal(payload.fetch(:gross_amount), field: "gross_amount"))
       raise_validation_error!("invalid_gross_amount", "gross_amount must be greater than zero.") if gross_amount <= 0
@@ -152,14 +150,26 @@ module Receivables
 
       CreationContext.new(
         receivable_kind: receivable_kind,
-        debtor_party: debtor_party,
-        creditor_party: creditor_party,
-        beneficiary_party: beneficiary_party,
+        debtor_party: parties.fetch(:debtor_party),
+        creditor_party: parties.fetch(:creditor_party),
+        beneficiary_party: parties.fetch(:beneficiary_party),
         gross_amount: gross_amount,
         performed_at: performed_at,
         due_at: due_at,
         cutoff_at: cutoff_at
       )
+    end
+
+    def load_creation_parties(payload)
+      {
+        debtor_party: load_party!(payload.fetch(:debtor_party_id)),
+        creditor_party: load_party!(payload.fetch(:creditor_party_id)),
+        beneficiary_party: load_party!(payload.fetch(:beneficiary_party_id))
+      }
+    end
+
+    def load_party!(party_id)
+      Party.where(tenant_id: @tenant_id).find(party_id)
     end
 
     def validate_debtor_party!(debtor_party)
@@ -182,28 +192,47 @@ module Receivables
         performed_at: context.performed_at,
         due_at: context.due_at,
         cutoff_at: context.cutoff_at,
-        metadata: normalize_hash_metadata(payload[:metadata]).merge(
-          PAYLOAD_HASH_METADATA_KEY => payload_hash,
-          "idempotency_key" => @idempotency_key
-        )
+        metadata: build_receivable_metadata(raw_metadata: payload[:metadata], payload_hash: payload_hash)
+      )
+    end
+
+    def build_receivable_metadata(raw_metadata:, payload_hash:)
+      normalize_hash_metadata(raw_metadata).merge(
+        PAYLOAD_HASH_METADATA_KEY => payload_hash,
+        "idempotency_key" => @idempotency_key
       )
     end
 
     def normalize_payload(raw_payload)
       payload = raw_payload.to_h.symbolize_keys
 
-      external_reference = payload[:external_reference].to_s.strip
-      receivable_kind_code = payload[:receivable_kind_code].to_s.strip
-      debtor_party_id = payload[:debtor_party_id].to_s.strip
-      creditor_party_id = payload[:creditor_party_id].to_s.strip
-      beneficiary_party_id = payload[:beneficiary_party_id].to_s.strip
-      currency = payload[:currency].to_s.strip.upcase.presence || "BRL"
+      external_reference = required_string!(
+        value: payload[:external_reference],
+        code: "external_reference_required",
+        message: "external_reference is required."
+      )
+      receivable_kind_code = required_string!(
+        value: payload[:receivable_kind_code],
+        code: "receivable_kind_code_required",
+        message: "receivable_kind_code is required."
+      )
+      debtor_party_id = required_string!(
+        value: payload[:debtor_party_id],
+        code: "debtor_party_required",
+        message: "debtor_party_id is required."
+      )
+      creditor_party_id = required_string!(
+        value: payload[:creditor_party_id],
+        code: "creditor_party_required",
+        message: "creditor_party_id is required."
+      )
+      beneficiary_party_id = required_string!(
+        value: payload[:beneficiary_party_id],
+        code: "beneficiary_party_required",
+        message: "beneficiary_party_id is required."
+      )
+      currency = normalize_currency(payload[:currency])
 
-      raise_validation_error!("external_reference_required", "external_reference is required.") if external_reference.blank?
-      raise_validation_error!("receivable_kind_code_required", "receivable_kind_code is required.") if receivable_kind_code.blank?
-      raise_validation_error!("debtor_party_required", "debtor_party_id is required.") if debtor_party_id.blank?
-      raise_validation_error!("creditor_party_required", "creditor_party_id is required.") if creditor_party_id.blank?
-      raise_validation_error!("beneficiary_party_required", "beneficiary_party_id is required.") if beneficiary_party_id.blank?
       raise_validation_error!("invalid_currency", "currency must be BRL.") if currency != "BRL"
 
       allocation_payload = normalize_metadata(payload[:allocation])
@@ -222,6 +251,17 @@ module Receivables
         metadata: normalize_metadata(payload[:metadata]),
         allocation: allocation_payload
       }
+    end
+
+    def required_string!(value:, code:, message:)
+      normalized = value.to_s.strip
+      raise_validation_error!(code, message) if normalized.blank?
+
+      normalized
+    end
+
+    def normalize_currency(raw_currency)
+      raw_currency.to_s.strip.upcase.presence || "BRL"
     end
 
     def create_primary_allocation!(receivable:, payload:, gross_amount:)
