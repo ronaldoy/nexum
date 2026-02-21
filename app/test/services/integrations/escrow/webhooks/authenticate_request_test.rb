@@ -31,6 +31,50 @@ module Integrations
           end
         end
 
+        test "accepts bearer token when token auth is configured" do
+          with_environment("QITECH_WEBHOOK_SECRET" => nil, "QITECH_WEBHOOK_TOKEN" => "token-123") do
+            request = RequestDouble.new(headers: {}, authorization: "Bearer token-123")
+
+            result = AuthenticateRequest.new.call(provider: "QITECH", request: request, raw_body: "{}")
+
+            assert_equal "bearer", result
+          end
+        end
+
+        test "accepts provider token header when bearer token is absent" do
+          with_environment("QITECH_WEBHOOK_SECRET" => nil, "QITECH_WEBHOOK_TOKEN" => "header-token") do
+            request = RequestDouble.new(headers: { "X-QITECH-Webhook-Token" => "header-token" }, authorization: nil)
+
+            result = AuthenticateRequest.new.call(provider: "QITECH", request: request, raw_body: "{}")
+
+            assert_equal "bearer", result
+          end
+        end
+
+        test "rejects starkbank while provider is disabled for v1" do
+          with_environment("ESCROW_ENABLE_STARKBANK" => "false") do
+            request = RequestDouble.new(headers: {}, authorization: nil)
+
+            error = assert_raises(Integrations::Escrow::UnsupportedProviderError) do
+              AuthenticateRequest.new.call(provider: "STARKBANK", request: request, raw_body: "{}")
+            end
+
+            assert_equal "escrow_provider_disabled_for_v1", error.code
+          end
+        end
+
+        test "rejects invalid webhook token" do
+          with_environment("QITECH_WEBHOOK_SECRET" => nil, "QITECH_WEBHOOK_TOKEN" => "token-123") do
+            request = RequestDouble.new(headers: {}, authorization: "Bearer token-other")
+
+            error = assert_raises(AuthenticateRequest::Error) do
+              AuthenticateRequest.new.call(provider: "QITECH", request: request, raw_body: "{}")
+            end
+
+            assert_equal "webhook_token_invalid", error.code
+          end
+        end
+
         test "requires auth configuration" do
           with_environment("QITECH_WEBHOOK_SECRET" => nil, "QITECH_WEBHOOK_TOKEN" => nil) do
             request = RequestDouble.new(headers: {}, authorization: nil)

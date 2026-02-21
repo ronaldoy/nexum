@@ -66,35 +66,44 @@ module Receivables
       )
       result = nil
       failure = nil
+      failure_receivable_id = nil
 
       ActiveRecord::Base.transaction do
         result, failure = attach_or_replay(inputs)
       end
 
+      failure_receivable_id = resolve_failure_receivable_id(inputs:, fallback_receivable_id: receivable_id)
       if failure
-        create_failure_log(error: failure, receivable_id: inputs.receivable_id)
+        create_failure_log(error: failure, receivable_id: failure_receivable_id)
         raise failure
       end
 
       result
     rescue ValidationError => error
-      create_failure_log(error: error, receivable_id: inputs&.receivable_id || receivable_id)
+      failure_receivable_id = resolve_failure_receivable_id(inputs:, fallback_receivable_id: receivable_id)
+      create_failure_log(error: error, receivable_id: failure_receivable_id)
       raise
     rescue ActiveRecord::RecordInvalid => error
       validation_error = ValidationError.new(
         code: "invalid_document",
         message: error.record.errors.full_messages.to_sentence
       )
-      create_failure_log(error: validation_error, receivable_id: inputs&.receivable_id || receivable_id)
+      failure_receivable_id = resolve_failure_receivable_id(inputs:, fallback_receivable_id: receivable_id)
+      create_failure_log(error: validation_error, receivable_id: failure_receivable_id)
       raise validation_error
     rescue ActiveRecord::RecordNotFound => error
-      create_failure_log(error: error, receivable_id: inputs&.receivable_id || receivable_id)
+      failure_receivable_id = resolve_failure_receivable_id(inputs:, fallback_receivable_id: receivable_id)
+      create_failure_log(error: error, receivable_id: failure_receivable_id)
       raise
     rescue ActiveRecord::RecordNotUnique => error
       recover_after_unique_violation(error:, inputs:, receivable_id:)
     end
 
     private
+
+    def resolve_failure_receivable_id(inputs:, fallback_receivable_id:)
+      inputs&.receivable_id || fallback_receivable_id
+    end
 
     def recover_after_unique_violation(error:, inputs:, receivable_id:)
       existing_outbox = OutboxEvent.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
@@ -234,17 +243,13 @@ module Receivables
 
       sha256 = payload[:sha256].to_s.strip
       blob = resolve_blob(raw_signed_id: payload[:blob_signed_id])
-      storage_key = payload[:storage_key].to_s.strip
-      storage_key = blob.key if storage_key.blank? && blob.present?
+      storage_key = resolve_storage_key!(blob:, payload_storage_key: payload[:storage_key])
       provider_envelope_id = payload[:provider_envelope_id].to_s.strip
       email_challenge_id = payload[:email_challenge_id].to_s.strip
       whatsapp_challenge_id = payload[:whatsapp_challenge_id].to_s.strip
 
       raise_validation_error!("sha256_required", "sha256 is required.") if sha256.blank?
       raise_validation_error!("storage_key_required", "storage_key is required.") if storage_key.blank?
-      if blob.present? && payload[:storage_key].to_s.strip.present? && payload[:storage_key].to_s.strip != blob.key
-        raise_validation_error!("storage_key_blob_mismatch", "storage_key does not match blob key.")
-      end
       validate_blob_sha256!(blob:, expected_sha256: sha256) if blob.present?
       validate_blob_tenant_metadata!(blob:) if blob.present?
       raise_validation_error!("provider_envelope_id_required", "provider_envelope_id is required.") if provider_envelope_id.blank?
@@ -280,6 +285,17 @@ module Receivables
           "idempotency_key" => @idempotency_key
         )
       }
+    end
+
+    def resolve_storage_key!(blob:, payload_storage_key:)
+      provided_storage_key = payload_storage_key.to_s.strip
+      return provided_storage_key if blob.blank?
+
+      if provided_storage_key.present? && provided_storage_key != blob.key
+        raise_validation_error!("storage_key_blob_mismatch", "storage_key does not match blob key.")
+      end
+
+      provided_storage_key.presence || blob.key
     end
 
     def sanitize_client_metadata(raw_metadata)
@@ -458,25 +474,10 @@ module Receivables
     end
 
     def replay_result(existing_outbox:, payload_hash:)
-      unless existing_outbox.event_type == OUTBOX_EVENT_TYPE && existing_outbox.aggregate_type == TARGET_TYPE
-        raise IdempotencyConflict.new(
-          code: "idempotency_key_reused_with_different_operation",
-          message: "Idempotency-Key was already used with a different operation."
-        )
-      end
+      ensure_replay_outbox_operation!(existing_outbox)
+      ensure_replay_payload_hash!(existing_outbox:, payload_hash:)
 
-      existing_payload_hash = existing_outbox.payload&.dig(PAYLOAD_HASH_KEY).to_s
-      if existing_payload_hash.present? && existing_payload_hash != payload_hash
-        raise IdempotencyConflict.new(
-          code: "idempotency_key_reused_with_different_payload",
-          message: "Idempotency-Key was already used with a different payload."
-        )
-      end
-
-      document_id = existing_outbox.payload&.dig("document_id")
-      raise_validation_error!("replay_document_not_found", "Replay document was not found.") if document_id.blank?
-
-      document = Document.where(tenant_id: @tenant_id).find(document_id)
+      document = find_replay_document(existing_outbox)
       create_action_log!(
         action_type: "RECEIVABLE_DOCUMENT_REPLAYED",
         success: true,
@@ -486,6 +487,32 @@ module Receivables
       )
 
       Result.new(document:, replayed: true)
+    end
+
+    def ensure_replay_outbox_operation!(existing_outbox)
+      return if existing_outbox.event_type == OUTBOX_EVENT_TYPE && existing_outbox.aggregate_type == TARGET_TYPE
+
+      raise IdempotencyConflict.new(
+        code: "idempotency_key_reused_with_different_operation",
+        message: "Idempotency-Key was already used with a different operation."
+      )
+    end
+
+    def ensure_replay_payload_hash!(existing_outbox:, payload_hash:)
+      existing_payload_hash = existing_outbox.payload&.dig(PAYLOAD_HASH_KEY).to_s
+      return if existing_payload_hash.blank? || existing_payload_hash == payload_hash
+
+      raise IdempotencyConflict.new(
+        code: "idempotency_key_reused_with_different_payload",
+        message: "Idempotency-Key was already used with a different payload."
+      )
+    end
+
+    def find_replay_document(existing_outbox)
+      document_id = existing_outbox.payload&.dig("document_id")
+      raise_validation_error!("replay_document_not_found", "Replay document was not found.") if document_id.blank?
+
+      Document.where(tenant_id: @tenant_id).find(document_id)
     end
 
     def create_document_event!(document:, receivable:, actor_party:, payload:)

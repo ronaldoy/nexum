@@ -887,46 +887,40 @@ module Receivables
     end
 
     def payment_payload_hash(receivable_id:, receivable_allocation_id:, paid_amount:, paid_at:, payment_reference:, metadata:)
-      Digest::SHA256.hexdigest(
-        canonical_json(
-          receivable_id: receivable_id.to_s,
-          receivable_allocation_id: receivable_allocation_id.to_s,
-          paid_amount: decimal_as_string(paid_amount),
-          paid_at: paid_at.utc.iso8601(6),
-          payment_reference: payment_reference.to_s,
-          metadata: metadata
-        )
+      payload_hash_for(
+        receivable_id: receivable_id.to_s,
+        receivable_allocation_id: receivable_allocation_id.to_s,
+        paid_amount: decimal_as_string(paid_amount),
+        paid_at: paid_at.utc.iso8601(6),
+        payment_reference: payment_reference.to_s,
+        metadata: metadata
       )
     end
 
     def escrow_excess_payload_hash(settlement:, recipient_party_id:, provider:, amount:, receivable_origin:)
-      Digest::SHA256.hexdigest(
-        canonical_json(
-          settlement_id: settlement.id,
-          receivable_id: settlement.receivable_id,
-          recipient_party_id: recipient_party_id,
-          provider: provider,
-          amount: amount,
-          currency: "BRL",
-          payout_kind: "EXCESS",
-          receivable_origin: receivable_origin
-        )
+      payload_hash_for(
+        settlement_id: settlement.id,
+        receivable_id: settlement.receivable_id,
+        recipient_party_id: recipient_party_id,
+        provider: provider,
+        amount: amount,
+        currency: BRL_CURRENCY,
+        payout_kind: ESCROW_EXCESS_PAYOUT_KIND,
+        receivable_origin: receivable_origin
       )
     end
 
     def fdic_settlement_payload_hash(settlement:, provider:, amount:, receivable_origin:)
-      Digest::SHA256.hexdigest(
-        canonical_json(
-          settlement_id: settlement.id,
-          receivable_id: settlement.receivable_id,
-          receivable_allocation_id: settlement.receivable_allocation_id,
-          payment_reference: settlement.payment_reference,
-          provider: provider,
-          amount: amount,
-          currency: "BRL",
-          operation_kind: "SETTLEMENT_REPORT",
-          receivable_origin: receivable_origin
-        )
+      payload_hash_for(
+        settlement_id: settlement.id,
+        receivable_id: settlement.receivable_id,
+        receivable_allocation_id: settlement.receivable_allocation_id,
+        payment_reference: settlement.payment_reference,
+        provider: provider,
+        amount: amount,
+        currency: BRL_CURRENCY,
+        operation_kind: FDIC_SETTLEMENT_OPERATION_KIND,
+        receivable_origin: receivable_origin
       )
     end
 
@@ -955,6 +949,10 @@ module Receivables
 
     def canonical_json(value)
       CanonicalJson.encode(value)
+    end
+
+    def payload_hash_for(payload)
+      Digest::SHA256.hexdigest(canonical_json(payload))
     end
 
     def decimal_as_string(value)

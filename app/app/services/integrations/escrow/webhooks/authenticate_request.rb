@@ -22,6 +22,18 @@ module Integrations
           "QITECH" => %w[X-QITECH-Webhook-Token X-Qitech-Webhook-Token],
           "STARKBANK" => %w[X-STARKBANK-Webhook-Token X-Starkbank-Webhook-Token]
         }.freeze
+        WEBHOOK_PROVIDER_CONFIG = {
+          "QITECH" => {
+            credentials_key: :qitech,
+            secret_env: "QITECH_WEBHOOK_SECRET",
+            token_env: "QITECH_WEBHOOK_TOKEN"
+          },
+          "STARKBANK" => {
+            credentials_key: :starkbank,
+            secret_env: "STARKBANK_WEBHOOK_SECRET",
+            token_env: "STARKBANK_WEBHOOK_TOKEN"
+          }
+        }.freeze
 
         def call(provider:, request:, raw_body:)
           provider_code = normalized_provider(provider)
@@ -40,7 +52,7 @@ module Integrations
         end
 
         def authenticate_with_signature(provider_code:, secret:, request:, raw_body:)
-          signature = extract_header(request:, candidates: HMAC_HEADER_CANDIDATES.fetch(provider_code, []))
+          signature = extract_header(request:, candidates: hmac_header_candidates(provider_code))
           raise Error.new(code: "webhook_signature_missing", message: "Webhook signature header is missing.") if signature.blank?
 
           verify_hmac_signature!(signature:, secret:, raw_body:)
@@ -48,7 +60,7 @@ module Integrations
         end
 
         def authenticate_with_token(provider_code:, token:, request:)
-          provided_token = extract_bearer_token(request) || extract_header(request:, candidates: TOKEN_HEADER_CANDIDATES.fetch(provider_code, []))
+          provided_token = extract_bearer_token(request) || extract_header(request:, candidates: token_header_candidates(provider_code))
           raise Error.new(code: "webhook_token_missing", message: "Webhook token is missing.") if provided_token.blank?
           raise Error.new(code: "webhook_token_invalid", message: "Webhook token is invalid.") unless secure_compare(provided_token, token)
 
@@ -106,26 +118,34 @@ module Integrations
           value.to_s.strip.presence
         end
 
+        def hmac_header_candidates(provider)
+          HMAC_HEADER_CANDIDATES.fetch(provider, [])
+        end
+
+        def token_header_candidates(provider)
+          TOKEN_HEADER_CANDIDATES.fetch(provider, [])
+        end
+
         def webhook_secret_for(provider)
-          case provider
-          when "QITECH"
-            Rails.app.creds.option(:integrations, :qitech, :webhook_secret, default: ENV["QITECH_WEBHOOK_SECRET"]).to_s.strip
-          when "STARKBANK"
-            Rails.app.creds.option(:integrations, :starkbank, :webhook_secret, default: ENV["STARKBANK_WEBHOOK_SECRET"]).to_s.strip
-          else
-            ""
-          end
+          webhook_config_value(provider: provider, credential_name: :webhook_secret, env_key_name: :secret_env)
         end
 
         def webhook_token_for(provider)
-          case provider
-          when "QITECH"
-            Rails.app.creds.option(:integrations, :qitech, :webhook_token, default: ENV["QITECH_WEBHOOK_TOKEN"]).to_s.strip
-          when "STARKBANK"
-            Rails.app.creds.option(:integrations, :starkbank, :webhook_token, default: ENV["STARKBANK_WEBHOOK_TOKEN"]).to_s.strip
-          else
-            ""
-          end
+          webhook_config_value(provider: provider, credential_name: :webhook_token, env_key_name: :token_env)
+        end
+
+        def webhook_config_value(provider:, credential_name:, env_key_name:)
+          provider_config = WEBHOOK_PROVIDER_CONFIG[provider]
+          return "" if provider_config.blank?
+
+          env_key = provider_config.fetch(env_key_name)
+          credentials_key = provider_config.fetch(:credentials_key)
+          Rails.app.creds.option(
+            :integrations,
+            credentials_key,
+            credential_name,
+            default: ENV[env_key]
+          ).to_s.strip
         end
       end
     end
