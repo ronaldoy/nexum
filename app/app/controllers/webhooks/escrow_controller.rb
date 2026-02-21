@@ -324,7 +324,9 @@ module Webhooks
       Integrations::Escrow::Webhooks::AuthenticateRequest.new.call(
         provider: provider,
         request: request,
-        raw_body: raw_body
+        raw_body: raw_body,
+        tenant_slug: params[:tenant_slug],
+        tenant_id: Current.tenant_id
       )
     end
 
@@ -452,14 +454,17 @@ module Webhooks
     end
 
     def render_authentication_error(error)
-      status = error.code == "webhook_auth_not_configured" ? :service_unavailable : :unauthorized
+      Rails.logger.warn(
+        "escrow_webhook_authentication_error " \
+        "code=#{error.code} message=#{error.message} request_id=#{request.request_id}"
+      )
       render json: {
         error: {
-          code: error.code,
-          message: error.message,
+          code: "webhook_signature_invalid",
+          message: "Webhook signature is invalid.",
           request_id: request.request_id
         }
-      }, status: status
+      }, status: :unauthorized
     end
 
     def render_invalid_json(_error)

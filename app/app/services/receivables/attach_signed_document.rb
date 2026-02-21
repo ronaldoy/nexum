@@ -232,6 +232,7 @@ module Receivables
       raise_validation_error!("storage_key_required", "storage_key is required.") if storage_key.blank?
       validate_blob_sha256!(blob:, expected_sha256: sha256) if blob.present?
       validate_blob_tenant_metadata!(blob:) if blob.present?
+      validate_blob_actor_party_metadata!(blob:, expected_actor_party_id: actor_party_id) if blob.present?
       raise_validation_error!("provider_envelope_id_required", "provider_envelope_id is required.") if provider_envelope_id.blank?
       raise_validation_error!("email_challenge_id_required", "email_challenge_id is required.") if email_challenge_id.blank?
       raise_validation_error!("whatsapp_challenge_id_required", "whatsapp_challenge_id is required.") if whatsapp_challenge_id.blank?
@@ -341,6 +342,24 @@ module Receivables
       return if metadata_tenant_id == @tenant_id.to_s
 
       raise_validation_error!("blob_tenant_mismatch", "blob metadata tenant does not match request tenant.")
+    end
+
+    def validate_blob_actor_party_metadata!(blob:, expected_actor_party_id:)
+      return unless enforce_blob_actor_metadata?(blob)
+
+      metadata_actor_party_id = blob.metadata&.dig("actor_party_id").to_s.strip
+      if metadata_actor_party_id.blank?
+        raise_validation_error!("missing_blob_actor_party_metadata", "blob metadata actor party is required.")
+      end
+      return if metadata_actor_party_id == expected_actor_party_id.to_s
+
+      raise_validation_error!("blob_actor_party_mismatch", "blob metadata actor party does not match request actor.")
+    end
+
+    def enforce_blob_actor_metadata?(blob)
+      metadata = blob.metadata.is_a?(Hash) ? blob.metadata : {}
+      metadata["direct_upload_actor_key"].to_s.strip.present? ||
+        metadata["direct_upload_idempotency_key"].to_s.strip.present?
     end
 
     def attach_blob!(record:, blob:)

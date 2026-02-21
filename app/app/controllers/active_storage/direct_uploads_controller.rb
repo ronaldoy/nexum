@@ -131,8 +131,8 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   def assign_actor_from_token(token)
     token_user = token.user
     @current_tenant_id = token.tenant_id.to_s
-    @current_actor_party_id = token_user&.party_id&.to_s
-    @current_actor_role = token_user&.role.to_s.presence || DEFAULT_ACTOR_ROLE
+    @current_actor_party_id = token_user&.party_id&.to_s.presence || token_actor_party_id_from_token(token)
+    @current_actor_role = token_user&.role.to_s.presence || token_actor_role_from_token(token) || DEFAULT_ACTOR_ROLE
     @current_actor_scope_key = token_actor_scope_key(token:, token_user:)
   end
 
@@ -140,6 +140,20 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
     return "token_user:#{token_user.uuid_id}" if token_user.present?
 
     "api_token:#{token.id}"
+  end
+
+  def token_actor_party_id_from_token(token)
+    metadata = token.metadata
+    return nil unless metadata.is_a?(Hash)
+
+    metadata["actor_party_id"].presence || metadata[:actor_party_id].presence
+  end
+
+  def token_actor_role_from_token(token)
+    metadata = token.metadata
+    return nil unless metadata.is_a?(Hash)
+
+    metadata["actor_role"].presence || metadata[:actor_role].presence
   end
 
   def bearer_token

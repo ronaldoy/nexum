@@ -7,6 +7,7 @@ module Admin
       @secondary_tenant = tenants(:secondary)
       @ops_user = users(:one)
       @non_privileged_user = users(:two)
+      @secondary_actor_party = parties(:secondary_supplier_party)
 
       with_tenant_db_context(tenant_id: @tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
         @ops_user.update!(role: "ops_admin")
@@ -52,6 +53,7 @@ module Admin
       post admin_partner_applications_path, params: {
         partner_application: {
           tenant_id: @secondary_tenant.id,
+          actor_party_id: @secondary_actor_party.id,
           name: "Frontend Parceiro",
           scopes_input: "physicians:write receivables:write",
           token_ttl_minutes: 15,
@@ -69,6 +71,7 @@ module Admin
         application = PartnerApplication.find_by!(tenant_id: @secondary_tenant.id, name: "Frontend Parceiro")
         assert_equal %w[physicians:write receivables:write], application.scopes
         assert_equal [ "https://frontend.parceiro.com.br" ], application.allowed_origins
+        assert_equal @secondary_actor_party.id, application.actor_party_id
       end
     end
 
@@ -78,6 +81,7 @@ module Admin
       post admin_partner_applications_path, params: {
         partner_application: {
           tenant_id: @secondary_tenant.id,
+          actor_party_id: @secondary_actor_party.id,
           name: "Escopo Invalido",
           scopes_input: "ops:write",
           token_ttl_minutes: 15
@@ -97,6 +101,7 @@ module Admin
         application, _client_secret = PartnerApplication.issue!(
           tenant: @secondary_tenant,
           created_by_user: @ops_user,
+          actor_party: @secondary_actor_party,
           name: "Rotate Me",
           scopes: %w[receivables:read]
         )
@@ -130,6 +135,7 @@ module Admin
         application, _client_secret = PartnerApplication.issue!(
           tenant: @secondary_tenant,
           created_by_user: @ops_user,
+          actor_party: @secondary_actor_party,
           name: "Deactivate Me",
           scopes: %w[receivables:read]
         )

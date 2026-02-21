@@ -14,7 +14,7 @@ class ApiAccessToken < ApplicationRecord
 
   before_validation :normalize_scopes
 
-  def self.issue!(tenant:, name:, scopes: [], user: nil, expires_at: nil, audit_context: {})
+  def self.issue!(tenant:, name:, scopes: [], user: nil, expires_at: nil, metadata: {}, audit_context: {})
     secret = SecureRandom.hex(32)
     identifier = SecureRandom.uuid
 
@@ -27,7 +27,8 @@ class ApiAccessToken < ApplicationRecord
         scopes: normalize_scope_values(scopes),
         token_identifier: identifier,
         token_digest: digest(secret),
-        expires_at: expires_at
+        expires_at: expires_at,
+        metadata: normalize_metadata(metadata)
       )
       record.audit_issue!(audit_context: audit_context)
     end
@@ -57,6 +58,21 @@ class ApiAccessToken < ApplicationRecord
 
   def self.normalize_scope_values(scopes)
     Array(scopes).map(&:to_s).map(&:strip).reject(&:blank?).uniq.sort
+  end
+
+  def self.normalize_metadata(raw)
+    case raw
+    when ActionController::Parameters
+      normalize_metadata(raw.to_unsafe_h)
+    when Hash
+      raw.each_with_object({}) do |(key, value), output|
+        output[key.to_s] = normalize_metadata(value)
+      end
+    when Array
+      raw.map { |entry| normalize_metadata(entry) }
+    else
+      raw
+    end
   end
 
   def self.secure_compare_digest(left, right)

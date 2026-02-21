@@ -52,6 +52,18 @@
       </div>
 
       <div class="field">
+        <%= form.label :actor_party_id, "Parte vinculada (actor_party_id)" %>
+        <%= form.select :actor_party_id,
+          options_from_collection_for_select(
+            @available_actor_parties,
+            :id,
+            ->(party) { "[#{party.kind}] #{party.legal_name} (#{party.document_number})" }
+          ),
+          { include_blank: "Selecione a parte vinculada" },
+          required: true %>
+      </div>
+
+      <div class="field">
         <%= form.label :scopes_input, "Escopos permitidos" %>
         <%= form.text_field :scopes_input, required: true, placeholder: "physicians:write receivables:write anticipation_requests:write" %>
         <p class="field-help">
@@ -86,6 +98,7 @@
         <thead>
           <tr>
             <th>Nome</th>
+            <th>Parte vinculada</th>
             <th>Client ID</th>
             <th>Escopos</th>
             <th>TTL</th>
@@ -98,6 +111,14 @@
           <% @partner_applications.each do |application| %>
             <tr>
               <td><strong><%= application[:name] %></strong></td>
+              <td>
+                <% if application[:actor_party_name].present? %>
+                  <strong><%= application[:actor_party_name] %></strong><br>
+                  <code><%= application[:actor_party_id] %></code>
+                <% else %>
+                  <span class="status-pill">Sem vínculo</span>
+                <% end %>
+              </td>
               <td><code><%= application[:client_id] %></code></td>
               <td><code><%= application[:scopes].join(" ") %></code></td>
               <td><%= application[:token_ttl_minutes] %> min</td>

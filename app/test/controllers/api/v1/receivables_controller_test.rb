@@ -290,13 +290,6 @@ module Api
         payload = nil
 
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
-          partner_application, client_secret = PartnerApplication.issue!(
-            tenant: @tenant,
-            created_by_user: @user,
-            name: "Partner Receivables",
-            scopes: %w[receivables:write]
-          )
-
           hospital = Party.create!(
             tenant: @tenant,
             kind: "HOSPITAL",
@@ -314,6 +307,14 @@ module Api
             code: "supplier_invoice_partner_create",
             name: "Supplier Partner Create",
             source_family: "SUPPLIER"
+          )
+
+          partner_application, client_secret = PartnerApplication.issue!(
+            tenant: @tenant,
+            created_by_user: @user,
+            actor_party: supplier,
+            name: "Partner Receivables",
+            scopes: %w[receivables:write]
           )
 
           payload = {

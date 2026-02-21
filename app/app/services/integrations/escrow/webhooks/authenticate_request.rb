@@ -35,10 +35,11 @@ module Integrations
           }
         }.freeze
 
-        def call(provider:, request:, raw_body:)
+        def call(provider:, request:, raw_body:, tenant_slug: nil, tenant_id: nil)
           provider_code = normalized_provider(provider)
-          secret = webhook_secret_for(provider_code)
-          token = webhook_token_for(provider_code)
+          normalized_tenant_slug = normalize_tenant_slug(tenant_slug, tenant_id)
+          secret = webhook_secret_for(provider_code, tenant_slug: normalized_tenant_slug)
+          token = webhook_token_for(provider_code, tenant_slug: normalized_tenant_slug)
           return authenticate_with_signature(provider_code:, secret:, request:, raw_body:) if secret.present?
           return authenticate_with_token(provider_code:, token:, request:) if token.present?
 
@@ -126,26 +127,56 @@ module Integrations
           TOKEN_HEADER_CANDIDATES.fetch(provider, [])
         end
 
-        def webhook_secret_for(provider)
-          webhook_config_value(provider: provider, credential_name: :webhook_secret, env_key_name: :secret_env)
+        def webhook_secret_for(provider, tenant_slug:)
+          webhook_config_value(
+            provider: provider,
+            tenant_slug: tenant_slug,
+            credential_name: :webhook_secret,
+            env_key_name: :secret_env
+          )
         end
 
-        def webhook_token_for(provider)
-          webhook_config_value(provider: provider, credential_name: :webhook_token, env_key_name: :token_env)
+        def webhook_token_for(provider, tenant_slug:)
+          webhook_config_value(
+            provider: provider,
+            tenant_slug: tenant_slug,
+            credential_name: :webhook_token,
+            env_key_name: :token_env
+          )
         end
 
-        def webhook_config_value(provider:, credential_name:, env_key_name:)
+        def webhook_config_value(provider:, tenant_slug:, credential_name:, env_key_name:)
           provider_config = WEBHOOK_PROVIDER_CONFIG[provider]
           return "" if provider_config.blank?
+          return "" if tenant_slug.blank?
 
-          env_key = provider_config.fetch(env_key_name)
+          env_key = tenant_scoped_env_key(
+            base_key: provider_config.fetch(env_key_name),
+            tenant_slug: tenant_slug
+          )
           credentials_key = provider_config.fetch(:credentials_key)
           Rails.app.creds.option(
             :integrations,
             credentials_key,
+            :webhooks,
+            :tenants,
+            tenant_slug,
             credential_name,
             default: ENV[env_key]
           ).to_s.strip
+        end
+
+        def normalize_tenant_slug(tenant_slug, tenant_id)
+          normalized = tenant_slug.to_s.strip.downcase
+          return normalized if normalized.present?
+          return nil if tenant_id.blank?
+
+          Tenant.unscoped.where(id: tenant_id).pick(:slug).to_s.strip.downcase.presence
+        end
+
+        def tenant_scoped_env_key(base_key:, tenant_slug:)
+          normalized_slug = tenant_slug.to_s.upcase.gsub(/[^A-Z0-9]+/, "_")
+          "#{base_key}__#{normalized_slug}"
         end
       end
     end

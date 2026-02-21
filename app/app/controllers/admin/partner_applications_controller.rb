@@ -3,8 +3,10 @@ module Admin
     DEFAULT_TOKEN_TTL_MINUTES = 15
     MAX_ROWS = 200
     SUPPORTED_SCOPES = PartnerApplication::ALLOWED_SCOPES.freeze
+    ACTOR_PARTY_KINDS = %w[SUPPLIER PHYSICIAN_PF LEGAL_ENTITY_PJ HOSPITAL].freeze
     PARTNER_APPLICATION_PERMITTED_FIELDS = %i[
       tenant_id
+      actor_party_id
       name
       scopes_input
       token_ttl_minutes
@@ -17,6 +19,7 @@ module Admin
     before_action :require_passkey_step_up!
     before_action :load_tenants!
     before_action :resolve_selected_tenant!
+    before_action :load_available_actor_parties!
 
     def index
       @supported_scopes = SUPPORTED_SCOPES
@@ -79,6 +82,7 @@ module Admin
       with_tenant_database_context(tenant_id: @selected_tenant.id) do
         PartnerApplication
           .where(tenant_id: @selected_tenant.id)
+          .includes(:actor_party)
           .order(created_at: :desc)
           .limit(MAX_ROWS)
           .map { |application| serialize_partner_application(application) }
@@ -89,6 +93,7 @@ module Admin
       attrs = partner_application_params
       issue_partner_application_for_selected_tenant!(
         name: validated_application_name(attrs.fetch(:name)),
+        actor_party_id: validated_actor_party_id(attrs[:actor_party_id]),
         scopes: validated_scopes(attrs.fetch(:scopes_input)),
         token_ttl_minutes: normalize_token_ttl(attrs[:token_ttl_minutes]),
         allowed_origins: normalize_allowed_origins(attrs[:allowed_origins_input])
@@ -111,12 +116,14 @@ module Admin
       end
     end
 
-    def issue_partner_application_for_selected_tenant!(name:, scopes:, token_ttl_minutes:, allowed_origins:)
+    def issue_partner_application_for_selected_tenant!(name:, actor_party_id:, scopes:, token_ttl_minutes:, allowed_origins:)
       with_tenant_database_context(tenant_id: @selected_tenant.id) do
         tenant = Tenant.find(@selected_tenant.id)
+        actor_party = resolve_actor_party!(actor_party_id)
         application, client_secret = PartnerApplication.issue!(
           tenant: tenant,
           created_by_user: Current.user,
+          actor_party: actor_party,
           name: name,
           scopes: scopes,
           token_ttl_minutes: token_ttl_minutes,
@@ -125,6 +132,33 @@ module Admin
         )
         { application: application, client_secret: client_secret }
       end
+    end
+
+    def load_available_actor_parties!
+      @available_actor_parties = with_tenant_database_context(tenant_id: @selected_tenant.id) do
+        Party
+          .where(tenant_id: @selected_tenant.id, active: true, kind: ACTOR_PARTY_KINDS)
+          .order(:kind, :legal_name)
+          .select(:id, :kind, :legal_name, :document_number)
+          .to_a
+      end
+    end
+
+    def normalized_actor_party_id(raw_actor_party_id)
+      raw_actor_party_id.to_s.strip.presence
+    end
+
+    def validated_actor_party_id(raw_actor_party_id)
+      actor_party_id = normalized_actor_party_id(raw_actor_party_id)
+      raise ValidationError, "Vínculo da parte (actor_party_id) é obrigatório." if actor_party_id.blank?
+
+      actor_party_id
+    end
+
+    def resolve_actor_party!(actor_party_id)
+      return nil if actor_party_id.blank?
+
+      Party.where(tenant_id: @selected_tenant.id).find(actor_party_id)
     end
 
     def validated_application_name(raw_name)
@@ -295,6 +329,8 @@ module Admin
         name: application.name,
         client_id: application.client_id,
         scopes: Array(application.scopes),
+        actor_party_id: application.actor_party_id,
+        actor_party_name: application.actor_party&.legal_name,
         token_ttl_minutes: application.token_ttl_minutes,
         allowed_origins: Array(application.allowed_origins),
         active: application.active,

@@ -15,6 +15,7 @@ module Api
             @partner_application, @client_secret = PartnerApplication.issue!(
               tenant: @tenant,
               created_by_user: @ops_user,
+              actor_party: @ops_user.party,
               name: "Portal Parceiro Teste",
               scopes: %w[physicians:write receivables:write anticipation_requests:write]
             )

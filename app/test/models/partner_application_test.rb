@@ -31,6 +31,7 @@ class PartnerApplicationTest < ActiveSupport::TestCase
       application, _secret = PartnerApplication.issue!(
         tenant: @tenant,
         created_by_user: @ops_user,
+        actor_party: @ops_user.party,
         name: "Partner App",
         scopes: %w[receivables:read receivables:write]
       )
@@ -52,6 +53,7 @@ class PartnerApplicationTest < ActiveSupport::TestCase
       application, _secret = PartnerApplication.issue!(
         tenant: @tenant,
         created_by_user: @ops_user,
+        actor_party: @ops_user.party,
         name: "Rotate App",
         scopes: %w[receivables:read]
       )

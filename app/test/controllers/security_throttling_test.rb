@@ -66,6 +66,7 @@ class SecurityThrottlingTest < ActionDispatch::IntegrationTest
       partner_application, = PartnerApplication.issue!(
         tenant: @user.tenant,
         created_by_user: @user,
+        actor_party: @user.party,
         name: "Throttle OAuth Client",
         scopes: %w[receivables:write]
       )
@@ -94,6 +95,24 @@ class SecurityThrottlingTest < ActionDispatch::IntegrationTest
         scope: "receivables:write"
       },
       env: { "REMOTE_ADDR" => "203.0.113.88" }
+
+    assert_response :too_many_requests
+  end
+
+  test "throttles csp report bursts per ip" do
+    120.times do
+      post "/security/csp_reports",
+        params: { "csp-report" => { "blocked-uri" => "https://example.invalid" } },
+        as: :json,
+        env: { "REMOTE_ADDR" => "198.51.100.150" }
+
+      assert_includes [ 204, 400 ], response.status
+    end
+
+    post "/security/csp_reports",
+      params: { "csp-report" => { "blocked-uri" => "https://example.invalid" } },
+      as: :json,
+      env: { "REMOTE_ADDR" => "198.51.100.150" }
 
     assert_response :too_many_requests
   end

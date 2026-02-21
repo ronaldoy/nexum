@@ -4,6 +4,7 @@ class PartnerApplication < ApplicationRecord
   PARTNER_APP_DEACTIVATED_ACTION = "PARTNER_APPLICATION_DEACTIVATED".freeze
   PARTNER_APP_TOKEN_ISSUED_ACTION = "PARTNER_APPLICATION_TOKEN_ISSUED".freeze
   ISSUED_TOKEN_NAME_PREFIX = "partner_app".freeze
+  PARTNER_APP_ACTOR_ROLE = "partner_application".freeze
   DEFAULT_TOKEN_TTL_MINUTES = 15
   ALLOWED_SCOPES = %w[
     anticipation_requests:challenge
@@ -19,15 +20,18 @@ class PartnerApplication < ApplicationRecord
     receivables:settle
     receivables:write
   ].freeze
+  ACTOR_BOUND_SCOPES = ALLOWED_SCOPES.freeze
 
   belongs_to :tenant
   belongs_to :created_by_user, class_name: "User", foreign_key: :created_by_user_uuid_id, primary_key: :uuid_id, optional: true
+  belongs_to :actor_party, class_name: "Party", optional: true
 
   validates :name, :client_id, :client_secret_digest, presence: true
   validates :scopes, presence: true
   validates :client_id, uniqueness: true
   validates :token_ttl_minutes, numericality: { only_integer: true, greater_than_or_equal_to: 5, less_than_or_equal_to: 60 }
   validate :scopes_must_be_known
+  validate :actor_party_tenant_match
 
   before_validation :normalize_scopes
   before_validation :normalize_allowed_origins
@@ -37,7 +41,7 @@ class PartnerApplication < ApplicationRecord
   class AuthenticationError < StandardError; end
   class ScopeError < StandardError; end
 
-  def self.issue!(tenant:, name:, scopes:, token_ttl_minutes: DEFAULT_TOKEN_TTL_MINUTES, allowed_origins: [], metadata: {}, created_by_user: nil, audit_context: {})
+  def self.issue!(tenant:, name:, scopes:, token_ttl_minutes: DEFAULT_TOKEN_TTL_MINUTES, allowed_origins: [], metadata: {}, created_by_user: nil, actor_party: nil, audit_context: {})
     client_id = SecureRandom.uuid
     client_secret = SecureRandom.hex(32)
 
@@ -46,6 +50,7 @@ class PartnerApplication < ApplicationRecord
       application = create!(
         tenant: tenant,
         created_by_user: created_by_user,
+        actor_party: actor_party,
         name: name,
         client_id: client_id,
         client_secret_digest: digest(client_secret),
@@ -142,6 +147,7 @@ class PartnerApplication < ApplicationRecord
 
   def issue_access_token!(requested_scopes: nil, audit_context: {})
     scopes_to_issue = resolve_scopes_for_token!(requested_scopes)
+    ensure_actor_binding!(scopes_to_issue)
     expires_at = Time.current + token_ttl_minutes.minutes
 
     issued = nil
@@ -152,6 +158,7 @@ class PartnerApplication < ApplicationRecord
         name: issued_token_name,
         scopes: scopes_to_issue,
         expires_at: expires_at,
+        metadata: issued_token_metadata(scopes_to_issue: scopes_to_issue),
         audit_context: audit_context.merge(
           metadata: normalize_hash_metadata(audit_context[:metadata]).merge(
             "partner_application_id" => id,
@@ -199,6 +206,25 @@ class PartnerApplication < ApplicationRecord
     self.allowed_origins = self.class.normalize_allowed_origin_values(allowed_origins)
   end
 
+  def ensure_actor_binding!(scopes_to_issue)
+    actor_bound_scopes = Array(scopes_to_issue) & ACTOR_BOUND_SCOPES
+    return if actor_bound_scopes.empty?
+    return if actor_party_id.present?
+
+    raise AuthenticationError, "partner application actor binding is missing for scopes: #{actor_bound_scopes.join(', ')}"
+  end
+
+  def issued_token_metadata(scopes_to_issue:)
+    {
+      "actor_role" => PARTNER_APP_ACTOR_ROLE,
+      "actor_party_id" => actor_party_id,
+      "partner_application_id" => id,
+      "partner_application_name" => name,
+      "partner_application_client_id" => client_id,
+      "scopes" => Array(scopes_to_issue)
+    }
+  end
+
   def resolve_scopes_for_token!(requested_scopes)
     requested = self.class.normalize_scope_values(requested_scope_values(requested_scopes))
     return scopes if requested.empty?
@@ -218,6 +244,13 @@ class PartnerApplication < ApplicationRecord
     else
       raw_scopes.to_s.split(/[,\s]+/)
     end
+  end
+
+  def actor_party_tenant_match
+    return if actor_party_id.blank?
+    return if actor_party&.tenant_id == tenant_id
+
+    errors.add(:actor_party_id, "must belong to the same tenant")
   end
 
   def scopes_must_be_known

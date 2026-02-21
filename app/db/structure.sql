@@ -1019,6 +1019,7 @@ CREATE TABLE public.partner_applications (
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
     created_by_user_uuid_id uuid,
+    actor_party_id uuid,
     CONSTRAINT partner_applications_client_id_present_check CHECK ((btrim((client_id)::text) <> ''::text)),
     CONSTRAINT partner_applications_client_secret_digest_present_check CHECK ((btrim((client_secret_digest)::text) <> ''::text)),
     CONSTRAINT partner_applications_name_present_check CHECK ((btrim((name)::text) <> ''::text)),
@@ -2790,6 +2791,13 @@ CREATE UNIQUE INDEX index_parties_on_tenant_kind_external_ref ON public.parties 
 
 
 --
+-- Name: index_partner_applications_on_actor_party_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_partner_applications_on_actor_party_id ON public.partner_applications USING btree (actor_party_id);
+
+
+--
 -- Name: index_partner_applications_on_client_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4244,6 +4252,14 @@ ALTER TABLE ONLY public.receivable_payment_settlements
 
 
 --
+-- Name: partner_applications fk_rails_ff6346f9d2; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.partner_applications
+    ADD CONSTRAINT fk_rails_ff6346f9d2 FOREIGN KEY (actor_party_id) REFERENCES public.parties(id);
+
+
+--
 -- Name: action_ip_logs; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -4831,6 +4847,7 @@ CREATE POLICY webauthn_credentials_tenant_policy ON public.webauthn_credentials 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260221162000'),
 ('20260221143000'),
 ('20260220103000'),
 ('20260220100000'),

@@ -85,6 +85,7 @@ module Api
 
       def create
         return unless valid_create_payload_types?
+        return unless authorize_create_party_access!(create_params)
 
         result = receivable_create_result
         render_create_response(result)
@@ -167,6 +168,32 @@ module Api
 
       def receivable_create_result
         receivable_create_service.call(create_params.to_h)
+      end
+
+      def authorize_create_party_access!(payload)
+        return true if privileged_actor?
+
+        actor_party_id = require_actor_party_id!
+        allowed = actor_allowed_for_receivable_create?(actor_party_id: actor_party_id, payload: payload)
+        return true if allowed
+
+        raise AuthorizationError.new(code: "forbidden", message: "Access denied.")
+      end
+
+      def actor_allowed_for_receivable_create?(actor_party_id:, payload:)
+        debtor_party_id = payload[:debtor_party_id].to_s
+        creditor_party_id = payload[:creditor_party_id].to_s
+        beneficiary_party_id = payload[:beneficiary_party_id].to_s
+        actor_party_id = actor_party_id.to_s
+
+        return true if [ debtor_party_id, creditor_party_id, beneficiary_party_id ].include?(actor_party_id)
+
+        HospitalOwnership.exists?(
+          tenant_id: Current.tenant_id,
+          organization_party_id: actor_party_id,
+          hospital_party_id: debtor_party_id,
+          active: true
+        )
       end
 
       def render_create_response(result)

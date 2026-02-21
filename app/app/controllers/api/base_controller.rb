@@ -100,7 +100,7 @@ module Api
     end
 
     def current_actor_party_id
-      Current.user&.party_id
+      Current.user&.party_id || token_actor_party_id
     end
 
     def actor_identifier_candidates
@@ -108,6 +108,7 @@ module Api
         Current.user&.party_id,
         Current.user&.uuid_id,
         Current.user&.id,
+        token_actor_party_id,
         Current.api_access_token&.id
       ]
     end
@@ -117,6 +118,13 @@ module Api
       return nil unless metadata.is_a?(Hash)
 
       metadata["actor_role"].presence || metadata[:actor_role].presence
+    end
+
+    def token_actor_party_id
+      metadata = Current.api_access_token&.metadata
+      return nil unless metadata.is_a?(Hash)
+
+      metadata["actor_party_id"].presence || metadata[:actor_party_id].presence
     end
 
     def authorize_party_access!(party_id)

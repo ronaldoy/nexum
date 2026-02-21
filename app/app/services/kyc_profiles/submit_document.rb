@@ -105,6 +105,10 @@ module KycProfiles
     def create_submission_result!(inputs)
       kyc_profile = KycProfile.where(tenant_id: @tenant_id).lock.find(inputs.kyc_profile_id)
       validate_party_consistency!(kyc_profile:, payload: inputs.normalized_payload)
+      validate_blob_actor_party_metadata!(
+        blob: inputs.normalized_payload[:blob],
+        expected_actor_party_id: kyc_profile.party_id
+      )
 
       kyc_document = persist_kyc_document!(kyc_profile:, payload: inputs.normalized_payload)
       append_submission_artifacts!(kyc_profile:, kyc_document:, payload_hash: inputs.payload_hash)
@@ -260,6 +264,25 @@ module KycProfiles
       return if metadata_tenant_id == @tenant_id.to_s
 
       raise_validation_error!("blob_tenant_mismatch", "blob metadata tenant does not match request tenant.")
+    end
+
+    def validate_blob_actor_party_metadata!(blob:, expected_actor_party_id:)
+      return if blob.blank?
+      return unless enforce_blob_actor_metadata?(blob)
+
+      metadata_actor_party_id = blob.metadata&.dig("actor_party_id").to_s.strip
+      if metadata_actor_party_id.blank?
+        raise_validation_error!("missing_blob_actor_party_metadata", "blob metadata actor party is required.")
+      end
+      return if metadata_actor_party_id == expected_actor_party_id.to_s
+
+      raise_validation_error!("blob_actor_party_mismatch", "blob metadata actor party does not match profile party.")
+    end
+
+    def enforce_blob_actor_metadata?(blob)
+      metadata = blob.metadata.is_a?(Hash) ? blob.metadata : {}
+      metadata["direct_upload_actor_key"].to_s.strip.present? ||
+        metadata["direct_upload_idempotency_key"].to_s.strip.present?
     end
 
     def parse_boolean(raw_value)

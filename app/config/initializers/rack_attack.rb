@@ -71,6 +71,10 @@ class Rack::Attack
     request.ip if openapi_docs_request?(request)
   end
 
+  throttle("csp-report/ip", limit: 120, period: 5.minutes) do |request|
+    request.ip if csp_report_request?(request)
+  end
+
   throttle("openapi-docs/credential", limit: 20, period: 10.minutes) do |request|
     next unless openapi_docs_request?(request)
 
@@ -111,6 +115,10 @@ class Rack::Attack
 
   def self.openapi_docs_request?(request)
     request.path == "/docs/openapi/v1" || request.path == "/docs/openapi/v1.yaml"
+  end
+
+  def self.csp_report_request?(request)
+    request.post? && request.path == "/security/csp_reports"
   end
 
   def self.oauth_token_request?(request)

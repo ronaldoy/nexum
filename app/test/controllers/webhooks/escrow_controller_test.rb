@@ -10,7 +10,7 @@ module Webhooks
     end
 
     test "rejects webhook request with invalid signature" do
-      with_environment("QITECH_WEBHOOK_SECRET" => "secret-key") do
+      with_environment(qitech_secret_env(@tenant.slug) => "secret-key") do
         payload = {
           "event_id" => "evt-invalid-signature",
           "request_control_key" => "missing-payout",
@@ -27,7 +27,7 @@ module Webhooks
     end
 
     test "returns generic authentication failure for unknown tenant slug" do
-      with_environment("QITECH_WEBHOOK_SECRET" => "secret-key") do
+      with_environment(qitech_secret_env("non-existent-tenant") => "secret-key") do
         payload = {
           "event_id" => "evt-unknown-tenant",
           "request_control_key" => "missing-payout",
@@ -51,7 +51,7 @@ module Webhooks
         payout = create_payout_bundle!(suffix: "webhook-success")[:payout]
       end
 
-      with_environment("QITECH_WEBHOOK_SECRET" => "secret-key") do
+      with_environment(qitech_secret_env(@tenant.slug) => "secret-key") do
         payload = {
           "event_id" => "evt-webhook-success",
           "request_control_key" => payout.idempotency_key,
@@ -89,7 +89,7 @@ module Webhooks
         payout = create_payout_bundle!(suffix: "webhook-replay")[:payout]
       end
 
-      with_environment("QITECH_WEBHOOK_SECRET" => "secret-key") do
+      with_environment(qitech_secret_env(@tenant.slug) => "secret-key") do
         payload = {
           "event_id" => "evt-webhook-replay",
           "request_control_key" => payout.idempotency_key,
@@ -126,7 +126,7 @@ module Webhooks
         payout = create_payout_bundle!(suffix: "webhook-header-spoof")[:payout]
       end
 
-      with_environment("QITECH_WEBHOOK_SECRET" => "secret-key") do
+      with_environment(qitech_secret_env(@tenant.slug) => "secret-key") do
         payload = {
           "event_id" => "evt-webhook-header-spoof",
           "request_control_key" => payout.idempotency_key,
@@ -157,7 +157,7 @@ module Webhooks
         payout = create_payout_bundle!(suffix: "webhook-conflict")[:payout]
       end
 
-      with_environment("QITECH_WEBHOOK_SECRET" => "secret-key") do
+      with_environment(qitech_secret_env(@tenant.slug) => "secret-key") do
         first_payload = {
           "event_id" => "evt-webhook-conflict",
           "request_control_key" => payout.idempotency_key,
@@ -183,7 +183,7 @@ module Webhooks
     end
 
     test "records reconciliation exception when webhook cannot find matching resource" do
-      with_environment("QITECH_WEBHOOK_SECRET" => "secret-key") do
+      with_environment(qitech_secret_env(@tenant.slug) => "secret-key") do
         payload = {
           "event_id" => "evt-webhook-ignored",
           "request_control_key" => "non-existent-payout",
@@ -220,6 +220,11 @@ module Webhooks
     end
 
     private
+
+    def qitech_secret_env(tenant_slug)
+      normalized_slug = tenant_slug.to_s.upcase.gsub(/[^A-Z0-9]+/, "_")
+      "QITECH_WEBHOOK_SECRET__#{normalized_slug}"
+    end
 
     def json_webhook_headers(signature:)
       {
