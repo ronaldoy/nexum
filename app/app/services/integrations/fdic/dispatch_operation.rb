@@ -242,27 +242,9 @@ module Integrations
       def resolve_source!(tenant_id:, operation_type:, payload:)
         case operation_type
         when "FUNDING_REQUEST"
-          anticipation_request_id = payload["anticipation_request_id"].to_s.presence
-          if anticipation_request_id.blank?
-            raise ValidationError.new(
-              code: "fdic_payload_source_missing",
-              message: "FUNDING_REQUEST payload must include anticipation_request_id."
-            )
-          end
-
-          anticipation_request = AnticipationRequest.where(tenant_id: tenant_id).lock.find(anticipation_request_id)
-          { anticipation_request: anticipation_request, settlement: nil }
+          resolve_funding_source!(tenant_id:, payload:)
         when "SETTLEMENT_REPORT"
-          settlement_id = payload["settlement_id"].to_s.presence || payload["receivable_payment_settlement_id"].to_s.presence
-          if settlement_id.blank?
-            raise ValidationError.new(
-              code: "fdic_payload_source_missing",
-              message: "SETTLEMENT_REPORT payload must include settlement_id."
-            )
-          end
-
-          settlement = ReceivablePaymentSettlement.where(tenant_id: tenant_id).lock.find(settlement_id)
-          { anticipation_request: nil, settlement: settlement }
+          resolve_settlement_source!(tenant_id:, payload:)
         else
           raise invalid_operation_type_error
         end
@@ -271,22 +253,68 @@ module Integrations
       def dispatch_provider!(provider:, operation_type:, tenant_id:, source:, payload:, idempotency_key:)
         case operation_type
         when "FUNDING_REQUEST"
-          provider.request_funding!(
+          dispatch_funding!(
+            provider: provider,
             tenant_id: tenant_id,
-            anticipation_request: source.fetch(:anticipation_request),
+            source: source,
             payload: payload,
             idempotency_key: idempotency_key
           )
         when "SETTLEMENT_REPORT"
-          provider.report_settlement!(
+          dispatch_settlement!(
+            provider: provider,
             tenant_id: tenant_id,
-            settlement: source.fetch(:settlement),
+            source: source,
             payload: payload,
             idempotency_key: idempotency_key
           )
         else
           raise invalid_operation_type_error
         end
+      end
+
+      def resolve_funding_source!(tenant_id:, payload:)
+        anticipation_request_id = payload["anticipation_request_id"].to_s.presence
+        if anticipation_request_id.blank?
+          raise ValidationError.new(
+            code: "fdic_payload_source_missing",
+            message: "FUNDING_REQUEST payload must include anticipation_request_id."
+          )
+        end
+
+        anticipation_request = AnticipationRequest.where(tenant_id: tenant_id).lock.find(anticipation_request_id)
+        { anticipation_request: anticipation_request, settlement: nil }
+      end
+
+      def resolve_settlement_source!(tenant_id:, payload:)
+        settlement_id = payload["settlement_id"].to_s.presence || payload["receivable_payment_settlement_id"].to_s.presence
+        if settlement_id.blank?
+          raise ValidationError.new(
+            code: "fdic_payload_source_missing",
+            message: "SETTLEMENT_REPORT payload must include settlement_id."
+          )
+        end
+
+        settlement = ReceivablePaymentSettlement.where(tenant_id: tenant_id).lock.find(settlement_id)
+        { anticipation_request: nil, settlement: settlement }
+      end
+
+      def dispatch_funding!(provider:, tenant_id:, source:, payload:, idempotency_key:)
+        provider.request_funding!(
+          tenant_id: tenant_id,
+          anticipation_request: source.fetch(:anticipation_request),
+          payload: payload,
+          idempotency_key: idempotency_key
+        )
+      end
+
+      def dispatch_settlement!(provider:, tenant_id:, source:, payload:, idempotency_key:)
+        provider.report_settlement!(
+          tenant_id: tenant_id,
+          settlement: source.fetch(:settlement),
+          payload: payload,
+          idempotency_key: idempotency_key
+        )
       end
 
       def invalid_operation_type_error

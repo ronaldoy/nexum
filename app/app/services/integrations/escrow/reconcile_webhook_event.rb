@@ -113,11 +113,7 @@ module Integrations
         create_action_log!(
           action_type: "ESCROW_WEBHOOK_IGNORED",
           success: true,
-          metadata: {
-            "provider" => @provider,
-            "provider_event_id" => @provider_event_id,
-            "reason" => "resource_not_found"
-          }
+          metadata: provider_metadata("reason" => "resource_not_found")
         )
         Result.new(
           status: "IGNORED",
@@ -132,16 +128,14 @@ module Integrations
 
       def find_payout_by_transfer_id(scope)
         transfer_ids = payout_transfer_id_candidates
-        return nil if transfer_ids.empty?
-
-        scope.where(provider_transfer_id: transfer_ids).order(created_at: :desc).first
+        latest_match(scope:, column: :provider_transfer_id, candidates: transfer_ids)
       end
 
       def find_payout_by_request_control_key(scope)
         control_keys = request_control_key_candidates
         return nil if control_keys.empty?
 
-        payout = scope.where(idempotency_key: control_keys).order(created_at: :desc).first
+        payout = latest_match(scope:, column: :idempotency_key, candidates: control_keys)
         return payout if payout
 
         find_payout_by_payload_control_key(scope, control_keys)
@@ -160,16 +154,18 @@ module Integrations
 
       def find_account_by_provider_account_id(scope)
         account_ids = account_id_candidates
-        return nil if account_ids.empty?
-
-        scope.where(provider_account_id: account_ids).order(created_at: :desc).first
+        latest_match(scope:, column: :provider_account_id, candidates: account_ids)
       end
 
       def find_account_by_provider_request_id(scope)
         request_ids = account_request_id_candidates
-        return nil if request_ids.empty?
+        latest_match(scope:, column: :provider_request_id, candidates: request_ids)
+      end
 
-        scope.where(provider_request_id: request_ids).order(created_at: :desc).first
+      def latest_match(scope:, column:, candidates:)
+        return nil if candidates.empty?
+
+        scope.where(column => candidates).order(created_at: :desc).first
       end
 
       def apply_payout_reconciliation!(payout:, status:, mapped_status:)
@@ -252,13 +248,11 @@ module Integrations
           success: true,
           target_type: "EscrowPayout",
           target_id: payout.id,
-          metadata: {
-            "provider" => @provider,
-            "provider_event_id" => @provider_event_id,
+          metadata: provider_metadata(
             "status" => status,
             "provider_transfer_id" => payout_transfer_id_candidates.first,
             "mapped_status" => mapped_status
-          }
+          )
         )
       end
 
@@ -268,13 +262,18 @@ module Integrations
           success: true,
           target_type: "EscrowAccount",
           target_id: account.id,
-          metadata: {
-            "provider" => @provider,
-            "provider_event_id" => @provider_event_id,
+          metadata: provider_metadata(
             "status" => status,
             "mapped_status" => mapped_status
-          }
+          )
         )
+      end
+
+      def provider_metadata(additional = {})
+        {
+          "provider" => @provider,
+          "provider_event_id" => @provider_event_id
+        }.merge(additional)
       end
 
       def payout_transfer_id_candidates

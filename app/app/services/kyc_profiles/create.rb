@@ -48,13 +48,15 @@ module KycProfiles
       inputs = build_create_inputs(raw_payload:, default_party_id:)
       result = nil
       validation_error = nil
+      failure_target_id = nil
 
       ActiveRecord::Base.transaction do
         result, validation_error = create_or_replay(inputs)
       end
 
+      failure_target_id = resolve_failure_target_id(inputs: inputs, raw_payload: raw_payload)
       if validation_error
-        create_failure_log(error: validation_error, target_id: inputs.party_id, actor_party_id: nil)
+        create_failure_log(error: validation_error, target_id: failure_target_id, actor_party_id: nil)
         raise validation_error
       end
 
@@ -64,17 +66,27 @@ module KycProfiles
         code: "invalid_kyc_profile",
         message: error.record.errors.full_messages.to_sentence
       )
-      create_failure_log(error: validation_error, target_id: inputs&.party_id || raw_payload.to_h[:party_id], actor_party_id: nil)
+      failure_target_id = resolve_failure_target_id(inputs: inputs, raw_payload: raw_payload)
+      create_failure_log(error: validation_error, target_id: failure_target_id, actor_party_id: nil)
       raise validation_error
     rescue ActiveRecord::RecordNotFound => error
-      create_failure_log(error: error, target_id: inputs&.party_id || raw_payload.to_h[:party_id], actor_party_id: nil)
+      failure_target_id = resolve_failure_target_id(inputs: inputs, raw_payload: raw_payload)
+      create_failure_log(error: error, target_id: failure_target_id, actor_party_id: nil)
       raise
     rescue ActiveRecord::RecordNotUnique
-      existing_outbox = OutboxEvent.find_by!(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
-      replay_result(existing_outbox:, payload_hash: inputs&.payload_hash.to_s)
+      replay_after_unique_violation(payload_hash: inputs&.payload_hash.to_s)
     end
 
     private
+
+    def resolve_failure_target_id(inputs:, raw_payload:)
+      inputs&.party_id || raw_payload.to_h[:party_id]
+    end
+
+    def replay_after_unique_violation(payload_hash:)
+      existing_outbox = OutboxEvent.find_by!(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
+      replay_result(existing_outbox:, payload_hash: payload_hash)
+    end
 
     def build_create_inputs(raw_payload:, default_party_id:)
       payload = raw_payload.to_h.deep_symbolize_keys
@@ -152,17 +164,21 @@ module KycProfiles
         kyc_profile: kyc_profile,
         party: party,
         event_type: OUTBOX_EVENT_TYPE,
-        payload: {
-          "idempotency_key" => @idempotency_key,
-          "status" => kyc_profile.status,
-          "risk_level" => kyc_profile.risk_level
-        }
+        payload: profile_event_payload(kyc_profile)
       )
 
       create_outbox_event!(
         kyc_profile: kyc_profile,
         payload_hash: payload_hash
       )
+    end
+
+    def profile_event_payload(kyc_profile)
+      {
+        "idempotency_key" => @idempotency_key,
+        "status" => kyc_profile.status,
+        "risk_level" => kyc_profile.risk_level
+      }
     end
 
     def log_profile_creation_success!(kyc_profile:, party:)
@@ -184,20 +200,8 @@ module KycProfiles
     end
 
     def replay_result(existing_outbox:, payload_hash:)
-      unless existing_outbox.event_type == OUTBOX_EVENT_TYPE && existing_outbox.aggregate_type == TARGET_TYPE
-        raise IdempotencyConflict.new(
-          code: "idempotency_key_reused_with_different_operation",
-          message: "Idempotency-Key was already used with a different operation."
-        )
-      end
-
-      existing_payload_hash = existing_outbox.payload&.dig(PAYLOAD_HASH_KEY).to_s
-      if existing_payload_hash.present? && existing_payload_hash != payload_hash
-        raise IdempotencyConflict.new(
-          code: "idempotency_key_reused_with_different_payload",
-          message: "Idempotency-Key was already used with a different payload."
-        )
-      end
+      ensure_replay_outbox_operation!(existing_outbox)
+      ensure_replay_payload_hash!(existing_outbox:, payload_hash:)
 
       kyc_profile = KycProfile.where(tenant_id: @tenant_id).find(existing_outbox.aggregate_id)
       create_action_log!(
@@ -209,6 +213,25 @@ module KycProfiles
       )
 
       Result.new(kyc_profile: kyc_profile, replayed: true)
+    end
+
+    def ensure_replay_outbox_operation!(existing_outbox)
+      return if existing_outbox.event_type == OUTBOX_EVENT_TYPE && existing_outbox.aggregate_type == TARGET_TYPE
+
+      raise IdempotencyConflict.new(
+        code: "idempotency_key_reused_with_different_operation",
+        message: "Idempotency-Key was already used with a different operation."
+      )
+    end
+
+    def ensure_replay_payload_hash!(existing_outbox:, payload_hash:)
+      existing_payload_hash = existing_outbox.payload&.dig(PAYLOAD_HASH_KEY).to_s
+      return if existing_payload_hash.blank? || existing_payload_hash == payload_hash
+
+      raise IdempotencyConflict.new(
+        code: "idempotency_key_reused_with_different_payload",
+        message: "Idempotency-Key was already used with a different payload."
+      )
     end
 
     def create_kyc_event!(kyc_profile:, party:, event_type:, payload:)
@@ -232,11 +255,15 @@ module KycProfiles
         event_type: OUTBOX_EVENT_TYPE,
         status: "PENDING",
         idempotency_key: @idempotency_key,
-        payload: {
-          PAYLOAD_HASH_KEY => payload_hash,
-          "kyc_profile_id" => kyc_profile.id
-        }
+        payload: outbox_payload(kyc_profile: kyc_profile, payload_hash: payload_hash)
       )
+    end
+
+    def outbox_payload(kyc_profile:, payload_hash:)
+      {
+        PAYLOAD_HASH_KEY => payload_hash,
+        "kyc_profile_id" => kyc_profile.id
+      }
     end
 
     def create_action_log!(action_type:, success:, actor_party_id:, target_id:, metadata:)

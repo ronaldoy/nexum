@@ -70,19 +70,24 @@ module Physicians
     end
 
     def find_existing_party(payload)
-      existing_party = Party.where(
-        tenant_id: @tenant_id,
-        kind: "PHYSICIAN_PF",
-        document_number: payload.fetch(:document_number)
-      ).lock.first
+      existing_party = physician_party_scope
+        .where(document_number: payload.fetch(:document_number))
+        .lock
+        .first
       return existing_party if existing_party
       return nil if payload[:external_ref].blank?
 
+      physician_party_scope
+        .where(external_ref: payload[:external_ref])
+        .lock
+        .first
+    end
+
+    def physician_party_scope
       Party.where(
         tenant_id: @tenant_id,
-        kind: "PHYSICIAN_PF",
-        external_ref: payload[:external_ref]
-      ).lock.first
+        kind: "PHYSICIAN_PF"
+      )
     end
 
     def replay_existing_party(existing_party:, inputs:)
@@ -129,10 +134,7 @@ module Physicians
         display_name: payload[:display_name].presence || payload.fetch(:full_name),
         document_type: "CPF",
         document_number: payload.fetch(:document_number),
-        metadata: normalize_hash_metadata(payload[:party_metadata]).merge(
-          PAYLOAD_HASH_METADATA_KEY => inputs.payload_hash,
-          "idempotency_key" => @idempotency_key
-        )
+        metadata: build_idempotency_metadata(payload[:party_metadata], payload_hash: inputs.payload_hash)
       )
     end
 
@@ -147,10 +149,14 @@ module Physicians
         crm_number: payload[:crm_number],
         crm_state: payload[:crm_state],
         active: true,
-        metadata: normalize_hash_metadata(payload[:metadata]).merge(
-          PAYLOAD_HASH_METADATA_KEY => inputs.payload_hash,
-          "idempotency_key" => @idempotency_key
-        )
+        metadata: build_idempotency_metadata(payload[:metadata], payload_hash: inputs.payload_hash)
+      )
+    end
+
+    def build_idempotency_metadata(raw_metadata, payload_hash:)
+      normalize_hash_metadata(raw_metadata).merge(
+        PAYLOAD_HASH_METADATA_KEY => payload_hash,
+        "idempotency_key" => @idempotency_key
       )
     end
 

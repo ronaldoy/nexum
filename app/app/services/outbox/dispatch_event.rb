@@ -166,44 +166,64 @@ module Outbox
     end
 
     def record_dead_letter_attempt(outbox_event:, attempt_number:, occurred_at:, error:)
-      create_attempt!(
+      record_failed_attempt!(
         outbox_event: outbox_event,
         attempt_number: attempt_number,
-        status: "DEAD_LETTER",
         occurred_at: occurred_at,
-        error_code: error.code,
-        error_message: error.message
-      )
-      create_dispatch_action_log!(
-        outbox_event: outbox_event,
+        status: "DEAD_LETTER",
         action_type: DEAD_LETTERED_ACTION,
-        attempt_number: attempt_number,
         error: error
       )
-      Result.new(status: "DEAD_LETTER", attempt_number: attempt_number, skipped: false)
     end
 
     def record_retry_scheduled_attempt(outbox_event:, attempt_number:, occurred_at:, error:)
       backoff_seconds = backoff_seconds_for(attempt_number)
       next_attempt_at = occurred_at + backoff_seconds.seconds
+      record_failed_attempt!(
+        outbox_event: outbox_event,
+        attempt_number: attempt_number,
+        occurred_at: occurred_at,
+        status: "RETRY_SCHEDULED",
+        action_type: RETRY_SCHEDULED_ACTION,
+        error: error,
+        next_attempt_at: next_attempt_at,
+        attempt_metadata: { "backoff_seconds" => backoff_seconds }
+      )
+    end
+
+    def record_failed_attempt!(
+      outbox_event:,
+      attempt_number:,
+      occurred_at:,
+      status:,
+      action_type:,
+      error:,
+      next_attempt_at: nil,
+      attempt_metadata: {}
+    )
       create_attempt!(
         outbox_event: outbox_event,
         attempt_number: attempt_number,
-        status: "RETRY_SCHEDULED",
+        status: status,
         occurred_at: occurred_at,
         next_attempt_at: next_attempt_at,
         error_code: error.code,
         error_message: error.message,
-        metadata: { "backoff_seconds" => backoff_seconds }
+        metadata: attempt_metadata
       )
       create_dispatch_action_log!(
         outbox_event: outbox_event,
-        action_type: RETRY_SCHEDULED_ACTION,
+        action_type: action_type,
         attempt_number: attempt_number,
         error: error,
         next_attempt_at: next_attempt_at
       )
-      Result.new(status: "RETRY_SCHEDULED", attempt_number: attempt_number, next_attempt_at: next_attempt_at, skipped: false)
+      Result.new(
+        status: status,
+        attempt_number: attempt_number,
+        next_attempt_at: next_attempt_at,
+        skipped: false
+      )
     end
 
     def backoff_seconds_for(attempt_number)
@@ -211,19 +231,24 @@ module Outbox
     end
 
     def create_dispatch_action_log!(outbox_event:, action_type:, attempt_number:, error: nil, next_attempt_at: nil)
-      metadata = {
-        "attempt_number" => attempt_number
-      }
-      metadata["error_code"] = error.code if error
-      metadata["error_message"] = error.message if error
-      metadata["next_attempt_at"] = next_attempt_at.utc.iso8601(6) if next_attempt_at
-
       create_action_log!(
         outbox_event: outbox_event,
         action_type: action_type,
         success: action_type == DISPATCHED_ACTION,
-        metadata: metadata
+        metadata: dispatch_action_metadata(
+          attempt_number: attempt_number,
+          error: error,
+          next_attempt_at: next_attempt_at
+        )
       )
+    end
+
+    def dispatch_action_metadata(attempt_number:, error:, next_attempt_at:)
+      metadata = { "attempt_number" => attempt_number }
+      metadata["error_code"] = error.code if error
+      metadata["error_message"] = error.message if error
+      metadata["next_attempt_at"] = next_attempt_at.utc.iso8601(6) if next_attempt_at
+      metadata
     end
 
     def create_attempt!(

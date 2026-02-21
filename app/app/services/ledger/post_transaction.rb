@@ -29,6 +29,7 @@ module Ledger
       :payload_hash,
       keyword_init: true
     )
+    SourceReference = Struct.new(:source_type, :source_id, :receivable_id, :payment_reference, keyword_init: true)
 
     def initialize(tenant_id:, request_id:, actor_party_id: nil, actor_role: nil)
       @tenant_id = tenant_id
@@ -53,10 +54,7 @@ module Ledger
       recover_after_unique_violation!(
         txn_id: inputs.txn_id,
         payload_hash: inputs.payload_hash,
-        source_type: inputs.source_type,
-        source_id: inputs.source_id,
-        receivable_id: inputs.receivable_id,
-        payment_reference: inputs.payment_reference
+        source_reference: source_reference_from_inputs(inputs)
       )
     end
 
@@ -64,12 +62,18 @@ module Ledger
 
     def build_call_inputs(txn_id:, posted_at:, source_type:, source_id:, entries:, receivable_id:, payment_reference:)
       validate_entries!(entries)
-      validate_reconciliation_reference!(source_type:, payment_reference:)
-      payload_hash = idempotency_payload_hash(
+      source_reference = build_source_reference(
         source_type: source_type,
         source_id: source_id,
         receivable_id: receivable_id,
-        payment_reference: payment_reference,
+        payment_reference: payment_reference
+      )
+      validate_reconciliation_reference!(
+        source_type: source_reference.source_type,
+        payment_reference: source_reference.payment_reference
+      )
+      payload_hash = idempotency_payload_hash(
+        source_reference: source_reference,
         entries: entries
       )
 
@@ -90,10 +94,7 @@ module Ledger
       return replay_existing_transaction!(
         ledger_transaction: existing_txn,
         payload_hash: inputs.payload_hash,
-        source_type: inputs.source_type,
-        source_id: inputs.source_id,
-        receivable_id: inputs.receivable_id,
-        payment_reference: inputs.payment_reference
+        source_reference: source_reference_from_inputs(inputs)
       ) if existing_txn
 
       create_transaction_entries!(inputs)
@@ -150,6 +151,24 @@ module Ledger
         entry_count: total_entries,
         posted_at: posted_at,
         metadata: {}
+      )
+    end
+
+    def source_reference_from_inputs(inputs)
+      build_source_reference(
+        source_type: inputs.source_type,
+        source_id: inputs.source_id,
+        receivable_id: inputs.receivable_id,
+        payment_reference: inputs.payment_reference
+      )
+    end
+
+    def build_source_reference(source_type:, source_id:, receivable_id:, payment_reference:)
+      SourceReference.new(
+        source_type: source_type,
+        source_id: source_id,
+        receivable_id: receivable_id,
+        payment_reference: payment_reference
       )
     end
 
@@ -268,18 +287,12 @@ module Ledger
     def replay_existing_transaction!(
       ledger_transaction:,
       payload_hash:,
-      source_type:,
-      source_id:,
-      receivable_id:,
-      payment_reference:
+      source_reference:
     )
       ensure_matching_transaction!(
         ledger_transaction: ledger_transaction,
         payload_hash: payload_hash,
-        source_type: source_type,
-        source_id: source_id,
-        receivable_id: receivable_id,
-        payment_reference: payment_reference,
+        source_reference: source_reference,
         conflict_code: "txn_id_reused_with_different_payload",
         conflict_message: "txn_id was already used with a different payload."
       )
@@ -290,28 +303,19 @@ module Ledger
     def recover_after_unique_violation!(
       txn_id:,
       payload_hash:,
-      source_type:,
-      source_id:,
-      receivable_id:,
-      payment_reference:
+      source_reference:
     )
       ActiveRecord::Base.transaction do
         replayed = replay_for_existing_txn_after_race!(
           txn_id: txn_id,
           payload_hash: payload_hash,
-          source_type: source_type,
-          source_id: source_id,
-          receivable_id: receivable_id,
-          payment_reference: payment_reference
+          source_reference: source_reference
         )
         return replayed if replayed
 
         replayed_source = replay_for_source_collision_after_race!(
           payload_hash: payload_hash,
-          source_type: source_type,
-          source_id: source_id,
-          receivable_id: receivable_id,
-          payment_reference: payment_reference
+          source_reference: source_reference
         )
         return replayed_source if replayed_source
       end
@@ -319,35 +323,29 @@ module Ledger
       raise
     end
 
-    def replay_for_existing_txn_after_race!(txn_id:, payload_hash:, source_type:, source_id:, receivable_id:, payment_reference:)
+    def replay_for_existing_txn_after_race!(txn_id:, payload_hash:, source_reference:)
       ledger_transaction = LedgerTransaction.lock.find_by(tenant_id: @tenant_id, txn_id: txn_id)
       return nil if ledger_transaction.blank?
 
       replay_existing_transaction!(
         ledger_transaction: ledger_transaction,
         payload_hash: payload_hash,
-        source_type: source_type,
-        source_id: source_id,
-        receivable_id: receivable_id,
-        payment_reference: payment_reference
+        source_reference: source_reference
       )
     end
 
-    def replay_for_source_collision_after_race!(payload_hash:, source_type:, source_id:, receivable_id:, payment_reference:)
+    def replay_for_source_collision_after_race!(payload_hash:, source_reference:)
       source_collision = LedgerTransaction.lock.find_by(
         tenant_id: @tenant_id,
-        source_type: source_type,
-        source_id: source_id
+        source_type: source_reference.source_type,
+        source_id: source_reference.source_id
       )
       return nil if source_collision.blank?
 
       ensure_matching_transaction!(
         ledger_transaction: source_collision,
         payload_hash: payload_hash,
-        source_type: source_type,
-        source_id: source_id,
-        receivable_id: receivable_id,
-        payment_reference: payment_reference,
+        source_reference: source_reference,
         conflict_code: "source_reused_with_different_payload",
         conflict_message: "source_type/source_id was already posted with a different payload."
       )
@@ -369,19 +367,13 @@ module Ledger
     def ensure_matching_transaction!(
       ledger_transaction:,
       payload_hash:,
-      source_type:,
-      source_id:,
-      receivable_id:,
-      payment_reference:,
+      source_reference:,
       conflict_code:,
       conflict_message:
     )
       source_matches = transaction_source_matches?(
         ledger_transaction: ledger_transaction,
-        source_type: source_type,
-        source_id: source_id,
-        receivable_id: receivable_id,
-        payment_reference: payment_reference
+        source_reference: source_reference
       )
       stored_hash = stored_transaction_hash(ledger_transaction)
       return if source_matches && stored_hash == payload_hash
@@ -392,11 +384,11 @@ module Ledger
       )
     end
 
-    def transaction_source_matches?(ledger_transaction:, source_type:, source_id:, receivable_id:, payment_reference:)
-      ledger_transaction.source_type.to_s == source_type.to_s &&
-        ledger_transaction.source_id.to_s == source_id.to_s &&
-        ledger_transaction.receivable_id.to_s == receivable_id.to_s &&
-        ledger_transaction.payment_reference.to_s == payment_reference.to_s
+    def transaction_source_matches?(ledger_transaction:, source_reference:)
+      ledger_transaction.source_type.to_s == source_reference.source_type.to_s &&
+        ledger_transaction.source_id.to_s == source_reference.source_id.to_s &&
+        ledger_transaction.receivable_id.to_s == source_reference.receivable_id.to_s &&
+        ledger_transaction.payment_reference.to_s == source_reference.payment_reference.to_s
     end
 
     def stored_transaction_hash(ledger_transaction)
@@ -424,15 +416,12 @@ module Ledger
       end.uniq
     end
 
-    def idempotency_payload_hash(source_type:, source_id:, receivable_id:, payment_reference:, entries:)
+    def idempotency_payload_hash(source_reference:, entries:)
       payload = canonicalize_json(
-        {
-          "source_type" => source_type.to_s,
-          "source_id" => source_id.to_s,
-          "receivable_id" => receivable_id&.to_s,
-          "payment_reference" => payment_reference&.to_s,
-          "entries" => normalized_entries_for_payload(entries)
-        }
+        idempotency_hash_payload(
+          source_reference: source_reference,
+          entries_payload: normalized_entries_for_payload(entries)
+        )
       )
       Digest::SHA256.hexdigest(JSON.generate(payload))
     end
@@ -441,16 +430,29 @@ module Ledger
       reference = existing.first
       return "" if reference.blank?
 
+      source_reference = build_source_reference(
+        source_type: reference.source_type,
+        source_id: reference.source_id,
+        receivable_id: reference.receivable_id,
+        payment_reference: reference.payment_reference
+      )
       payload = canonicalize_json(
-        {
-          "source_type" => reference.source_type.to_s,
-          "source_id" => reference.source_id.to_s,
-          "receivable_id" => reference.receivable_id&.to_s,
-          "payment_reference" => reference.payment_reference&.to_s,
-          "entries" => normalized_existing_entries_for_payload(existing)
-        }
+        idempotency_hash_payload(
+          source_reference: source_reference,
+          entries_payload: normalized_existing_entries_for_payload(existing)
+        )
       )
       Digest::SHA256.hexdigest(JSON.generate(payload))
+    end
+
+    def idempotency_hash_payload(source_reference:, entries_payload:)
+      {
+        "source_type" => source_reference.source_type.to_s,
+        "source_id" => source_reference.source_id.to_s,
+        "receivable_id" => source_reference.receivable_id&.to_s,
+        "payment_reference" => source_reference.payment_reference&.to_s,
+        "entries" => entries_payload
+      }
     end
 
     def normalized_entries_for_payload(entries)

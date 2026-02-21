@@ -532,13 +532,12 @@ module Receivables
     end
 
     def update_allocation_and_receivable_statuses_after_payment!(receivable:, allocation:)
-      allocation_paid_total = ReceivablePaymentSettlement.where(
-        tenant_id: @tenant_id,
-        receivable_allocation_id: allocation.id
-      ).sum(:paid_amount).to_d
-      if allocation.status != "SETTLED" && allocation_paid_total >= allocation.gross_amount.to_d
-        allocation.update!(status: "SETTLED")
-      end
+      allocation_paid_total = paid_total_for_settlement(receivable_allocation_id: allocation.id)
+      mark_settled_if_fully_paid!(
+        record: allocation,
+        paid_total: allocation_paid_total,
+        gross_amount: allocation.gross_amount
+      )
 
       return unless receivable.receivable_allocations.where.not(status: "SETTLED").none?
       return if receivable.status == "SETTLED"
@@ -547,14 +546,26 @@ module Receivables
     end
 
     def update_receivable_status_for_total_payments!(receivable)
-      receivable_paid_total = ReceivablePaymentSettlement.where(
-        tenant_id: @tenant_id,
-        receivable_id: receivable.id
-      ).sum(:paid_amount).to_d
-      return if receivable.status == "SETTLED"
-      return unless receivable_paid_total >= receivable.gross_amount.to_d
+      receivable_paid_total = paid_total_for_settlement(receivable_id: receivable.id)
+      mark_settled_if_fully_paid!(
+        record: receivable,
+        paid_total: receivable_paid_total,
+        gross_amount: receivable.gross_amount
+      )
+    end
 
-      receivable.update!(status: "SETTLED")
+    def paid_total_for_settlement(**filters)
+      ReceivablePaymentSettlement
+        .where({ tenant_id: @tenant_id }.merge(filters))
+        .sum(:paid_amount)
+        .to_d
+    end
+
+    def mark_settled_if_fully_paid!(record:, paid_total:, gross_amount:)
+      return if record.status == "SETTLED"
+      return unless paid_total >= gross_amount.to_d
+
+      record.update!(status: "SETTLED")
     end
 
     def find_existing_settlement(payment_reference)
@@ -664,10 +675,8 @@ module Receivables
         payload_hash: payload_hash
       )
 
-      create_outbox_event_with_conflict_check!(
-        tenant_id: @tenant_id,
-        aggregate_type: TARGET_TYPE,
-        aggregate_id: settlement.id,
+      create_settlement_outbox_event!(
+        settlement: settlement,
         event_type: ESCROW_EXCESS_OUTBOX_EVENT_TYPE,
         idempotency_key: payout_idempotency_key,
         payload: payload,
@@ -699,16 +708,36 @@ module Receivables
         payload_hash: payload_hash
       )
 
-      create_outbox_event_with_conflict_check!(
-        tenant_id: @tenant_id,
-        aggregate_type: TARGET_TYPE,
-        aggregate_id: settlement.id,
+      create_settlement_outbox_event!(
+        settlement: settlement,
         event_type: FDIC_SETTLEMENT_OUTBOX_EVENT_TYPE,
         idempotency_key: report_idempotency_key,
         payload: payload,
         payload_hash: payload_hash,
         conflict_code: "fdic_settlement_idempotency_conflict",
         conflict_message: "FDIC settlement idempotency key was already used with a different payload."
+      )
+    end
+
+    def create_settlement_outbox_event!(
+      settlement:,
+      event_type:,
+      idempotency_key:,
+      payload:,
+      payload_hash:,
+      conflict_code:,
+      conflict_message:
+    )
+      create_outbox_event_with_conflict_check!(
+        tenant_id: @tenant_id,
+        aggregate_type: TARGET_TYPE,
+        aggregate_id: settlement.id,
+        event_type: event_type,
+        idempotency_key: idempotency_key,
+        payload: payload,
+        payload_hash: payload_hash,
+        conflict_code: conflict_code,
+        conflict_message: conflict_message
       )
     end
 

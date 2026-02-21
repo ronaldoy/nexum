@@ -55,13 +55,15 @@ module KycProfiles
       inputs = build_submission_inputs(kyc_profile_id:, raw_payload:)
       result = nil
       replay_validation_error = nil
+      failure_target_id = nil
 
       ActiveRecord::Base.transaction do
         result, replay_validation_error = submit_or_replay(inputs)
       end
 
+      failure_target_id = resolve_failure_target_id(inputs: inputs, fallback_kyc_profile_id: kyc_profile_id)
       if replay_validation_error
-        create_failure_log(error: replay_validation_error, target_id: inputs.kyc_profile_id, actor_party_id: nil)
+        create_failure_log(error: replay_validation_error, target_id: failure_target_id, actor_party_id: nil)
         raise replay_validation_error
       end
 
@@ -71,10 +73,12 @@ module KycProfiles
         code: "invalid_kyc_document",
         message: error.record.errors.full_messages.to_sentence
       )
-      create_failure_log(error: validation_error, target_id: inputs&.kyc_profile_id || kyc_profile_id, actor_party_id: nil)
+      failure_target_id = resolve_failure_target_id(inputs: inputs, fallback_kyc_profile_id: kyc_profile_id)
+      create_failure_log(error: validation_error, target_id: failure_target_id, actor_party_id: nil)
       raise validation_error
     rescue ActiveRecord::RecordNotFound => error
-      create_failure_log(error: error, target_id: inputs&.kyc_profile_id || kyc_profile_id, actor_party_id: nil)
+      failure_target_id = resolve_failure_target_id(inputs: inputs, fallback_kyc_profile_id: kyc_profile_id)
+      create_failure_log(error: error, target_id: failure_target_id, actor_party_id: nil)
       raise
     rescue ActiveRecord::RecordNotUnique
       existing_outbox = OutboxEvent.find_by!(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
@@ -82,6 +86,10 @@ module KycProfiles
     end
 
     private
+
+    def resolve_failure_target_id(inputs:, fallback_kyc_profile_id:)
+      inputs&.kyc_profile_id || fallback_kyc_profile_id
+    end
 
     def build_submission_inputs(kyc_profile_id:, raw_payload:)
       payload = raw_payload.to_h.deep_symbolize_keys
@@ -145,13 +153,7 @@ module KycProfiles
         kyc_profile: kyc_profile,
         party_id: kyc_profile.party_id,
         event_type: OUTBOX_EVENT_TYPE,
-        payload: {
-          "idempotency_key" => @idempotency_key,
-          "kyc_document_id" => kyc_document.id,
-          "document_type" => kyc_document.document_type,
-          "is_key_document" => kyc_document.is_key_document,
-          "status" => kyc_document.status
-        }
+        payload: submission_event_payload(kyc_document)
       )
 
       create_outbox_event!(
@@ -159,6 +161,16 @@ module KycProfiles
         kyc_document: kyc_document,
         payload_hash: payload_hash
       )
+    end
+
+    def submission_event_payload(kyc_document)
+      {
+        "idempotency_key" => @idempotency_key,
+        "kyc_document_id" => kyc_document.id,
+        "document_type" => kyc_document.document_type,
+        "is_key_document" => kyc_document.is_key_document,
+        "status" => kyc_document.status
+      }
     end
 
     def log_submission_success!(kyc_profile:, kyc_document:)
@@ -179,13 +191,7 @@ module KycProfiles
       metadata = sanitize_client_metadata(payload[:metadata] || {})
 
       blob = resolve_blob(raw_signed_id: payload[:blob_signed_id])
-      validate_blob_tenant_metadata!(blob:) if blob.present?
-      storage_key = payload[:storage_key].to_s.strip
-      storage_key = blob.key if storage_key.blank? && blob.present?
-
-      if blob.present? && payload[:storage_key].to_s.strip.present? && payload[:storage_key].to_s.strip != blob.key
-        raise_validation_error!("storage_key_blob_mismatch", "storage_key does not match blob key.")
-      end
+      storage_key = resolve_storage_key!(blob: blob, payload_storage_key: payload[:storage_key])
 
       {
         party_id: payload[:party_id].presence&.to_s,
@@ -201,6 +207,18 @@ module KycProfiles
         sha256: payload[:sha256].to_s,
         metadata: metadata
       }
+    end
+
+    def resolve_storage_key!(blob:, payload_storage_key:)
+      return payload_storage_key.to_s.strip if blob.blank?
+
+      validate_blob_tenant_metadata!(blob: blob)
+      provided_storage_key = payload_storage_key.to_s.strip
+      if provided_storage_key.present? && provided_storage_key != blob.key
+        raise_validation_error!("storage_key_blob_mismatch", "storage_key does not match blob key.")
+      end
+
+      provided_storage_key.presence || blob.key
     end
 
     def sanitize_client_metadata(raw_metadata)
@@ -274,25 +292,10 @@ module KycProfiles
     end
 
     def replay_result(existing_outbox:, payload_hash:)
-      unless existing_outbox.event_type == OUTBOX_EVENT_TYPE && existing_outbox.aggregate_type == TARGET_TYPE
-        raise IdempotencyConflict.new(
-          code: "idempotency_key_reused_with_different_operation",
-          message: "Idempotency-Key was already used with a different operation."
-        )
-      end
+      ensure_replay_outbox_operation!(existing_outbox)
+      ensure_replay_payload_hash!(existing_outbox:, payload_hash:)
 
-      existing_payload_hash = existing_outbox.payload&.dig(PAYLOAD_HASH_KEY).to_s
-      if existing_payload_hash.present? && existing_payload_hash != payload_hash
-        raise IdempotencyConflict.new(
-          code: "idempotency_key_reused_with_different_payload",
-          message: "Idempotency-Key was already used with a different payload."
-        )
-      end
-
-      kyc_document_id = existing_outbox.payload&.dig("kyc_document_id")
-      raise_validation_error!("replay_document_not_found", "Replay document was not found.") if kyc_document_id.blank?
-
-      kyc_document = KycDocument.where(tenant_id: @tenant_id).find(kyc_document_id)
+      kyc_document = find_replay_document(existing_outbox)
       create_action_log!(
         action_type: "KYC_DOCUMENT_REPLAYED",
         success: true,
@@ -302,6 +305,32 @@ module KycProfiles
       )
 
       Result.new(kyc_document: kyc_document, replayed: true)
+    end
+
+    def ensure_replay_outbox_operation!(existing_outbox)
+      return if existing_outbox.event_type == OUTBOX_EVENT_TYPE && existing_outbox.aggregate_type == TARGET_TYPE
+
+      raise IdempotencyConflict.new(
+        code: "idempotency_key_reused_with_different_operation",
+        message: "Idempotency-Key was already used with a different operation."
+      )
+    end
+
+    def ensure_replay_payload_hash!(existing_outbox:, payload_hash:)
+      existing_payload_hash = existing_outbox.payload&.dig(PAYLOAD_HASH_KEY).to_s
+      return if existing_payload_hash.blank? || existing_payload_hash == payload_hash
+
+      raise IdempotencyConflict.new(
+        code: "idempotency_key_reused_with_different_payload",
+        message: "Idempotency-Key was already used with a different payload."
+      )
+    end
+
+    def find_replay_document(existing_outbox)
+      kyc_document_id = existing_outbox.payload&.dig("kyc_document_id")
+      raise_validation_error!("replay_document_not_found", "Replay document was not found.") if kyc_document_id.blank?
+
+      KycDocument.where(tenant_id: @tenant_id).find(kyc_document_id)
     end
 
     def create_kyc_event!(kyc_profile:, party_id:, event_type:, payload:)
@@ -325,12 +354,16 @@ module KycProfiles
         event_type: OUTBOX_EVENT_TYPE,
         status: "PENDING",
         idempotency_key: @idempotency_key,
-        payload: {
-          PAYLOAD_HASH_KEY => payload_hash,
-          "kyc_profile_id" => kyc_profile.id,
-          "kyc_document_id" => kyc_document.id
-        }
+        payload: outbox_payload(kyc_profile: kyc_profile, kyc_document: kyc_document, payload_hash: payload_hash)
       )
+    end
+
+    def outbox_payload(kyc_profile:, kyc_document:, payload_hash:)
+      {
+        PAYLOAD_HASH_KEY => payload_hash,
+        "kyc_profile_id" => kyc_profile.id,
+        "kyc_document_id" => kyc_document.id
+      }
     end
 
     def create_action_log!(action_type:, success:, actor_party_id:, target_id:, metadata:)
