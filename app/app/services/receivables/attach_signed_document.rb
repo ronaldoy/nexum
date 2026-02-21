@@ -64,21 +64,7 @@ module Receivables
         default_actor_party_id: default_actor_party_id,
         privileged_actor: privileged_actor
       )
-      result = nil
-      failure = nil
-      failure_receivable_id = nil
-
-      ActiveRecord::Base.transaction do
-        result, failure = attach_or_replay(inputs)
-      end
-
-      failure_receivable_id = resolve_failure_receivable_id(inputs:, fallback_receivable_id: receivable_id)
-      if failure
-        create_failure_log(error: failure, receivable_id: failure_receivable_id)
-        raise failure
-      end
-
-      result
+      ActiveRecord::Base.transaction { attach_or_replay(inputs) }
     rescue ValidationError => error
       failure_receivable_id = resolve_failure_receivable_id(inputs:, fallback_receivable_id: receivable_id)
       create_failure_log(error: error, receivable_id: failure_receivable_id)
@@ -141,15 +127,9 @@ module Receivables
 
     def attach_or_replay(inputs)
       existing_outbox = OutboxEvent.lock.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
-      return replay_or_capture_validation_error(existing_outbox:, payload_hash: inputs.payload_hash) if existing_outbox
+      return replay_result(existing_outbox:, payload_hash: inputs.payload_hash) if existing_outbox
 
-      [ create_attachment_result!(inputs), nil ]
-    end
-
-    def replay_or_capture_validation_error(existing_outbox:, payload_hash:)
-      [ replay_result(existing_outbox:, payload_hash:), nil ]
-    rescue ValidationError => error
-      [ nil, error ]
+      create_attachment_result!(inputs)
     end
 
     def create_attachment_result!(inputs)

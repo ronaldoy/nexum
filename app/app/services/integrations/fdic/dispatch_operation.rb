@@ -29,49 +29,23 @@ module Integrations
       SENT_STATUSES = %w[SENT SUCCESS ACCEPTED COMPLETED].freeze
 
       def call(outbox_event:)
-        payload = {}
-        operation_idempotency_key = nil
+        inputs = nil
         operation = nil
 
         inputs = build_dispatch_inputs(outbox_event)
-        payload = inputs.payload
-        operation_idempotency_key = inputs.operation_idempotency_key
-
         operation = find_or_initialize_operation(
           tenant_id: outbox_event.tenant_id,
-          idempotency_key: operation_idempotency_key
+          idempotency_key: inputs.operation_idempotency_key
         )
         return operation if operation_already_sent?(operation:, payload_hash: inputs.payload_hash)
 
-        persist_pending_operation!(
-          operation: operation,
+        dispatch_operation!(
           outbox_event: outbox_event,
-          source: inputs.source,
-          provider_code: inputs.provider_code,
-          operation_type: inputs.operation_type,
-          amount: inputs.amount,
-          currency: inputs.currency,
-          payload_hash: inputs.payload_hash,
-          payload: inputs.payload
-        )
-
-        provider_result = dispatch_provider!(
-          provider: inputs.provider,
-          operation_type: inputs.operation_type,
-          tenant_id: outbox_event.tenant_id,
-          source: inputs.source,
-          payload: inputs.payload,
-          idempotency_key: inputs.provider_request_control_key
-        )
-        persisted = persist_and_validate_success!(
           operation: operation,
-          provider_result: provider_result,
-          payload: inputs.payload
+          inputs: inputs
         )
-        log_dispatch_success!(outbox_event:, operation: persisted)
-        persisted
       rescue Error => error
-        persist_failure!(operation: operation, outbox_event: outbox_event, payload: payload, error: error)
+        persist_failure!(operation: operation, outbox_event: outbox_event, payload: inputs&.payload || {}, error: error)
         raise
       rescue KeyError => error
         raise ValidationError.new(
@@ -80,10 +54,33 @@ module Integrations
           details: { missing_key: error.key }
         )
       rescue ActiveRecord::RecordNotUnique
-        resolve_operation_conflict!(tenant_id: outbox_event.tenant_id, operation_idempotency_key: operation_idempotency_key)
+        resolve_operation_conflict!(
+          tenant_id: outbox_event.tenant_id,
+          operation_idempotency_key: inputs&.operation_idempotency_key
+        )
       end
 
       private
+
+      def dispatch_operation!(outbox_event:, operation:, inputs:)
+        persist_pending_operation!(
+          operation: operation,
+          outbox_event: outbox_event,
+          inputs: inputs
+        )
+
+        provider_result = dispatch_provider!(
+          inputs: inputs,
+          tenant_id: outbox_event.tenant_id
+        )
+        persisted = persist_and_validate_success!(
+          operation: operation,
+          provider_result: provider_result,
+          payload: inputs.payload
+        )
+        log_dispatch_success!(outbox_event:, operation: persisted)
+        persisted
+      end
 
       def build_dispatch_inputs(outbox_event)
         operation_type = resolve_operation_type!(outbox_event.event_type)
@@ -173,24 +170,24 @@ module Integrations
         operation.sent?
       end
 
-      def persist_pending_operation!(operation:, outbox_event:, source:, provider_code:, operation_type:, amount:, currency:, payload_hash:, payload:)
+      def persist_pending_operation!(operation:, outbox_event:, inputs:)
         operation.assign_attributes(
           source_reference_attributes(
-            anticipation_request: source[:anticipation_request],
-            settlement: source[:settlement]
+            anticipation_request: inputs.source[:anticipation_request],
+            settlement: inputs.source[:settlement]
           ).merge(
             tenant_id: outbox_event.tenant_id,
-            provider: provider_code,
-            operation_type: operation_type,
+            provider: inputs.provider_code,
+            operation_type: inputs.operation_type,
             status: "PENDING",
-            amount: amount,
-            currency: currency,
+            amount: inputs.amount,
+            currency: inputs.currency,
             requested_at: operation.requested_at || Time.current,
             metadata: merged_operation_metadata(
               existing_metadata: operation.metadata,
               outbox_event: outbox_event,
-              payload: payload,
-              extra: { PAYLOAD_HASH_METADATA_KEY => payload_hash }
+              payload: inputs.payload,
+              extra: { PAYLOAD_HASH_METADATA_KEY => inputs.payload_hash }
             )
           )
         )
@@ -254,23 +251,23 @@ module Integrations
         end
       end
 
-      def dispatch_provider!(provider:, operation_type:, tenant_id:, source:, payload:, idempotency_key:)
-        case operation_type
+      def dispatch_provider!(inputs:, tenant_id:)
+        case inputs.operation_type
         when "FUNDING_REQUEST"
           dispatch_funding!(
-            provider: provider,
+            provider: inputs.provider,
             tenant_id: tenant_id,
-            source: source,
-            payload: payload,
-            idempotency_key: idempotency_key
+            source: inputs.source,
+            payload: inputs.payload,
+            idempotency_key: inputs.provider_request_control_key
           )
         when "SETTLEMENT_REPORT"
           dispatch_settlement!(
-            provider: provider,
+            provider: inputs.provider,
             tenant_id: tenant_id,
-            source: source,
-            payload: payload,
-            idempotency_key: idempotency_key
+            source: inputs.source,
+            payload: inputs.payload,
+            idempotency_key: inputs.provider_request_control_key
           )
         else
           raise invalid_operation_type_error

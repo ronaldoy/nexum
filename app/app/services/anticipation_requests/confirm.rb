@@ -49,29 +49,19 @@ module AnticipationRequests
     def call(anticipation_request_id:, email_code:, whatsapp_code:)
       payload_hash = confirmation_payload_hash(email_code:, whatsapp_code:)
       anticipation_request = nil
-      result = nil
-      validation_error = nil
 
       ActiveRecord::Base.transaction do
         anticipation_request = find_anticipation_request!(anticipation_request_id)
-        result, validation_error = process_confirmation(
+        process_confirmation(
           anticipation_request: anticipation_request,
           payload_hash: payload_hash,
           email_code: email_code,
           whatsapp_code: whatsapp_code
         )
       end
-
-      if validation_error
-        create_failure_log(
-          error: validation_error,
-          anticipation_request_id: anticipation_request_id,
-          actor_party_id: anticipation_request&.requester_party_id
-        )
-        raise validation_error
-      end
-
-      result
+    rescue ValidationError => error
+      create_failure_log(error:, anticipation_request_id:, actor_party_id: anticipation_request&.requester_party_id)
+      raise
     rescue ActiveRecord::RecordNotFound => error
       create_failure_log(error:, anticipation_request_id:, actor_party_id: anticipation_request&.requester_party_id)
       raise
@@ -84,12 +74,10 @@ module AnticipationRequests
     end
 
     def process_confirmation(anticipation_request:, payload_hash:, email_code:, whatsapp_code:)
-      return [ confirm_replay(anticipation_request:, payload_hash:), nil ] if anticipation_request.status == "APPROVED"
-      return [ nil, status_not_confirmable_error ] unless anticipation_request.status == "REQUESTED"
+      return confirm_replay(anticipation_request:, payload_hash:) if anticipation_request.status == "APPROVED"
 
-      [ confirm_requested_anticipation(anticipation_request:, payload_hash:, email_code:, whatsapp_code:), nil ]
-    rescue ValidationError => error
-      [ nil, error ]
+      validate_confirmable_status!(anticipation_request)
+      confirm_requested_anticipation(anticipation_request:, payload_hash:, email_code:, whatsapp_code:)
     end
 
     def confirm_replay(anticipation_request:, payload_hash:)
@@ -104,8 +92,10 @@ module AnticipationRequests
       Result.new(anticipation_request:, replayed: true)
     end
 
-    def status_not_confirmable_error
-      ValidationError.new(
+    def validate_confirmable_status!(anticipation_request)
+      return if anticipation_request.status == "REQUESTED"
+
+      raise ValidationError.new(
         code: "anticipation_status_not_confirmable",
         message: "Only REQUESTED anticipation requests can be confirmed."
       )
@@ -295,19 +285,12 @@ module AnticipationRequests
 
     def create_action_log!(action_type:, success:, requester_party_id:, target_id:, metadata:)
       ActionIpLog.create!(
-        tenant_id: @tenant_id,
-        actor_party_id: requester_party_id,
-        action_type: action_type,
-        ip_address: @request_ip.presence || "0.0.0.0",
-        user_agent: @user_agent,
-        request_id: @request_id,
-        endpoint_path: @endpoint_path,
-        http_method: @http_method,
-        channel: "API",
-        target_type: TARGET_TYPE,
-        target_id: target_id,
-        success: success,
-        occurred_at: Time.current,
+        **base_action_log_attributes(
+          action_type: action_type,
+          actor_party_id: requester_party_id,
+          target_id: target_id,
+          success: success
+        ),
         metadata: normalized_metadata(metadata)
       )
     end
@@ -392,19 +375,12 @@ module AnticipationRequests
       }
 
       ActionIpLog.create!(
-        tenant_id: @tenant_id,
-        actor_party_id: actor_party_id,
-        action_type: "ANTICIPATION_CONFIRM_FAILED",
-        ip_address: @request_ip.presence || "0.0.0.0",
-        user_agent: @user_agent,
-        request_id: @request_id,
-        endpoint_path: @endpoint_path,
-        http_method: @http_method,
-        channel: "API",
-        target_type: TARGET_TYPE,
-        target_id: anticipation_request_id,
-        success: false,
-        occurred_at: Time.current,
+        **base_action_log_attributes(
+          action_type: "ANTICIPATION_CONFIRM_FAILED",
+          actor_party_id: actor_party_id,
+          target_id: anticipation_request_id,
+          success: false
+        ),
         metadata: metadata
       )
     rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique => log_error
@@ -414,6 +390,24 @@ module AnticipationRequests
         "original_error_class=#{error.class.name} request_id=#{@request_id}"
       )
       nil
+    end
+
+    def base_action_log_attributes(action_type:, actor_party_id:, target_id:, success:)
+      {
+        tenant_id: @tenant_id,
+        actor_party_id: actor_party_id,
+        action_type: action_type,
+        ip_address: @request_ip.presence || "0.0.0.0",
+        user_agent: @user_agent,
+        request_id: @request_id,
+        endpoint_path: @endpoint_path,
+        http_method: @http_method,
+        channel: "API",
+        target_type: TARGET_TYPE,
+        target_id: target_id,
+        success: success,
+        occurred_at: Time.current
+      }
     end
 
     def confirmation_payload_hash(email_code:, whatsapp_code:)

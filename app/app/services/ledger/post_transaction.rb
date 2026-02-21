@@ -102,24 +102,10 @@ module Ledger
 
     def create_transaction_entries!(inputs)
       ledger_transaction = create_ledger_transaction!(
-        txn_id: inputs.txn_id,
-        source_type: inputs.source_type,
-        source_id: inputs.source_id,
-        receivable_id: inputs.receivable_id,
-        payment_reference: inputs.payment_reference,
-        payload_hash: inputs.payload_hash,
-        posted_at: inputs.posted_at,
-        total_entries: inputs.entries.size
+        inputs: inputs
       )
       insert_ledger_entries!(
-        entries: inputs.entries,
-        txn_id: inputs.txn_id,
-        source_type: inputs.source_type,
-        source_id: inputs.source_id,
-        receivable_id: inputs.receivable_id,
-        payment_reference: inputs.payment_reference,
-        payload_hash: inputs.payload_hash,
-        posted_at: inputs.posted_at
+        inputs: inputs
       )
 
       fetch_entries!(ledger_transaction)
@@ -136,20 +122,20 @@ module Ledger
       LedgerTransaction.lock.find_by(tenant_id: @tenant_id, txn_id: txn_id)
     end
 
-    def create_ledger_transaction!(txn_id:, source_type:, source_id:, receivable_id:, payment_reference:, payload_hash:, posted_at:, total_entries:)
+    def create_ledger_transaction!(inputs:)
       LedgerTransaction.create!(
         tenant_id: @tenant_id,
-        txn_id: txn_id,
-        source_type: source_type,
-        source_id: source_id,
-        receivable_id: receivable_id,
-        payment_reference: payment_reference,
+        txn_id: inputs.txn_id,
+        source_type: inputs.source_type,
+        source_id: inputs.source_id,
+        receivable_id: inputs.receivable_id,
+        payment_reference: inputs.payment_reference,
         actor_party_id: @actor_party_id,
         actor_role: @actor_role,
         request_id: @request_id,
-        payload_hash: payload_hash,
-        entry_count: total_entries,
-        posted_at: posted_at,
+        payload_hash: inputs.payload_hash,
+        entry_count: inputs.entries.size,
+        posted_at: inputs.posted_at,
         metadata: {}
       )
     end
@@ -172,43 +158,36 @@ module Ledger
       )
     end
 
-    def insert_ledger_entries!(entries:, txn_id:, source_type:, source_id:, receivable_id:, payment_reference:, payload_hash:, posted_at:)
+    def insert_ledger_entries!(inputs:)
       LedgerEntry.insert_all!(
         build_ledger_entry_rows(
-          entries: entries,
-          txn_id: txn_id,
-          source_type: source_type,
-          source_id: source_id,
-          receivable_id: receivable_id,
-          payment_reference: payment_reference,
-          payload_hash: payload_hash,
-          posted_at: posted_at
+          inputs: inputs
         )
       )
     end
 
-    def build_ledger_entry_rows(entries:, txn_id:, source_type:, source_id:, receivable_id:, payment_reference:, payload_hash:, posted_at:)
+    def build_ledger_entry_rows(inputs:)
       now = Time.current
-      total_entries = entries.size
+      total_entries = inputs.entries.size
 
-      entries.each_with_index.map do |entry, index|
+      inputs.entries.each_with_index.map do |entry, index|
         {
           id: SecureRandom.uuid,
           tenant_id: @tenant_id,
-          txn_id: txn_id,
+          txn_id: inputs.txn_id,
           entry_position: index + 1,
           txn_entry_count: total_entries,
-          receivable_id: receivable_id,
+          receivable_id: inputs.receivable_id,
           account_code: entry[:account_code],
           entry_side: entry[:entry_side],
           amount: round_money(entry[:amount]),
           currency: "BRL",
           party_id: entry[:party_id],
-          payment_reference: payment_reference,
-          source_type: source_type,
-          source_id: source_id,
-          metadata: build_entry_metadata(entry[:metadata], payload_hash: payload_hash),
-          posted_at: posted_at,
+          payment_reference: inputs.payment_reference,
+          source_type: inputs.source_type,
+          source_id: inputs.source_id,
+          metadata: build_entry_metadata(entry[:metadata], payload_hash: inputs.payload_hash),
+          posted_at: inputs.posted_at,
           created_at: now,
           updated_at: now
         }
@@ -417,13 +396,11 @@ module Ledger
     end
 
     def idempotency_payload_hash(source_reference:, entries:)
-      payload = canonicalize_json(
-        idempotency_hash_payload(
-          source_reference: source_reference,
-          entries_payload: normalized_entries_for_payload(entries)
-        )
+      payload = idempotency_hash_payload(
+        source_reference: source_reference,
+        entries_payload: normalized_entries_for_payload(entries)
       )
-      Digest::SHA256.hexdigest(JSON.generate(payload))
+      digest_canonical_payload(payload)
     end
 
     def idempotency_payload_hash_from_records(existing)
@@ -436,13 +413,16 @@ module Ledger
         receivable_id: reference.receivable_id,
         payment_reference: reference.payment_reference
       )
-      payload = canonicalize_json(
-        idempotency_hash_payload(
-          source_reference: source_reference,
-          entries_payload: normalized_existing_entries_for_payload(existing)
-        )
+      payload = idempotency_hash_payload(
+        source_reference: source_reference,
+        entries_payload: normalized_existing_entries_for_payload(existing)
       )
-      Digest::SHA256.hexdigest(JSON.generate(payload))
+      digest_canonical_payload(payload)
+    end
+
+    def digest_canonical_payload(payload)
+      canonical_payload = canonicalize_json(payload)
+      Digest::SHA256.hexdigest(JSON.generate(canonical_payload))
     end
 
     def idempotency_hash_payload(source_reference:, entries_payload:)

@@ -46,21 +46,13 @@ module KycProfiles
 
     def call(raw_payload, default_party_id:)
       inputs = build_create_inputs(raw_payload:, default_party_id:)
-      result = nil
-      validation_error = nil
-      failure_target_id = nil
-
       ActiveRecord::Base.transaction do
-        result, validation_error = create_or_replay(inputs)
+        create_or_replay(inputs)
       end
-
+    rescue ValidationError => error
       failure_target_id = resolve_failure_target_id(inputs: inputs, raw_payload: raw_payload)
-      if validation_error
-        create_failure_log(error: validation_error, target_id: failure_target_id, actor_party_id: nil)
-        raise validation_error
-      end
-
-      result
+      create_failure_log(error: error, target_id: failure_target_id, actor_party_id: nil)
+      raise
     rescue ActiveRecord::RecordInvalid => error
       validation_error = ValidationError.new(
         code: "invalid_kyc_profile",
@@ -118,17 +110,9 @@ module KycProfiles
 
     def create_or_replay(inputs)
       existing_outbox = OutboxEvent.lock.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
-      return replay_or_capture_validation_error(existing_outbox:, payload_hash: inputs.payload_hash) if existing_outbox
+      return replay_result(existing_outbox:, payload_hash: inputs.payload_hash) if existing_outbox
 
-      [ create_new_profile_result!(inputs), nil ]
-    rescue ValidationError => error
-      [ nil, error ]
-    end
-
-    def replay_or_capture_validation_error(existing_outbox:, payload_hash:)
-      [ replay_result(existing_outbox:, payload_hash:), nil ]
-    rescue ValidationError => error
-      [ nil, error ]
+      create_new_profile_result!(inputs)
     end
 
     def create_new_profile_result!(inputs)
@@ -268,38 +252,24 @@ module KycProfiles
 
     def create_action_log!(action_type:, success:, actor_party_id:, target_id:, metadata:)
       ActionIpLog.create!(
-        tenant_id: @tenant_id,
-        actor_party_id: actor_party_id,
-        action_type: action_type,
-        ip_address: @request_ip.presence || "0.0.0.0",
-        user_agent: @user_agent,
-        request_id: @request_id,
-        endpoint_path: @endpoint_path,
-        http_method: @http_method,
-        channel: "API",
-        target_type: TARGET_TYPE,
-        target_id: target_id,
-        success: success,
-        occurred_at: Time.current,
+        **base_action_log_attributes(
+          action_type: action_type,
+          actor_party_id: actor_party_id,
+          target_id: target_id,
+          success: success
+        ),
         metadata: normalize_metadata(metadata)
       )
     end
 
     def create_failure_log(error:, target_id:, actor_party_id:)
       ActionIpLog.create!(
-        tenant_id: @tenant_id,
-        actor_party_id: actor_party_id,
-        action_type: "KYC_PROFILE_CREATE_FAILED",
-        ip_address: @request_ip.presence || "0.0.0.0",
-        user_agent: @user_agent,
-        request_id: @request_id,
-        endpoint_path: @endpoint_path,
-        http_method: @http_method,
-        channel: "API",
-        target_type: TARGET_TYPE,
-        target_id: target_id,
-        success: false,
-        occurred_at: Time.current,
+        **base_action_log_attributes(
+          action_type: "KYC_PROFILE_CREATE_FAILED",
+          actor_party_id: actor_party_id,
+          target_id: target_id,
+          success: false
+        ),
         metadata: {
           "idempotency_key" => @idempotency_key,
           "error_class" => error.class.name,
@@ -314,6 +284,24 @@ module KycProfiles
         "original_error_class=#{error.class.name} request_id=#{@request_id}"
       )
       nil
+    end
+
+    def base_action_log_attributes(action_type:, actor_party_id:, target_id:, success:)
+      {
+        tenant_id: @tenant_id,
+        actor_party_id: actor_party_id,
+        action_type: action_type,
+        ip_address: @request_ip.presence || "0.0.0.0",
+        user_agent: @user_agent,
+        request_id: @request_id,
+        endpoint_path: @endpoint_path,
+        http_method: @http_method,
+        channel: "API",
+        target_type: TARGET_TYPE,
+        target_id: target_id,
+        success: success,
+        occurred_at: Time.current
+      }
     end
 
     def build_payload_hash(party_id:, status:, risk_level:, metadata:)

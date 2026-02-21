@@ -56,43 +56,26 @@ module AnticipationRequests
     end
 
     def call(anticipation_request_id:, email_destination:, whatsapp_destination:)
-      failure_logged = false
       inputs = build_issue_inputs(
         anticipation_request_id: anticipation_request_id,
         email_destination: email_destination,
         whatsapp_destination: whatsapp_destination
       )
       anticipation_request = nil
-      result = nil
-      validation_error = nil
 
       ActiveRecord::Base.transaction do
         anticipation_request = find_anticipation_request!(inputs.anticipation_request_id)
-        result, validation_error = issue_or_replay_challenges!(
+        issue_or_replay_challenges!(
           anticipation_request: anticipation_request,
           inputs: inputs
         )
       end
-
-      if validation_error
-        create_failure_log(
-          error: validation_error,
-          anticipation_request_id: inputs.anticipation_request_id,
-          actor_party_id: anticipation_request&.requester_party_id
-        )
-        failure_logged = true
-        raise validation_error
-      end
-
-      result
     rescue ValidationError => error
-      unless failure_logged
-        create_failure_log(
-          error: error,
-          anticipation_request_id: inputs&.anticipation_request_id || anticipation_request_id,
-          actor_party_id: anticipation_request&.requester_party_id
-        )
-      end
+      create_failure_log(
+        error: error,
+        anticipation_request_id: inputs&.anticipation_request_id || anticipation_request_id,
+        actor_party_id: anticipation_request&.requester_party_id
+      )
       raise
     rescue ActiveRecord::RecordNotFound => error
       create_failure_log(error:, anticipation_request_id: inputs&.anticipation_request_id || anticipation_request_id, actor_party_id: anticipation_request&.requester_party_id)
@@ -130,18 +113,18 @@ module AnticipationRequests
     end
 
     def issue_or_replay_challenges!(anticipation_request:, inputs:)
-      return [ nil, status_not_challengeable_error ] unless anticipation_request.status == "REQUESTED"
+      validate_challengeable_status!(anticipation_request)
 
       existing_outbox = OutboxEvent.lock.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
-      return [ replay_result(existing_outbox:, payload_hash: inputs.payload_hash), nil ] if existing_outbox
+      return replay_result(existing_outbox:, payload_hash: inputs.payload_hash) if existing_outbox
 
-      [ issue_new_challenges!(anticipation_request:, inputs:), nil ]
-    rescue ValidationError => error
-      [ nil, error ]
+      issue_new_challenges!(anticipation_request:, inputs:)
     end
 
-    def status_not_challengeable_error
-      ValidationError.new(
+    def validate_challengeable_status!(anticipation_request)
+      return if anticipation_request.status == "REQUESTED"
+
+      raise ValidationError.new(
         code: "anticipation_status_not_challengeable",
         message: "Only REQUESTED anticipation requests can issue confirmation challenges."
       )
@@ -364,38 +347,24 @@ module AnticipationRequests
 
     def create_action_log!(action_type:, success:, requester_party_id:, target_id:, metadata:)
       ActionIpLog.create!(
-        tenant_id: @tenant_id,
-        actor_party_id: requester_party_id,
-        action_type: action_type,
-        ip_address: @request_ip.presence || "0.0.0.0",
-        user_agent: @user_agent,
-        request_id: @request_id,
-        endpoint_path: @endpoint_path,
-        http_method: @http_method,
-        channel: "API",
-        target_type: TARGET_TYPE,
-        target_id: target_id,
-        success: success,
-        occurred_at: Time.current,
+        **base_action_log_attributes(
+          action_type: action_type,
+          actor_party_id: requester_party_id,
+          target_id: target_id,
+          success: success
+        ),
         metadata: normalized_metadata(metadata)
       )
     end
 
     def create_failure_log(error:, anticipation_request_id:, actor_party_id:)
       ActionIpLog.create!(
-        tenant_id: @tenant_id,
-        actor_party_id: actor_party_id,
-        action_type: "ANTICIPATION_CHALLENGES_ISSUE_FAILED",
-        ip_address: @request_ip.presence || "0.0.0.0",
-        user_agent: @user_agent,
-        request_id: @request_id,
-        endpoint_path: @endpoint_path,
-        http_method: @http_method,
-        channel: "API",
-        target_type: TARGET_TYPE,
-        target_id: anticipation_request_id,
-        success: false,
-        occurred_at: Time.current,
+        **base_action_log_attributes(
+          action_type: "ANTICIPATION_CHALLENGES_ISSUE_FAILED",
+          actor_party_id: actor_party_id,
+          target_id: anticipation_request_id,
+          success: false
+        ),
         metadata: {
           "idempotency_key" => @idempotency_key,
           "error_class" => error.class.name,
@@ -410,6 +379,24 @@ module AnticipationRequests
         "original_error_class=#{error.class.name} request_id=#{@request_id}"
       )
       nil
+    end
+
+    def base_action_log_attributes(action_type:, actor_party_id:, target_id:, success:)
+      {
+        tenant_id: @tenant_id,
+        actor_party_id: actor_party_id,
+        action_type: action_type,
+        ip_address: @request_ip.presence || "0.0.0.0",
+        user_agent: @user_agent,
+        request_id: @request_id,
+        endpoint_path: @endpoint_path,
+        http_method: @http_method,
+        channel: "API",
+        target_type: TARGET_TYPE,
+        target_id: target_id,
+        success: success,
+        occurred_at: Time.current
+      }
     end
 
     def normalize_email_destination(raw_email)

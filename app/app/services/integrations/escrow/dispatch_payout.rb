@@ -18,93 +18,27 @@ module Integrations
       )
 
       def call(outbox_event:)
-        payload = {}
-        source = {}
-        recipient_party = nil
-        amount = BigDecimal("0")
-        provider_context = {}
+        inputs = nil
         payout = nil
-        payout_idempotency_key = nil
 
         inputs = build_dispatch_inputs(outbox_event)
-        payload = inputs.payload
-        source = inputs.source
-        recipient_party = inputs.recipient_party
-        amount = inputs.amount
-        provider_context = { provider_code: inputs.provider_code }
-        payout_idempotency_key = inputs.payout_idempotency_key
 
         payout = find_or_initialize_payout(
           tenant_id: outbox_event.tenant_id,
-          payout_idempotency_key: payout_idempotency_key
+          payout_idempotency_key: inputs.payout_idempotency_key
         )
         return payout if payout_sent?(payout)
 
-        escrow_account = ensure_escrow_account!(
-          tenant_id: outbox_event.tenant_id,
-          party: recipient_party,
-          provider: inputs.provider,
-          idempotency_key: inputs.account_idempotency_key,
-          metadata: payload
-        )
-        persist_pending_payout!(
+        dispatch_payout!(
+          outbox_event: outbox_event,
           payout: payout,
-          outbox_event: outbox_event,
-          source: source,
-          recipient_party: recipient_party,
-          escrow_account: escrow_account,
-          provider_code: inputs.provider_code,
-          amount: amount,
-          payload: payload
+          inputs: inputs
         )
-
-        payout_result = inputs.provider.create_payout!(
-          tenant_id: outbox_event.tenant_id,
-          escrow_account: escrow_account,
-          recipient_party: recipient_party,
-          amount: amount,
-          currency: "BRL",
-          idempotency_key: inputs.provider_request_control_key,
-          metadata: payload.merge(
-            "provider_request_control_key" => inputs.provider_request_control_key
-          )
-        )
-
-        persisted = persist_payout_success!(
-          payout: payout,
-          outbox_event: outbox_event,
-          anticipation_request: source[:anticipation_request],
-          settlement: source[:settlement],
-          recipient_party: recipient_party,
-          escrow_account: escrow_account,
-          provider_code: inputs.provider_code,
-          amount: amount,
-          payout_result: payout_result,
-          payload: payload
-        )
-
-        ensure_payout_sent!(persisted)
-        log_dispatch_success!(
-          outbox_event: outbox_event,
-          payout: persisted,
-          anticipation_request: source[:anticipation_request],
-          settlement: source[:settlement],
-          recipient_party: recipient_party,
-          provider_code: inputs.provider_code,
-          amount: amount
-        )
-
-        persisted
       rescue Error => error
         persist_payout_failure!(
           payout: payout,
           outbox_event: outbox_event,
-          anticipation_request: source[:anticipation_request],
-          settlement: source[:settlement],
-          recipient_party: recipient_party,
-          provider_code: provider_context[:provider_code],
-          amount: amount,
-          payload: payload,
+          inputs: inputs,
           error: error
         )
         raise
@@ -115,10 +49,58 @@ module Integrations
           details: { missing_key: error.key }
         )
       rescue ActiveRecord::RecordNotUnique
-        resolve_payout_conflict!(tenant_id: outbox_event.tenant_id, payout_idempotency_key: payout_idempotency_key)
+        resolve_payout_conflict!(
+          tenant_id: outbox_event.tenant_id,
+          payout_idempotency_key: inputs&.payout_idempotency_key
+        )
       end
 
       private
+
+      def dispatch_payout!(outbox_event:, payout:, inputs:)
+        escrow_account = ensure_escrow_account!(
+          tenant_id: outbox_event.tenant_id,
+          party: inputs.recipient_party,
+          provider: inputs.provider,
+          idempotency_key: inputs.account_idempotency_key,
+          metadata: inputs.payload
+        )
+        persist_pending_payout!(
+          payout: payout,
+          outbox_event: outbox_event,
+          inputs: inputs,
+          escrow_account: escrow_account,
+        )
+
+        payout_result = inputs.provider.create_payout!(
+          tenant_id: outbox_event.tenant_id,
+          escrow_account: escrow_account,
+          recipient_party: inputs.recipient_party,
+          amount: inputs.amount,
+          currency: "BRL",
+          idempotency_key: inputs.provider_request_control_key,
+          metadata: inputs.payload.merge(
+            "provider_request_control_key" => inputs.provider_request_control_key
+          )
+        )
+
+        persisted = persist_payout_success!(
+          payout: payout,
+          outbox_event: outbox_event,
+          inputs: inputs,
+          escrow_account: escrow_account,
+          payout_result: payout_result,
+        )
+
+        ensure_payout_sent!(persisted)
+        log_dispatch_success!(
+          outbox_event: outbox_event,
+          payout: persisted,
+          inputs: inputs
+        )
+
+        persisted
+      end
 
       def build_dispatch_inputs(outbox_event)
         payload = normalize_metadata(outbox_event.payload || {})
@@ -210,24 +192,24 @@ module Integrations
         payout.persisted? && payout.status == "SENT"
       end
 
-      def persist_pending_payout!(payout:, outbox_event:, source:, recipient_party:, escrow_account:, provider_code:, amount:, payload:)
+      def persist_pending_payout!(payout:, outbox_event:, inputs:, escrow_account:)
         payout.assign_attributes(
           source_reference_attributes(
-            anticipation_request: source[:anticipation_request],
-            settlement: source[:settlement]
+            anticipation_request: inputs.source[:anticipation_request],
+            settlement: inputs.source[:settlement]
           ).merge(
             tenant_id: outbox_event.tenant_id,
-            party_id: recipient_party.id,
+            party_id: inputs.recipient_party.id,
             escrow_account_id: escrow_account.id,
-            provider: provider_code,
+            provider: inputs.provider_code,
             status: payout.status.presence || "PENDING",
-            amount: amount,
+            amount: inputs.amount,
             currency: "BRL",
             requested_at: payout.requested_at || Time.current,
             metadata: merged_payout_metadata(
               existing_metadata: payout.metadata,
               outbox_event: outbox_event,
-              payload: payload
+              payload: inputs.payload
             )
           )
         )
@@ -248,18 +230,18 @@ module Integrations
         )
       end
 
-      def log_dispatch_success!(outbox_event:, payout:, anticipation_request:, settlement:, recipient_party:, provider_code:, amount:)
+      def log_dispatch_success!(outbox_event:, payout:, inputs:)
         create_action_log!(
           outbox_event: outbox_event,
           action_type: "ESCROW_PAYOUT_DISPATCHED",
           success: true,
           target_id: payout.id,
           metadata: {
-            "anticipation_request_id" => anticipation_request&.id,
-            "settlement_id" => settlement&.id,
-            "recipient_party_id" => recipient_party.id,
-            "provider" => provider_code,
-            "amount" => amount.to_s("F"),
+            "anticipation_request_id" => inputs.source[:anticipation_request]&.id,
+            "settlement_id" => inputs.source[:settlement]&.id,
+            "recipient_party_id" => inputs.recipient_party.id,
+            "provider" => inputs.provider_code,
+            "amount" => inputs.amount.to_s("F"),
             "currency" => "BRL",
             "provider_transfer_id" => payout.provider_transfer_id,
             "idempotency_key" => payout.idempotency_key
@@ -362,20 +344,20 @@ module Integrations
         account.present? && account.status == "ACTIVE" && account.provider_account_id.present?
       end
 
-      def persist_payout_success!(payout:, outbox_event:, anticipation_request:, settlement:, recipient_party:, escrow_account:, provider_code:, amount:, payout_result:, payload:)
+      def persist_payout_success!(payout:, outbox_event:, inputs:, escrow_account:, payout_result:)
         now = Time.current
 
         payout.assign_attributes(
           source_reference_attributes(
-            anticipation_request: anticipation_request,
-            settlement: settlement
+            anticipation_request: inputs.source[:anticipation_request],
+            settlement: inputs.source[:settlement]
           ).merge(
             tenant_id: outbox_event.tenant_id,
-            party_id: recipient_party.id,
+            party_id: inputs.recipient_party.id,
             escrow_account_id: escrow_account.id,
-            provider: provider_code,
+            provider: inputs.provider_code,
             status: payout_result.status.to_s.upcase,
-            amount: amount,
+            amount: inputs.amount,
             currency: "BRL",
             requested_at: payout.requested_at || now,
             processed_at: payout_result.status.to_s.upcase == "SENT" ? now : nil,
@@ -385,7 +367,7 @@ module Integrations
             metadata: merged_payout_metadata(
               existing_metadata: payout.metadata,
               outbox_event: outbox_event,
-              payload: payload,
+              payload: inputs.payload,
               extra: { "provider_result" => payout_result.metadata }
             )
           )
@@ -394,13 +376,19 @@ module Integrations
         payout
       end
 
-      def persist_payout_failure!(payout:, outbox_event:, anticipation_request:, settlement:, recipient_party:, provider_code:, amount:, payload:, error:)
+      def persist_payout_failure!(payout:, outbox_event:, inputs:, error:)
         return if payout.blank?
+
+        source = inputs&.source || {}
+        recipient_party = inputs&.recipient_party
+        provider_code = inputs&.provider_code
+        amount = inputs&.amount || BigDecimal("0")
+        payload = inputs&.payload || {}
 
         payout.assign_attributes(
           source_reference_attributes(
-            anticipation_request: anticipation_request,
-            settlement: settlement
+            anticipation_request: source[:anticipation_request],
+            settlement: source[:settlement]
           ).merge(
             tenant_id: outbox_event.tenant_id,
             party_id: recipient_party&.id,
