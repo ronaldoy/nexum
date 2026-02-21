@@ -162,28 +162,57 @@ module Physicians
 
     def normalize_payload(raw_payload)
       payload = raw_payload.to_h.symbolize_keys
-      full_name = payload[:full_name].to_s.strip
-      email = payload[:email].to_s.strip.downcase
-      document_number = payload[:document_number].to_s.gsub(/\D+/, "")
-      crm_number = payload[:crm_number].to_s.gsub(/\D+/, "").presence
-      crm_state = payload[:crm_state].to_s.strip.upcase.presence
-
-      raise_validation_error!("full_name_required", "full_name is required.") if full_name.blank?
-      raise_validation_error!("email_required", "email is required.") if email.blank?
-      raise_validation_error!("document_number_required", "document_number is required.") if document_number.blank?
+      normalized_fields = normalized_identity_fields(payload)
 
       {
-        full_name: full_name,
+        full_name: normalized_fields[:full_name],
         display_name: payload[:display_name].to_s.strip.presence,
-        email: email,
+        email: normalized_fields[:email],
         phone: payload[:phone].to_s.strip.presence,
-        document_number: document_number,
+        document_number: normalized_fields[:document_number],
         external_ref: payload[:external_ref].to_s.strip.presence,
-        crm_number: crm_number,
-        crm_state: crm_state,
+        crm_number: normalized_crm_number(payload[:crm_number]),
+        crm_state: normalized_crm_state(payload[:crm_state]),
         metadata: normalize_metadata(payload[:metadata]),
         party_metadata: normalize_metadata(payload[:party_metadata])
       }
+    end
+
+    def normalized_identity_fields(payload)
+      {
+        full_name: normalize_full_name(payload[:full_name]),
+        email: normalize_email(payload[:email]),
+        document_number: normalize_document_number(payload[:document_number])
+      }
+    end
+
+    def normalize_full_name(raw_value)
+      value = raw_value.to_s.strip
+      raise_validation_error!("full_name_required", "full_name is required.") if value.blank?
+
+      value
+    end
+
+    def normalize_email(raw_value)
+      value = raw_value.to_s.strip.downcase
+      raise_validation_error!("email_required", "email is required.") if value.blank?
+
+      value
+    end
+
+    def normalize_document_number(raw_value)
+      value = raw_value.to_s.gsub(/\D+/, "")
+      raise_validation_error!("document_number_required", "document_number is required.") if value.blank?
+
+      value
+    end
+
+    def normalized_crm_number(raw_value)
+      raw_value.to_s.gsub(/\D+/, "").presence
+    end
+
+    def normalized_crm_state(raw_value)
+      raw_value.to_s.strip.upcase.presence
     end
 
     def ensure_matching_replay!(physician:, payload_hash:, payload:)
@@ -240,6 +269,23 @@ module Physicians
 
     def create_action_log!(action_type:, success:, target_id:, metadata:)
       ActionIpLog.create!(
+        **base_action_log_attributes(
+          action_type: action_type,
+          target_id: target_id,
+          success: success
+        ),
+        metadata: normalize_metadata(metadata)
+      )
+    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique => log_error
+      Rails.logger.error(
+        "physician_create_action_log_write_error " \
+        "error_class=#{log_error.class.name} error_message=#{log_error.message} request_id=#{@request_id}"
+      )
+      nil
+    end
+
+    def base_action_log_attributes(action_type:, target_id:, success:)
+      {
         tenant_id: @tenant_id,
         actor_party_id: nil,
         action_type: action_type,
@@ -252,15 +298,8 @@ module Physicians
         target_type: TARGET_TYPE,
         target_id: target_id,
         success: success,
-        occurred_at: Time.current,
-        metadata: normalize_metadata(metadata)
-      )
-    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique => log_error
-      Rails.logger.error(
-        "physician_create_action_log_write_error " \
-        "error_class=#{log_error.class.name} error_message=#{log_error.message} request_id=#{@request_id}"
-      )
-      nil
+        occurred_at: Time.current
+      }
     end
 
     def normalize_metadata(raw_metadata)

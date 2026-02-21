@@ -42,18 +42,12 @@ module Outbox
     end
 
     def call(outbox_event_id:)
-      context = nil
-
       ActiveRecord::Base.transaction do
         context = build_dispatch_context(outbox_event_id: outbox_event_id, occurred_at: @clock.call)
         skip_result = skip_result_for(context)
         return skip_result if skip_result
 
-        process_dispatch_attempt(
-          outbox_event: context.outbox_event,
-          attempt_number: context.attempt_number,
-          occurred_at: context.occurred_at
-        )
+        process_dispatch_attempt(context: context)
       end
     end
 
@@ -120,27 +114,26 @@ module Outbox
       latest_attempt&.attempt_number.to_i + 1
     end
 
-    def process_dispatch_attempt(outbox_event:, attempt_number:, occurred_at:)
-      deliver!(outbox_event)
-      record_dispatch_success(outbox_event: outbox_event, attempt_number: attempt_number, occurred_at: occurred_at)
+    def process_dispatch_attempt(context:)
+      deliver!(context.outbox_event)
+      record_dispatch_success(context: context)
     rescue DeliveryError => error
-      handle_delivery_error!(
-        outbox_event: outbox_event,
-        attempt_number: attempt_number,
-        occurred_at: occurred_at,
-        error: error
-      )
+      handle_delivery_error!(context: context, error: error)
     end
 
-    def record_dispatch_success(outbox_event:, attempt_number:, occurred_at:)
+    def record_dispatch_success(context:)
       create_attempt!(
-        outbox_event: outbox_event,
-        attempt_number: attempt_number,
+        outbox_event: context.outbox_event,
+        attempt_number: context.attempt_number,
         status: "SENT",
-        occurred_at: occurred_at
+        occurred_at: context.occurred_at
       )
-      create_dispatch_action_log!(outbox_event: outbox_event, action_type: DISPATCHED_ACTION, attempt_number: attempt_number)
-      Result.new(status: "SENT", attempt_number: attempt_number, skipped: false)
+      create_dispatch_action_log!(
+        outbox_event: context.outbox_event,
+        action_type: DISPATCHED_ACTION,
+        attempt_number: context.attempt_number
+      )
+      build_result(status: "SENT", attempt_number: context.attempt_number)
     end
 
     def deliver!(outbox_event)
@@ -159,30 +152,26 @@ module Outbox
       raise DeliveryError.new(code: error.code, message: error.message)
     end
 
-    def handle_delivery_error!(outbox_event:, attempt_number:, occurred_at:, error:)
-      return record_dead_letter_attempt(outbox_event:, attempt_number:, occurred_at:, error:) if attempt_number >= @max_attempts
+    def handle_delivery_error!(context:, error:)
+      return record_dead_letter_attempt(context:, error:) if context.attempt_number >= @max_attempts
 
-      record_retry_scheduled_attempt(outbox_event:, attempt_number:, occurred_at:, error:)
+      record_retry_scheduled_attempt(context:, error:)
     end
 
-    def record_dead_letter_attempt(outbox_event:, attempt_number:, occurred_at:, error:)
+    def record_dead_letter_attempt(context:, error:)
       record_failed_attempt!(
-        outbox_event: outbox_event,
-        attempt_number: attempt_number,
-        occurred_at: occurred_at,
+        context: context,
         status: "DEAD_LETTER",
         action_type: DEAD_LETTERED_ACTION,
         error: error
       )
     end
 
-    def record_retry_scheduled_attempt(outbox_event:, attempt_number:, occurred_at:, error:)
-      backoff_seconds = backoff_seconds_for(attempt_number)
-      next_attempt_at = occurred_at + backoff_seconds.seconds
+    def record_retry_scheduled_attempt(context:, error:)
+      backoff_seconds = backoff_seconds_for(context.attempt_number)
+      next_attempt_at = context.occurred_at + backoff_seconds.seconds
       record_failed_attempt!(
-        outbox_event: outbox_event,
-        attempt_number: attempt_number,
-        occurred_at: occurred_at,
+        context: context,
         status: "RETRY_SCHEDULED",
         action_type: RETRY_SCHEDULED_ACTION,
         error: error,
@@ -192,9 +181,7 @@ module Outbox
     end
 
     def record_failed_attempt!(
-      outbox_event:,
-      attempt_number:,
-      occurred_at:,
+      context:,
       status:,
       action_type:,
       error:,
@@ -202,22 +189,30 @@ module Outbox
       attempt_metadata: {}
     )
       create_attempt!(
-        outbox_event: outbox_event,
-        attempt_number: attempt_number,
+        outbox_event: context.outbox_event,
+        attempt_number: context.attempt_number,
         status: status,
-        occurred_at: occurred_at,
+        occurred_at: context.occurred_at,
         next_attempt_at: next_attempt_at,
         error_code: error.code,
         error_message: error.message,
         metadata: attempt_metadata
       )
       create_dispatch_action_log!(
-        outbox_event: outbox_event,
+        outbox_event: context.outbox_event,
         action_type: action_type,
-        attempt_number: attempt_number,
+        attempt_number: context.attempt_number,
         error: error,
         next_attempt_at: next_attempt_at
       )
+      build_result(
+        status: status,
+        attempt_number: context.attempt_number,
+        next_attempt_at: next_attempt_at
+      )
+    end
+
+    def build_result(status:, attempt_number:, next_attempt_at: nil)
       Result.new(
         status: status,
         attempt_number: attempt_number,
