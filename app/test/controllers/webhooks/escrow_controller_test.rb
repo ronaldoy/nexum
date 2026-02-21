@@ -26,6 +26,24 @@ module Webhooks
       end
     end
 
+    test "returns generic authentication failure for unknown tenant slug" do
+      with_environment("QITECH_WEBHOOK_SECRET" => "secret-key") do
+        payload = {
+          "event_id" => "evt-unknown-tenant",
+          "request_control_key" => "missing-payout",
+          "status" => "SENT"
+        }
+        body = JSON.generate(payload)
+
+        post webhooks_escrow_path(provider: "QITECH", tenant_slug: "non-existent-tenant"),
+          params: body,
+          headers: json_webhook_headers(signature: hmac_signature(body: body, secret: "secret-key"))
+
+        assert_response :unauthorized
+        assert_equal "webhook_signature_invalid", response.parsed_body.dig("error", "code")
+      end
+    end
+
     test "reconciles payout webhook and stores processed receipt" do
       payout = nil
 
@@ -98,6 +116,37 @@ module Webhooks
             provider_event_id: "evt-webhook-replay"
           ).count
         end
+      end
+    end
+
+    test "rejects spoofed header event id when payload event id is present" do
+      payout = nil
+
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "worker") do
+        payout = create_payout_bundle!(suffix: "webhook-header-spoof")[:payout]
+      end
+
+      with_environment("QITECH_WEBHOOK_SECRET" => "secret-key") do
+        payload = {
+          "event_id" => "evt-webhook-header-spoof",
+          "request_control_key" => payout.idempotency_key,
+          "status" => "SUCCESS"
+        }
+        body = JSON.generate(payload)
+
+        post webhooks_escrow_path(provider: "QITECH", tenant_slug: @tenant.slug),
+          params: body,
+          headers: json_webhook_headers(signature: hmac_signature(body: body, secret: "secret-key"))
+        assert_response :accepted
+
+        post webhooks_escrow_path(provider: "QITECH", tenant_slug: @tenant.slug),
+          params: body,
+          headers: json_webhook_headers(
+            signature: hmac_signature(body: body, secret: "secret-key")
+          ).merge("X-Webhook-Id" => "header-event-b")
+
+        assert_response :bad_request
+        assert_equal "webhook_event_id_mismatch", response.parsed_body.dig("error", "code")
       end
     end
 

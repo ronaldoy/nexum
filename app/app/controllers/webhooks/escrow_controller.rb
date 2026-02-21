@@ -50,9 +50,8 @@ module Webhooks
     rescue_from WebhookError, with: :render_webhook_error
 
     def create
-      return unless tenant_context_available?
-
       context = build_webhook_context
+      return unless tenant_context_available?
       outcome = process_webhook!(context)
 
       capture_ignored_reconciliation_exception!(context:, outcome:)
@@ -75,10 +74,13 @@ module Webhooks
     def tenant_context_available?
       return true if Current.tenant_id.present?
 
-      render_not_found(
-        code: "tenant_not_found",
-        message: "Tenant not found for webhook endpoint."
-      )
+      render json: {
+        error: {
+          code: "webhook_signature_invalid",
+          message: "Webhook signature is invalid.",
+          request_id: request.request_id
+        }
+      }, status: :unauthorized
       false
     end
 
@@ -337,7 +339,14 @@ module Webhooks
         payload.dig("pix_transfer", "request_control_key")
       ].lazy.map { |value| value.to_s.strip.presence }.find(&:present?)
 
-      header_value || payload_value || payload_sha256
+      if payload_value.present? && header_value.present? && payload_value != header_value
+        raise BadRequestError.new(
+          code: "webhook_event_id_mismatch",
+          message: "Webhook event id mismatch between payload and headers."
+        )
+      end
+
+      payload_value || payload_sha256
     end
 
     def ensure_matching_payload!(existing:, payload_sha256:)

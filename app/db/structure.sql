@@ -70,7 +70,7 @@ CREATE FUNCTION public.app_active_storage_blob_tenant_id(blob_metadata text) RET
 DECLARE
   tenant_raw text;
 BEGIN
-  tenant_raw := NULLIF(app_active_storage_blob_metadata_json(blob_metadata)->>'tenant_id', '');
+  tenant_raw := NULLIF(public.app_active_storage_blob_metadata_json(blob_metadata)->>'tenant_id', '');
   IF tenant_raw IS NULL THEN
     RETURN NULL;
   END IF;
@@ -2156,7 +2156,7 @@ CREATE UNIQUE INDEX index_active_storage_blobs_on_key ON public.active_storage_b
 -- Name: index_active_storage_blobs_on_tenant_direct_upload_idempotency; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX index_active_storage_blobs_on_tenant_direct_upload_idempotency ON public.active_storage_blobs USING btree (public.app_active_storage_blob_tenant_id(metadata), ((public.app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_idempotency_key'::text))) WHERE ((public.app_active_storage_blob_tenant_id(metadata) IS NOT NULL) AND (COALESCE((public.app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_idempotency_key'::text), ''::text) <> ''::text));
+CREATE UNIQUE INDEX index_active_storage_blobs_on_tenant_direct_upload_idempotency ON public.active_storage_blobs USING btree (public.app_active_storage_blob_tenant_id(metadata), ((public.app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_actor_key'::text)), ((public.app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_idempotency_key'::text))) WHERE ((public.app_active_storage_blob_tenant_id(metadata) IS NOT NULL) AND (COALESCE((public.app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_actor_key'::text), ''::text) <> ''::text) AND (COALESCE((public.app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_idempotency_key'::text), ''::text) <> ''::text));
 
 
 --
@@ -4831,6 +4831,7 @@ CREATE POLICY webauthn_credentials_tenant_policy ON public.webauthn_credentials 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260221143000'),
 ('20260220103000'),
 ('20260220100000'),
 ('20260219213000'),

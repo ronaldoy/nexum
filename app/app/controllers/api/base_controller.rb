@@ -4,7 +4,8 @@ module Api
     include IdempotencyEnforcement
     include RequestContext
 
-    PRIVILEGED_ROLES = %w[hospital_admin ops_admin integration_api].freeze
+    API_TOKEN_ROLE = "api_token".freeze
+    PRIVILEGED_ROLES = %w[hospital_admin ops_admin].freeze
 
     class AuthorizationError < StandardError
       attr_reader :code
@@ -45,7 +46,7 @@ module Api
     end
 
     def resolved_role
-      Current.user&.role || "integration_api"
+      Current.user&.role || token_actor_role || API_TOKEN_ROLE
     end
 
     def render_not_found
@@ -109,6 +110,13 @@ module Api
         Current.user&.id,
         Current.api_access_token&.id
       ]
+    end
+
+    def token_actor_role
+      metadata = Current.api_access_token&.metadata
+      return nil unless metadata.is_a?(Hash)
+
+      metadata["actor_role"].presence || metadata[:actor_role].presence
     end
 
     def authorize_party_access!(party_id)

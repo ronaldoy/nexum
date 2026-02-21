@@ -163,6 +163,56 @@ module Api
         assert_equal false, response.parsed_body.dig("data", "replayed")
       end
 
+      test "partner application token without bound actor party cannot read physician profiles" do
+        physician_id = nil
+        partner_application = nil
+        client_secret = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          result = Physicians::Create.new(
+            tenant_id: @tenant.id,
+            actor_role: @user.role,
+            request_id: SecureRandom.uuid,
+            idempotency_key: "idem-internal-physician-read-001",
+            request_ip: "127.0.0.1",
+            user_agent: "test",
+            endpoint_path: "/internal/tests",
+            http_method: "POST"
+          ).call(
+            {
+              full_name: "Dr. Read Boundary",
+              email: "read.boundary@example.com",
+              document_number: valid_cpf_from_seed("api-physician-read-boundary-001")
+            }
+          )
+          physician_id = result.physician.id
+
+          partner_application, client_secret = PartnerApplication.issue!(
+            tenant: @tenant,
+            created_by_user: @user,
+            name: "Partner Physicians Read",
+            scopes: %w[physicians:read]
+          )
+        end
+
+        post api_v1_oauth_token_path(tenant_slug: @tenant.slug),
+          headers: { "Idempotency-Key" => "idem-oauth-partner-physician-read-001" },
+          params: {
+            grant_type: "client_credentials",
+            client_id: partner_application.client_id,
+            client_secret: client_secret,
+            scope: "physicians:read"
+          }
+        assert_response :success
+        partner_bearer_token = response.parsed_body.fetch("access_token")
+
+        get api_v1_physician_path(physician_id),
+          headers: authorization_headers(partner_bearer_token)
+
+        assert_response :forbidden
+        assert_equal "actor_party_required", response.parsed_body.dig("error", "code")
+      end
+
       private
 
       def authorization_headers(raw_token, idempotency_key: nil)

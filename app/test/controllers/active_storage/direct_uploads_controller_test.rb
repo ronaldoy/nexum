@@ -5,6 +5,7 @@ class ActiveStorage::DirectUploadsControllerTest < ActionDispatch::IntegrationTe
     @tenant = tenants(:default)
     @user = users(:one)
     @token = nil
+    @secondary_token = nil
 
     with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
       @user.update!(role: "ops_admin")
@@ -12,6 +13,20 @@ class ActiveStorage::DirectUploadsControllerTest < ActionDispatch::IntegrationTe
         tenant: @tenant,
         user: @user,
         name: "Direct Upload",
+        scopes: %w[receivables:documents:write]
+      )
+
+      secondary_user = User.create!(
+        tenant: @tenant,
+        email_address: "direct-upload-secondary@example.com",
+        password: "password",
+        password_confirmation: "password",
+        role: "supplier_user"
+      )
+      _, @secondary_token = ApiAccessToken.issue!(
+        tenant: @tenant,
+        user: secondary_user,
+        name: "Direct Upload Secondary",
         scopes: %w[receivables:documents:write]
       )
     end
@@ -114,6 +129,27 @@ class ActiveStorage::DirectUploadsControllerTest < ActionDispatch::IntegrationTe
 
     assert_response :conflict
     assert_equal "idempotency_key_reused_with_different_payload", response.parsed_body.dig("error", "code")
+  end
+
+  test "allows same idempotency key for different authenticated actors" do
+    post rails_direct_uploads_path,
+      headers: authorization_headers("direct-upload-actor-scope-001"),
+      params: valid_blob_payload,
+      as: :json
+    assert_response :success
+    first_signed_id = response.parsed_body["signed_id"]
+
+    post rails_direct_uploads_path,
+      headers: {
+        "Authorization" => "Bearer #{@secondary_token}",
+        "Idempotency-Key" => "direct-upload-actor-scope-001"
+      },
+      params: valid_blob_payload,
+      as: :json
+
+    assert_response :success
+    assert_equal false, response.parsed_body["replayed"]
+    assert_not_equal first_signed_id, response.parsed_body["signed_id"]
   end
 
   private

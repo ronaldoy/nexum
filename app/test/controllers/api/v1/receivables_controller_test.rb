@@ -70,7 +70,7 @@ module Api
         assert_equal "invalid_token", response.parsed_body.dig("error", "code")
       end
 
-      test "authenticates token even when it is not bound to a user" do
+      test "rejects token without bound actor party for receivable listing" do
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
           token_record = ApiAccessToken.authenticate(@read_token)
           token_record.update_columns(user_uuid_id: nil)
@@ -78,9 +78,8 @@ module Api
 
         get api_v1_receivables_path, headers: authorization_headers(@read_token), as: :json
 
-        assert_response :success
-        assert_equal 1, response.parsed_body.dig("meta", "count")
-        assert_equal @receivable.id, response.parsed_body.dig("data", 0, "id")
+        assert_response :forbidden
+        assert_equal "actor_party_required", response.parsed_body.dig("error", "code")
       end
 
       test "lists receivables scoped by tenant context" do

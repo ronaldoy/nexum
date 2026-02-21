@@ -119,6 +119,7 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
     @current_tenant_id = tenant_id.to_s
     @current_actor_party_id = user.party_id&.to_s
     @current_actor_role = user.role.to_s
+    @current_actor_scope_key = "session_user:#{user.uuid_id}"
   end
 
   def token_authenticated_for_direct_upload?(token)
@@ -132,6 +133,13 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
     @current_tenant_id = token.tenant_id.to_s
     @current_actor_party_id = token_user&.party_id&.to_s
     @current_actor_role = token_user&.role.to_s.presence || DEFAULT_ACTOR_ROLE
+    @current_actor_scope_key = token_actor_scope_key(token:, token_user:)
+  end
+
+  def token_actor_scope_key(token:, token_user:)
+    return "token_user:#{token_user.uuid_id}" if token_user.present?
+
+    "api_token:#{token.id}"
   end
 
   def bearer_token
@@ -193,6 +201,7 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
     {
       "tenant_id" => @current_tenant_id.to_s,
       "actor_party_id" => @current_actor_party_id.to_s,
+      "direct_upload_actor_key" => @current_actor_scope_key.to_s,
       "direct_upload_idempotency_key" => @idempotency_key,
       "direct_upload_payload_hash" => payload_hash,
       "uploaded_at" => Time.current.utc.iso8601(6)
@@ -202,9 +211,12 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   def find_idempotent_blob
     ActiveStorage::Blob
       .where(
-        "app_active_storage_blob_tenant_id(metadata) = CAST(:tenant_id AS uuid) AND app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_idempotency_key' = :idempotency_key",
+        "app_active_storage_blob_tenant_id(metadata) = CAST(:tenant_id AS uuid) " \
+          "AND app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_idempotency_key' = :idempotency_key " \
+          "AND app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_actor_key' = :actor_scope_key",
         tenant_id: @current_tenant_id.to_s,
-        idempotency_key: @idempotency_key
+        idempotency_key: @idempotency_key,
+        actor_scope_key: @current_actor_scope_key.to_s
       )
       .order(created_at: :desc)
       .first

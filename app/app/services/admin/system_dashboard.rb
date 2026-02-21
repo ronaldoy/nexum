@@ -58,22 +58,22 @@ module Admin
       settlements_paid_amount: :settlement_paid_amount
     }.freeze
     TENANT_METRIC_SELECTS = [
-      " (SELECT COUNT(*) FROM users WHERE tenant_id = %{tenant_id}) AS users_count",
-      " (SELECT COUNT(*) FROM parties WHERE tenant_id = %{tenant_id} AND kind = 'HOSPITAL') AS hospital_count",
-      " (SELECT COUNT(DISTINCT organization_party_id) FROM hospital_ownerships WHERE tenant_id = %{tenant_id} AND active = TRUE) AS hospital_organization_count",
-      " (SELECT COUNT(*) FROM hospital_ownerships WHERE tenant_id = %{tenant_id} AND active = TRUE) AS hospital_ownership_count",
-      " (SELECT COUNT(*) FROM receivables WHERE tenant_id = %{tenant_id}) AS receivable_count",
-      " (SELECT COALESCE(SUM(gross_amount), 0) FROM receivables WHERE tenant_id = %{tenant_id}) AS receivable_gross_amount",
-      " (SELECT COUNT(*) FROM anticipation_requests WHERE tenant_id = %{tenant_id}) AS anticipation_count",
-      " (SELECT COALESCE(SUM(requested_amount), 0) FROM anticipation_requests WHERE tenant_id = %{tenant_id}) AS anticipation_requested_amount",
-      " (SELECT COUNT(*) FROM anticipation_requests WHERE tenant_id = %{tenant_id} AND status IN ('APPROVED', 'FUNDED', 'SETTLED')) AS funded_anticipation_count",
-      " (SELECT COUNT(*) FROM receivable_payment_settlements WHERE tenant_id = %{tenant_id}) AS settlement_count",
-      " (SELECT COALESCE(SUM(paid_amount), 0) FROM receivable_payment_settlements WHERE tenant_id = %{tenant_id}) AS settlement_paid_amount",
+      " (SELECT COUNT(*) FROM users WHERE tenant_id = $1::uuid) AS users_count",
+      " (SELECT COUNT(*) FROM parties WHERE tenant_id = $1::uuid AND kind = 'HOSPITAL') AS hospital_count",
+      " (SELECT COUNT(DISTINCT organization_party_id) FROM hospital_ownerships WHERE tenant_id = $1::uuid AND active = TRUE) AS hospital_organization_count",
+      " (SELECT COUNT(*) FROM hospital_ownerships WHERE tenant_id = $1::uuid AND active = TRUE) AS hospital_ownership_count",
+      " (SELECT COUNT(*) FROM receivables WHERE tenant_id = $1::uuid) AS receivable_count",
+      " (SELECT COALESCE(SUM(gross_amount), 0) FROM receivables WHERE tenant_id = $1::uuid) AS receivable_gross_amount",
+      " (SELECT COUNT(*) FROM anticipation_requests WHERE tenant_id = $1::uuid) AS anticipation_count",
+      " (SELECT COALESCE(SUM(requested_amount), 0) FROM anticipation_requests WHERE tenant_id = $1::uuid) AS anticipation_requested_amount",
+      " (SELECT COUNT(*) FROM anticipation_requests WHERE tenant_id = $1::uuid AND status IN ('APPROVED', 'FUNDED', 'SETTLED')) AS funded_anticipation_count",
+      " (SELECT COUNT(*) FROM receivable_payment_settlements WHERE tenant_id = $1::uuid) AS settlement_count",
+      " (SELECT COALESCE(SUM(paid_amount), 0) FROM receivable_payment_settlements WHERE tenant_id = $1::uuid) AS settlement_paid_amount",
       <<~SQL.squish,
         (
           SELECT COUNT(*)
           FROM outbox_events events
-          WHERE events.tenant_id = %{tenant_id}
+          WHERE events.tenant_id = $1::uuid
             AND NOT EXISTS (
               SELECT 1
               FROM outbox_dispatch_attempts attempts
@@ -83,18 +83,18 @@ module Admin
             )
         ) AS outbox_pending_count
       SQL
-      " (SELECT COUNT(*) FROM outbox_dispatch_attempts WHERE tenant_id = %{tenant_id} AND status = 'DEAD_LETTER') AS outbox_dead_letter_count",
-      " (SELECT COUNT(*) FROM reconciliation_exceptions WHERE tenant_id = %{tenant_id} AND status = 'OPEN') AS reconciliation_open_count",
-      " (SELECT COUNT(*) FROM reconciliation_exceptions WHERE tenant_id = %{tenant_id}) AS reconciliation_total_count",
-      " (SELECT COUNT(*) FROM active_storage_blobs WHERE app_active_storage_blob_tenant_id(metadata) = CAST(%{tenant_id} AS uuid)) AS direct_upload_count",
+      " (SELECT COUNT(*) FROM outbox_dispatch_attempts WHERE tenant_id = $1::uuid AND status = 'DEAD_LETTER') AS outbox_dead_letter_count",
+      " (SELECT COUNT(*) FROM reconciliation_exceptions WHERE tenant_id = $1::uuid AND status = 'OPEN') AS reconciliation_open_count",
+      " (SELECT COUNT(*) FROM reconciliation_exceptions WHERE tenant_id = $1::uuid) AS reconciliation_total_count",
+      " (SELECT COUNT(*) FROM active_storage_blobs WHERE app_active_storage_blob_tenant_id(metadata) = $1::uuid) AS direct_upload_count",
       <<~SQL.squish
         (
           SELECT GREATEST(
-            COALESCE((SELECT MAX(updated_at) FROM receivables WHERE tenant_id = %{tenant_id}), 'epoch'::timestamp),
-            COALESCE((SELECT MAX(updated_at) FROM anticipation_requests WHERE tenant_id = %{tenant_id}), 'epoch'::timestamp),
-            COALESCE((SELECT MAX(updated_at) FROM receivable_payment_settlements WHERE tenant_id = %{tenant_id}), 'epoch'::timestamp),
-            COALESCE((SELECT MAX(last_seen_at) FROM reconciliation_exceptions WHERE tenant_id = %{tenant_id}), 'epoch'::timestamp),
-            COALESCE((SELECT MAX(occurred_at) FROM action_ip_logs WHERE tenant_id = %{tenant_id}), 'epoch'::timestamp)
+            COALESCE((SELECT MAX(updated_at) FROM receivables WHERE tenant_id = $1::uuid), 'epoch'::timestamp),
+            COALESCE((SELECT MAX(updated_at) FROM anticipation_requests WHERE tenant_id = $1::uuid), 'epoch'::timestamp),
+            COALESCE((SELECT MAX(updated_at) FROM receivable_payment_settlements WHERE tenant_id = $1::uuid), 'epoch'::timestamp),
+            COALESCE((SELECT MAX(last_seen_at) FROM reconciliation_exceptions WHERE tenant_id = $1::uuid), 'epoch'::timestamp),
+            COALESCE((SELECT MAX(occurred_at) FROM action_ip_logs WHERE tenant_id = $1::uuid), 'epoch'::timestamp)
           )
         ) AS last_activity_at
       SQL
@@ -232,13 +232,15 @@ module Admin
     end
 
     def tenant_metrics(tenant_id:)
-      quoted_tenant_id = ActiveRecord::Base.connection.quote(tenant_id)
-      select_sql = tenant_metric_select_sql(quoted_tenant_id)
-      ActiveRecord::Base.connection.select_one("SELECT #{select_sql}")
+      select_sql = tenant_metric_select_sql
+      sql = "SELECT #{select_sql}"
+      result = ActiveRecord::Base.connection.raw_connection.exec_params(sql, [ tenant_id.to_s ])
+      row = result.first
+      row.is_a?(Hash) ? row : {}
     end
 
-    def tenant_metric_select_sql(quoted_tenant_id)
-      TENANT_METRIC_SELECTS.map { |fragment| format(fragment, tenant_id: quoted_tenant_id) }.join(", ")
+    def tenant_metric_select_sql
+      TENANT_METRIC_SELECTS.join(", ")
     end
 
     def integer_value(value)

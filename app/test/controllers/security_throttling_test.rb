@@ -58,4 +58,43 @@ class SecurityThrottlingTest < ActionDispatch::IntegrationTest
 
     assert_response :too_many_requests
   end
+
+  test "throttles oauth token issuance per client across distinct ips" do
+    partner_application = nil
+
+    with_tenant_db_context(tenant_id: @user.tenant_id, actor_id: @user.id, role: @user.role) do
+      partner_application, = PartnerApplication.issue!(
+        tenant: @user.tenant,
+        created_by_user: @user,
+        name: "Throttle OAuth Client",
+        scopes: %w[receivables:write]
+      )
+    end
+
+    20.times do |index|
+      post api_v1_oauth_token_path(tenant_slug: @user.tenant.slug),
+        headers: { "Idempotency-Key" => "idem-oauth-throttle-#{index}" },
+        params: {
+          grant_type: "client_credentials",
+          client_id: partner_application.client_id,
+          client_secret: "invalid-secret",
+          scope: "receivables:write"
+        },
+        env: { "REMOTE_ADDR" => "198.51.100.#{index + 80}" }
+
+      assert_response :unauthorized
+    end
+
+    post api_v1_oauth_token_path(tenant_slug: @user.tenant.slug),
+      headers: { "Idempotency-Key" => "idem-oauth-throttle-final" },
+      params: {
+        grant_type: "client_credentials",
+        client_id: partner_application.client_id,
+        client_secret: "invalid-secret",
+        scope: "receivables:write"
+      },
+      env: { "REMOTE_ADDR" => "203.0.113.88" }
+
+    assert_response :too_many_requests
+  end
 end
