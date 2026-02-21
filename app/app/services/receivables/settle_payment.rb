@@ -414,19 +414,27 @@ module Receivables
       )
       scope = scope.where(receivable_allocation_id: allocation.id) if allocation
 
-      scope.order(requested_at: :asc, created_at: :asc).map do |anticipation_request|
-        exposure_metrics = exposure_calculator.call(
+      scope.order(requested_at: :asc, created_at: :asc).filter_map do |anticipation_request|
+        build_fdic_obligation(
+          exposure_calculator: exposure_calculator,
           anticipation_request: anticipation_request,
           due_at: receivable.due_at
         )
-        outstanding = exposure_metrics.effective_contractual_exposure
-        next if outstanding <= 0
+      end
+    end
 
-        {
-          anticipation_request: anticipation_request,
-          outstanding: outstanding
-        }
-      end.compact
+    def build_fdic_obligation(exposure_calculator:, anticipation_request:, due_at:)
+      exposure_metrics = exposure_calculator.call(
+        anticipation_request: anticipation_request,
+        due_at: due_at
+      )
+      outstanding = exposure_metrics.effective_contractual_exposure
+      return nil if outstanding <= 0
+
+      {
+        anticipation_request: anticipation_request,
+        outstanding: outstanding
+      }
     end
 
     def create_settlement_entries!(settlement:, obligations:, fdic_amount:, settled_at:)
@@ -516,27 +524,37 @@ module Receivables
 
     def update_statuses_after_payment!(receivable:, allocation:)
       if allocation
-        allocation_paid_total = ReceivablePaymentSettlement.where(
-          tenant_id: @tenant_id,
-          receivable_allocation_id: allocation.id
-        ).sum(:paid_amount).to_d
-        if allocation.status != "SETTLED" && allocation_paid_total >= allocation.gross_amount.to_d
-          allocation.update!(status: "SETTLED")
-        end
-
-        if receivable.receivable_allocations.where.not(status: "SETTLED").none? && receivable.status != "SETTLED"
-          receivable.update!(status: "SETTLED")
-        end
+        update_allocation_and_receivable_statuses_after_payment!(receivable:, allocation:)
         return
       end
 
+      update_receivable_status_for_total_payments!(receivable)
+    end
+
+    def update_allocation_and_receivable_statuses_after_payment!(receivable:, allocation:)
+      allocation_paid_total = ReceivablePaymentSettlement.where(
+        tenant_id: @tenant_id,
+        receivable_allocation_id: allocation.id
+      ).sum(:paid_amount).to_d
+      if allocation.status != "SETTLED" && allocation_paid_total >= allocation.gross_amount.to_d
+        allocation.update!(status: "SETTLED")
+      end
+
+      return unless receivable.receivable_allocations.where.not(status: "SETTLED").none?
+      return if receivable.status == "SETTLED"
+
+      receivable.update!(status: "SETTLED")
+    end
+
+    def update_receivable_status_for_total_payments!(receivable)
       receivable_paid_total = ReceivablePaymentSettlement.where(
         tenant_id: @tenant_id,
         receivable_id: receivable.id
       ).sum(:paid_amount).to_d
-      if receivable.status != "SETTLED" && receivable_paid_total >= receivable.gross_amount.to_d
-        receivable.update!(status: "SETTLED")
-      end
+      return if receivable.status == "SETTLED"
+      return unless receivable_paid_total >= receivable.gross_amount.to_d
+
+      receivable.update!(status: "SETTLED")
     end
 
     def find_existing_settlement(payment_reference)

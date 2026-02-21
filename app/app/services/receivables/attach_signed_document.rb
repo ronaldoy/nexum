@@ -91,22 +91,29 @@ module Receivables
       create_failure_log(error: error, receivable_id: inputs&.receivable_id || receivable_id)
       raise
     rescue ActiveRecord::RecordNotUnique => error
-      existing_outbox = OutboxEvent.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
-      return replay_result(existing_outbox:, payload_hash: inputs&.payload_hash.to_s) if existing_outbox.present?
-
-      if error.message.include?("index_documents_on_tenant_id_and_sha256")
-        validation_error = ValidationError.new(
-          code: "duplicate_document_hash",
-          message: "A signed document with this sha256 already exists for this tenant."
-        )
-        create_failure_log(error: validation_error, receivable_id: inputs&.receivable_id || receivable_id)
-        raise validation_error
-      end
-
-      raise
+      recover_after_unique_violation(error:, inputs:, receivable_id:)
     end
 
     private
+
+    def recover_after_unique_violation(error:, inputs:, receivable_id:)
+      existing_outbox = OutboxEvent.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
+      return replay_result(existing_outbox:, payload_hash: inputs&.payload_hash.to_s) if existing_outbox.present?
+
+      raise_duplicate_document_hash_error!(error:, receivable_id: inputs&.receivable_id || receivable_id)
+      raise
+    end
+
+    def raise_duplicate_document_hash_error!(error:, receivable_id:)
+      return unless error.message.include?("index_documents_on_tenant_id_and_sha256")
+
+      validation_error = ValidationError.new(
+        code: "duplicate_document_hash",
+        message: "A signed document with this sha256 already exists for this tenant."
+      )
+      create_failure_log(error: validation_error, receivable_id: receivable_id)
+      raise validation_error
+    end
 
     def build_call_inputs(receivable_id:, raw_payload:, default_actor_party_id:, privileged_actor:)
       payload = normalize_payload(
@@ -367,51 +374,77 @@ module Receivables
     end
 
     def ensure_verified_challenge_pair!(receivable:, actor_party:, email_challenge_id:, whatsapp_challenge_id:)
-      email_challenge = verify_signature_challenge!(
-        challenge_id: email_challenge_id,
-        channel: "EMAIL",
-        receivable: receivable,
-        actor_party: actor_party
-      )
-      whatsapp_challenge = verify_signature_challenge!(
-        challenge_id: whatsapp_challenge_id,
-        channel: "WHATSAPP",
-        receivable: receivable,
-        actor_party: actor_party
-      )
-
       {
-        email: email_challenge,
-        whatsapp: whatsapp_challenge
+        email: verify_signature_challenge!(
+          challenge_id: email_challenge_id,
+          channel: "EMAIL",
+          receivable: receivable,
+          actor_party: actor_party
+        ),
+        whatsapp: verify_signature_challenge!(
+          challenge_id: whatsapp_challenge_id,
+          channel: "WHATSAPP",
+          receivable: receivable,
+          actor_party: actor_party
+        )
       }
     end
 
     def verify_signature_challenge!(challenge_id:, channel:, receivable:, actor_party:)
       challenge = AuthChallenge.where(tenant_id: @tenant_id).lock.find(challenge_id)
-      unless challenge.delivery_channel == channel
-        raise_validation_error!("invalid_#{channel.downcase}_challenge", "#{channel.downcase} challenge is invalid.")
-      end
-      if challenge.consumed_at.present?
-        raise_validation_error!("used_#{channel.downcase}_challenge", "#{channel.downcase} challenge was already used.")
-      end
-      unless challenge.status == "VERIFIED"
-        raise_validation_error!("unverified_#{channel.downcase}_challenge", "#{channel.downcase} challenge must be verified.")
-      end
-      unless challenge.purpose == SIGNATURE_CONFIRMATION_PURPOSE
-        raise_validation_error!("invalid_#{channel.downcase}_challenge_purpose", "#{channel.downcase} challenge purpose is invalid.")
-      end
-      unless challenge.target_type == TARGET_TYPE && challenge.target_id.to_s == receivable.id.to_s
-        raise_validation_error!("invalid_#{channel.downcase}_challenge_target", "#{channel.downcase} challenge target is invalid.")
-      end
-      unless challenge.actor_party_id.to_s == actor_party.id.to_s
-        raise_validation_error!("invalid_#{channel.downcase}_challenge_actor", "#{channel.downcase} challenge actor is invalid.")
-      end
+      validate_signature_challenge!(challenge:, channel:, receivable:, actor_party:)
       return challenge if challenge.expires_at > Time.current
 
       challenge.update!(status: "EXPIRED")
       raise_validation_error!("expired_#{channel.downcase}_challenge", "#{channel.downcase} challenge is expired.")
     rescue ActiveRecord::RecordNotFound
       raise_validation_error!("missing_#{channel.downcase}_challenge", "Missing #{channel.downcase} challenge.")
+    end
+
+    def validate_signature_challenge!(challenge:, channel:, receivable:, actor_party:)
+      channel_key = channel.downcase
+      ensure_challenge_channel_matches!(challenge:, channel:, channel_key:)
+      ensure_challenge_not_consumed!(challenge:, channel_key:)
+      ensure_challenge_verified!(challenge:, channel_key:)
+      ensure_challenge_purpose_matches!(challenge:, channel_key:)
+      ensure_challenge_target_matches!(challenge:, channel_key:, receivable:)
+      ensure_challenge_actor_matches!(challenge:, channel_key:, actor_party:)
+    end
+
+    def ensure_challenge_channel_matches!(challenge:, channel:, channel_key:)
+      return if challenge.delivery_channel == channel
+
+      raise_validation_error!("invalid_#{channel_key}_challenge", "#{channel_key} challenge is invalid.")
+    end
+
+    def ensure_challenge_not_consumed!(challenge:, channel_key:)
+      return if challenge.consumed_at.blank?
+
+      raise_validation_error!("used_#{channel_key}_challenge", "#{channel_key} challenge was already used.")
+    end
+
+    def ensure_challenge_verified!(challenge:, channel_key:)
+      return if challenge.status == "VERIFIED"
+
+      raise_validation_error!("unverified_#{channel_key}_challenge", "#{channel_key} challenge must be verified.")
+    end
+
+    def ensure_challenge_purpose_matches!(challenge:, channel_key:)
+      return if challenge.purpose == SIGNATURE_CONFIRMATION_PURPOSE
+
+      raise_validation_error!("invalid_#{channel_key}_challenge_purpose", "#{channel_key} challenge purpose is invalid.")
+    end
+
+    def ensure_challenge_target_matches!(challenge:, channel_key:, receivable:)
+      return if challenge.target_type == TARGET_TYPE && challenge.target_id.to_s == receivable.id.to_s
+
+      raise_validation_error!("invalid_#{channel_key}_challenge_target", "#{channel_key} challenge target is invalid.")
+    end
+
+    def ensure_challenge_actor_matches!(challenge:, channel_key:, actor_party:)
+      return if challenge.actor_party_id.to_s == actor_party.id.to_s
+
+      raise_validation_error!("invalid_#{channel_key}_challenge_actor", "#{channel_key} challenge actor is invalid.")
     end
 
     def consume_verified_challenges!(challenges:, consumed_at:)
@@ -466,11 +499,8 @@ module Receivables
         request_id: @request_id,
         payload: {
           "idempotency_key" => @idempotency_key,
-          "signature_method" => payload.fetch(:signature_method),
-          "provider_envelope_id" => payload.fetch(:provider_envelope_id),
-          "email_challenge_id" => payload.fetch(:email_challenge_id),
-          "whatsapp_challenge_id" => payload.fetch(:whatsapp_challenge_id)
-        }
+          "signature_method" => payload.fetch(:signature_method)
+        }.merge(signature_reference_payload(payload, stringify_keys: true))
       )
     end
 
@@ -485,11 +515,8 @@ module Receivables
         signature_method: payload.fetch(:signature_method),
         signed_at: payload.fetch(:signed_at).utc.iso8601(6),
         sha256: document.sha256,
-        storage_key: document.storage_key,
-        provider_envelope_id: payload.fetch(:provider_envelope_id),
-        email_challenge_id: payload.fetch(:email_challenge_id),
-        whatsapp_challenge_id: payload.fetch(:whatsapp_challenge_id)
-      }
+        storage_key: document.storage_key
+      }.merge(signature_reference_payload(payload))
 
       event_hash = Digest::SHA256.hexdigest(
         canonical_json(
@@ -593,12 +620,21 @@ module Receivables
           sha256: payload.fetch(:sha256),
           storage_key: payload.fetch(:storage_key),
           signed_at: payload.fetch(:signed_at).utc.iso8601(6),
-          provider_envelope_id: payload.fetch(:provider_envelope_id),
-          email_challenge_id: payload.fetch(:email_challenge_id),
-          whatsapp_challenge_id: payload.fetch(:whatsapp_challenge_id),
+          **signature_reference_payload(payload),
           metadata: payload.fetch(:metadata)
         )
       )
+    end
+
+    def signature_reference_payload(payload, stringify_keys: false)
+      references = {
+        provider_envelope_id: payload.fetch(:provider_envelope_id),
+        email_challenge_id: payload.fetch(:email_challenge_id),
+        whatsapp_challenge_id: payload.fetch(:whatsapp_challenge_id)
+      }
+      return references unless stringify_keys
+
+      references.transform_keys(&:to_s)
     end
 
     def canonical_json(value)

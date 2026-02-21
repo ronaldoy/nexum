@@ -22,44 +22,64 @@ module Fdic
         exposed ? accrued_outstanding : BigDecimal("0")
       end
     end
+    ExposureContext = Struct.new(
+      :requested_amount,
+      :discount_amount,
+      :settled_amount,
+      :term_business_days,
+      :elapsed_business_days,
+      keyword_init: true
+    )
 
     def initialize(valuation_time: Time.current)
       @valuation_time = valuation_time
     end
 
     def call(anticipation_request:, due_at:)
-      requested_amount, discount_amount = requested_and_discount_amounts(anticipation_request)
-      settled_amount = settled_amount_for(anticipation_request)
-      term_business_days, elapsed_business_days = business_day_window(
-        start_time: anticipation_request.requested_at || @valuation_time,
-        due_at:
-      )
+      context = build_exposure_context(anticipation_request: anticipation_request, due_at: due_at)
       contractual_obligation, contractual_outstanding = contractual_exposure_values(
-        requested_amount: requested_amount,
-        discount_amount: discount_amount,
-        settled_amount: settled_amount
+        requested_amount: context.requested_amount,
+        discount_amount: context.discount_amount,
+        settled_amount: context.settled_amount
       )
       accrued_discount, accrued_outstanding = accrued_exposure_values(
-        requested_amount: requested_amount,
-        discount_amount: discount_amount,
-        settled_amount: settled_amount,
-        term_business_days: term_business_days,
-        elapsed_business_days: elapsed_business_days
+        requested_amount: context.requested_amount,
+        discount_amount: context.discount_amount,
+        settled_amount: context.settled_amount,
+        term_business_days: context.term_business_days,
+        elapsed_business_days: context.elapsed_business_days
       )
 
       exposure_result(
         anticipation_request: anticipation_request,
         contractual_obligation: contractual_obligation,
-        settled_amount: settled_amount,
+        settled_amount: context.settled_amount,
         contractual_outstanding: contractual_outstanding,
         accrued_discount: accrued_discount,
         accrued_outstanding: accrued_outstanding,
-        term_business_days: term_business_days,
-        elapsed_business_days: elapsed_business_days
+        term_business_days: context.term_business_days,
+        elapsed_business_days: context.elapsed_business_days
       )
     end
 
     private
+
+    def build_exposure_context(anticipation_request:, due_at:)
+      requested_amount, discount_amount = requested_and_discount_amounts(anticipation_request)
+      settled_amount = settled_amount_for(anticipation_request)
+      term_business_days, elapsed_business_days = business_day_window(
+        start_time: anticipation_request.requested_at || @valuation_time,
+        due_at: due_at
+      )
+
+      ExposureContext.new(
+        requested_amount: requested_amount,
+        discount_amount: discount_amount,
+        settled_amount: settled_amount,
+        term_business_days: term_business_days,
+        elapsed_business_days: elapsed_business_days
+      )
+    end
 
     def requested_and_discount_amounts(anticipation_request)
       [ anticipation_request.requested_amount.to_d, anticipation_request.discount_amount.to_d ]
