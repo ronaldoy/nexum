@@ -62,51 +62,50 @@ module AnticipationRequests
     def call(raw_payload, default_requester_party_id:)
       intent = normalize_intent(raw_payload, default_requester_party_id:)
       intent_hash = idempotency_payload_hash(intent)
-      replay_result = nil
-      result = nil
 
-      ActiveRecord::Base.transaction do
-        existing = AnticipationRequest.lock.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
-        if existing
-          replay_result = build_replay_result(existing:, intent:, intent_hash:)
-          next
-        end
-
-        receivable, allocation, requester_party = load_request_context!(intent)
-        financials = calculate_financials(intent)
-        anticipation_request = create_anticipation_request_record!(
-          intent: intent,
-          intent_hash: intent_hash,
-          receivable: receivable,
-          allocation: allocation,
-          requester_party: requester_party,
-          financials: financials
-        )
-
-        mark_receivable_as_anticipated!(receivable)
-        create_receivable_event!(
-          receivable: receivable,
-          requester_party: requester_party,
-          anticipation_request: anticipation_request,
-          occurred_at: financials.requested_at
-        )
-        create_action_log!(
-          action_type: "ANTICIPATION_REQUEST_CREATED",
-          success: true,
-          requester_party_id: requester_party.id,
-          target_id: anticipation_request.id,
-          metadata: { replayed: false, idempotency_key: @idempotency_key }
-        )
-
-        result = Result.new(anticipation_request: anticipation_request, replayed: false)
-      end
-
-      replay_result || result
+      ActiveRecord::Base.transaction { create_or_replay_request(intent: intent, intent_hash: intent_hash) }
     rescue ActiveRecord::RecordNotUnique
       replay_existing_for_race_condition(intent:, intent_hash:)
     end
 
     private
+
+    def create_or_replay_request(intent:, intent_hash:)
+      existing = AnticipationRequest.lock.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
+      return build_replay_result(existing:, intent:, intent_hash:) if existing
+
+      create_new_request(intent:, intent_hash:)
+    end
+
+    def create_new_request(intent:, intent_hash:)
+      receivable, allocation, requester_party = load_request_context!(intent)
+      financials = calculate_financials(intent)
+      anticipation_request = create_anticipation_request_record!(
+        intent: intent,
+        intent_hash: intent_hash,
+        receivable: receivable,
+        allocation: allocation,
+        requester_party: requester_party,
+        financials: financials
+      )
+
+      mark_receivable_as_anticipated!(receivable)
+      create_receivable_event!(
+        receivable: receivable,
+        requester_party: requester_party,
+        anticipation_request: anticipation_request,
+        occurred_at: financials.requested_at
+      )
+      create_action_log!(
+        action_type: "ANTICIPATION_REQUEST_CREATED",
+        success: true,
+        requester_party_id: requester_party.id,
+        target_id: anticipation_request.id,
+        metadata: { replayed: false, idempotency_key: @idempotency_key }
+      )
+
+      Result.new(anticipation_request: anticipation_request, replayed: false)
+    end
 
     def build_replay_result(existing:, intent:, intent_hash:)
       ensure_matching_idempotency!(existing:, intent:, intent_hash:)
@@ -237,13 +236,7 @@ module AnticipationRequests
     end
 
     def ensure_requester_authorized!(receivable:, allocation:, requester_party:)
-      allowed_party_ids = [ receivable.creditor_party_id, receivable.beneficiary_party_id ]
-      if allocation
-        allowed_party_ids << allocation.allocated_party_id
-        allowed_party_ids << allocation.physician_party_id
-      end
-      allowed_party_ids.compact!
-      allowed_party_ids.uniq!
+      allowed_party_ids = allowed_requester_party_ids(receivable: receivable, allocation: allocation)
 
       return if allowed_party_ids.include?(requester_party.id)
 
@@ -253,14 +246,21 @@ module AnticipationRequests
       )
     end
 
+    def allowed_requester_party_ids(receivable:, allocation:)
+      party_ids = [ receivable.creditor_party_id, receivable.beneficiary_party_id ]
+      if allocation
+        party_ids << allocation.allocated_party_id
+        party_ids << allocation.physician_party_id
+      end
+      party_ids.compact.uniq
+    end
+
     def ensure_requested_amount_available!(receivable:, allocation:, requested_amount:)
       if requested_amount <= 0
         raise_validation_error!("invalid_requested_amount", "requested_amount must be greater than zero.")
       end
 
-      base_amount = allocation ? allocation_available_amount(allocation) : receivable.gross_amount.to_d
-      requested_total = active_requests_for(receivable:, allocation:).sum(:requested_amount).to_d
-      available_amount = round_currency(base_amount - requested_total)
+      available_amount = available_amount_for_request(receivable: receivable, allocation: allocation)
 
       return if requested_amount <= available_amount
 
@@ -268,6 +268,12 @@ module AnticipationRequests
         "requested_amount_exceeds_available",
         "Requested amount exceeds available amount for anticipation."
       )
+    end
+
+    def available_amount_for_request(receivable:, allocation:)
+      base_amount = allocation ? allocation_available_amount(allocation) : receivable.gross_amount.to_d
+      requested_total = active_requests_for(receivable: receivable, allocation: allocation).sum(:requested_amount).to_d
+      round_currency(base_amount - requested_total)
     end
 
     def allocation_available_amount(allocation)
@@ -319,17 +325,7 @@ module AnticipationRequests
       previous = receivable.receivable_events.order(sequence: :desc).limit(1).pluck(:sequence, :event_hash).first
       sequence = previous ? previous[0] + 1 : 1
       prev_hash = previous&.[](1)
-
-      payload = {
-        anticipation_request_id: anticipation_request.id,
-        idempotency_key: @idempotency_key,
-        requested_amount: decimal_as_string(anticipation_request.requested_amount),
-        discount_rate: decimal_as_string(anticipation_request.discount_rate),
-        discount_amount: decimal_as_string(anticipation_request.discount_amount),
-        net_amount: decimal_as_string(anticipation_request.net_amount),
-        settlement_target_date: anticipation_request.settlement_target_date&.iso8601,
-        channel: anticipation_request.channel
-      }
+      payload = receivable_event_payload(anticipation_request)
       event_type = "ANTICIPATION_REQUESTED"
 
       event_hash = Digest::SHA256.hexdigest(
@@ -357,6 +353,19 @@ module AnticipationRequests
         event_hash: event_hash,
         payload: payload
       )
+    end
+
+    def receivable_event_payload(anticipation_request)
+      {
+        anticipation_request_id: anticipation_request.id,
+        idempotency_key: @idempotency_key,
+        requested_amount: decimal_as_string(anticipation_request.requested_amount),
+        discount_rate: decimal_as_string(anticipation_request.discount_rate),
+        discount_amount: decimal_as_string(anticipation_request.discount_amount),
+        net_amount: decimal_as_string(anticipation_request.net_amount),
+        settlement_target_date: anticipation_request.settlement_target_date&.iso8601,
+        channel: anticipation_request.channel
+      }
     end
 
     def create_action_log!(action_type:, success:, requester_party_id:, target_id:, metadata:)

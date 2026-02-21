@@ -8,6 +8,7 @@ module AnticipationRequests
     EMAIL_OUTBOX_EVENT_TYPE = "AUTH_CHALLENGE_EMAIL_DISPATCH_REQUESTED".freeze
     WHATSAPP_OUTBOX_EVENT_TYPE = "AUTH_CHALLENGE_WHATSAPP_DISPATCH_REQUESTED".freeze
     CHALLENGE_TTL = 15.minutes
+    CHALLENGE_CHANNELS = %w[EMAIL WHATSAPP].freeze
 
     IssueInputs = Struct.new(
       :anticipation_request_id,
@@ -97,11 +98,15 @@ module AnticipationRequests
       create_failure_log(error:, anticipation_request_id: inputs&.anticipation_request_id || anticipation_request_id, actor_party_id: anticipation_request&.requester_party_id)
       raise
     rescue ActiveRecord::RecordNotUnique
-      existing_outbox = OutboxEvent.find_by!(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
-      replay_result(existing_outbox:, payload_hash: inputs&.payload_hash.to_s)
+      replay_after_unique_violation(payload_hash: inputs&.payload_hash.to_s)
     end
 
     private
+
+    def replay_after_unique_violation(payload_hash:)
+      existing_outbox = OutboxEvent.find_by!(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
+      replay_result(existing_outbox:, payload_hash: payload_hash)
+    end
 
     def build_issue_inputs(anticipation_request_id:, email_destination:, whatsapp_destination:)
       normalized_email = normalize_email_destination(email_destination)
@@ -147,18 +152,11 @@ module AnticipationRequests
       whatsapp_code = generate_code
       expires_at = Time.current + CHALLENGE_TTL
 
-      email_challenge = create_challenge!(
+      email_challenge, whatsapp_challenge = create_confirmation_challenge_pair!(
         anticipation_request: anticipation_request,
-        delivery_channel: "EMAIL",
-        destination_masked: mask_email(inputs.email_destination),
-        code: email_code,
-        expires_at: expires_at
-      )
-      whatsapp_challenge = create_challenge!(
-        anticipation_request: anticipation_request,
-        delivery_channel: "WHATSAPP",
-        destination_masked: mask_whatsapp(inputs.whatsapp_destination),
-        code: whatsapp_code,
+        inputs: inputs,
+        email_code: email_code,
+        whatsapp_code: whatsapp_code,
         expires_at: expires_at
       )
 
@@ -206,6 +204,25 @@ module AnticipationRequests
         challenges: [ email_challenge, whatsapp_challenge ],
         replayed: false
       )
+    end
+
+    def create_confirmation_challenge_pair!(anticipation_request:, inputs:, email_code:, whatsapp_code:, expires_at:)
+      email_challenge = create_challenge!(
+        anticipation_request: anticipation_request,
+        delivery_channel: "EMAIL",
+        destination_masked: mask_email(inputs.email_destination),
+        code: email_code,
+        expires_at: expires_at
+      )
+      whatsapp_challenge = create_challenge!(
+        anticipation_request: anticipation_request,
+        delivery_channel: "WHATSAPP",
+        destination_masked: mask_whatsapp(inputs.whatsapp_destination),
+        code: whatsapp_code,
+        expires_at: expires_at
+      )
+
+      [ email_challenge, whatsapp_challenge ]
     end
 
     def replay_result(existing_outbox:, payload_hash:)
@@ -263,10 +280,8 @@ module AnticipationRequests
         status: "PENDING",
         idempotency_key: @idempotency_key,
         payload: {
-          "payload_hash" => payload_hash,
-          "challenge_ids" => [ email_challenge.id, whatsapp_challenge.id ],
-          "channels" => [ "EMAIL", "WHATSAPP" ]
-        }
+          "payload_hash" => payload_hash
+        }.merge(challenge_reference_payload(email_challenge:, whatsapp_challenge:))
       )
     end
 
@@ -306,10 +321,8 @@ module AnticipationRequests
 
       payload = {
         anticipation_request_id: anticipation_request.id,
-        idempotency_key: @idempotency_key,
-        challenge_ids: [ email_challenge.id, whatsapp_challenge.id ],
-        channels: [ "EMAIL", "WHATSAPP" ]
-      }
+        idempotency_key: @idempotency_key
+      }.merge(challenge_reference_payload(email_challenge:, whatsapp_challenge:, stringify_keys: false))
       event_type = "ANTICIPATION_CONFIRMATION_CHALLENGES_ISSUED"
 
       event_hash = Digest::SHA256.hexdigest(
@@ -337,6 +350,16 @@ module AnticipationRequests
         event_hash: event_hash,
         payload: payload
       )
+    end
+
+    def challenge_reference_payload(email_challenge:, whatsapp_challenge:, stringify_keys: true)
+      payload = {
+        challenge_ids: [ email_challenge.id, whatsapp_challenge.id ],
+        channels: CHALLENGE_CHANNELS
+      }
+      return payload unless stringify_keys
+
+      payload.transform_keys(&:to_s)
     end
 
     def create_action_log!(action_type:, success:, requester_party_id:, target_id:, metadata:)

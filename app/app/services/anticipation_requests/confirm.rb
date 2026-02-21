@@ -140,16 +140,10 @@ module AnticipationRequests
     end
 
     def load_confirmation_challenges!(anticipation_request)
-      email_challenge = load_challenge!(
-        anticipation_request: anticipation_request,
-        channel: "EMAIL"
-      )
-      whatsapp_challenge = load_challenge!(
-        anticipation_request: anticipation_request,
-        channel: "WHATSAPP"
-      )
-
-      [ email_challenge, whatsapp_challenge ]
+      [
+        load_challenge!(anticipation_request: anticipation_request, channel: "EMAIL"),
+        load_challenge!(anticipation_request: anticipation_request, channel: "WHATSAPP")
+      ]
     end
 
     def verify_confirmation_codes!(email_challenge:, whatsapp_challenge:, email_code:, whatsapp_code:)
@@ -204,29 +198,49 @@ module AnticipationRequests
     def verify_challenge!(challenge:, code:, invalid_code:)
       return if challenge.status == "VERIFIED"
 
-      if code.to_s.strip.blank?
-        raise_validation_error!(invalid_code, "Confirmation code is required.")
-      end
+      ensure_confirmation_code_present!(code: code, invalid_code: invalid_code)
+      expire_challenge_if_needed!(challenge)
+      process_challenge_attempt!(challenge: challenge, code: code, invalid_code: invalid_code)
+    end
 
-      if challenge.expires_at <= Time.current
-        challenge.update!(status: "EXPIRED")
-        raise_validation_error!("challenge_expired", "Confirmation challenge is expired.")
-      end
+    def ensure_confirmation_code_present!(code:, invalid_code:)
+      return if code.to_s.strip.present?
 
+      raise_validation_error!(invalid_code, "Confirmation code is required.")
+    end
+
+    def expire_challenge_if_needed!(challenge)
+      return if challenge.expires_at > Time.current
+
+      challenge.update!(status: "EXPIRED")
+      raise_validation_error!("challenge_expired", "Confirmation challenge is expired.")
+    end
+
+    def process_challenge_attempt!(challenge:, code:, invalid_code:)
       attempts = challenge.attempts + 1
-      if secure_compare_digest(digest(code), challenge.code_digest)
-        challenge.update!(status: "VERIFIED", consumed_at: Time.current, attempts: attempts)
-      else
-        updates = { attempts: attempts }
-        if attempts >= challenge.max_attempts
-          updates[:status] = "CANCELLED"
-          challenge.update!(updates)
-          raise_validation_error!("challenge_attempts_exceeded", "Confirmation challenge exceeded maximum attempts.")
-        end
+      return mark_challenge_verified!(challenge: challenge, attempts: attempts) if valid_confirmation_code?(challenge: challenge, code: code)
 
+      register_invalid_challenge_attempt!(challenge: challenge, attempts: attempts, invalid_code: invalid_code)
+    end
+
+    def valid_confirmation_code?(challenge:, code:)
+      secure_compare_digest(digest(code), challenge.code_digest)
+    end
+
+    def mark_challenge_verified!(challenge:, attempts:)
+      challenge.update!(status: "VERIFIED", consumed_at: Time.current, attempts: attempts)
+    end
+
+    def register_invalid_challenge_attempt!(challenge:, attempts:, invalid_code:)
+      updates = { attempts: attempts }
+      if attempts >= challenge.max_attempts
+        updates[:status] = "CANCELLED"
         challenge.update!(updates)
-        raise_validation_error!(invalid_code, "Confirmation code is invalid.")
+        raise_validation_error!("challenge_attempts_exceeded", "Confirmation challenge exceeded maximum attempts.")
       end
+
+      challenge.update!(updates)
+      raise_validation_error!(invalid_code, "Confirmation code is invalid.")
     end
 
     def ensure_replay_compatibility!(anticipation_request:, payload_hash:)
@@ -249,10 +263,8 @@ module AnticipationRequests
       payload = {
         anticipation_request_id: anticipation_request.id,
         idempotency_key: @idempotency_key,
-        confirmation_channels: CONFIRMATION_CHANNELS,
-        email_challenge_id: email_challenge.id,
-        whatsapp_challenge_id: whatsapp_challenge.id
-      }
+        confirmation_channels: CONFIRMATION_CHANNELS
+      }.merge(challenge_reference_payload(email_challenge:, whatsapp_challenge:))
 
       event_hash = Digest::SHA256.hexdigest(
         canonical_json(
@@ -312,6 +324,14 @@ module AnticipationRequests
         amount: funding_amount,
         receivable_origin: receivable_origin
       )
+      outbox_payload = build_fdic_funding_outbox_payload(
+        anticipation_request: anticipation_request,
+        provider: provider,
+        funding_amount: funding_amount,
+        funding_idempotency_key: funding_idempotency_key,
+        payload_hash: payload_hash,
+        receivable_origin: receivable_origin
+      )
 
       OutboxEvent.create!(
         tenant_id: @tenant_id,
@@ -320,36 +340,46 @@ module AnticipationRequests
         event_type: FDIC_FUNDING_OUTBOX_EVENT_TYPE,
         status: "PENDING",
         idempotency_key: funding_idempotency_key,
-        payload: {
-          "payload_hash" => payload_hash,
-          "anticipation_request_id" => anticipation_request.id,
-          "receivable_id" => anticipation_request.receivable_id,
-          "receivable_allocation_id" => anticipation_request.receivable_allocation_id,
-          "requester_party_id" => anticipation_request.requester_party_id,
-          "amount" => funding_amount,
-          "currency" => "BRL",
-          "provider" => provider,
-          "operation_kind" => "FUNDING_REQUEST",
-          "operation_idempotency_key" => funding_idempotency_key,
-          "provider_request_control_key" => funding_idempotency_key,
-          "requested_amount" => decimal_as_string(anticipation_request.requested_amount),
-          "discount_amount" => decimal_as_string(anticipation_request.discount_amount),
-          "net_amount" => funding_amount,
-          "receivable_origin" => receivable_origin
-        }
+        payload: outbox_payload
       )
     rescue ActiveRecord::RecordNotUnique
+      assert_outbox_payload_hash_matches!(
+        idempotency_key: funding_idempotency_key,
+        payload_hash: payload_hash,
+        code: "fdic_funding_idempotency_conflict",
+        message: "FDIC funding idempotency key was already used with a different payload."
+      )
+    end
+
+    def build_fdic_funding_outbox_payload(anticipation_request:, provider:, funding_amount:, funding_idempotency_key:, payload_hash:, receivable_origin:)
+      {
+        "payload_hash" => payload_hash,
+        "anticipation_request_id" => anticipation_request.id,
+        "receivable_id" => anticipation_request.receivable_id,
+        "receivable_allocation_id" => anticipation_request.receivable_allocation_id,
+        "requester_party_id" => anticipation_request.requester_party_id,
+        "amount" => funding_amount,
+        "currency" => "BRL",
+        "provider" => provider,
+        "operation_kind" => "FUNDING_REQUEST",
+        "operation_idempotency_key" => funding_idempotency_key,
+        "provider_request_control_key" => funding_idempotency_key,
+        "requested_amount" => decimal_as_string(anticipation_request.requested_amount),
+        "discount_amount" => decimal_as_string(anticipation_request.discount_amount),
+        "net_amount" => funding_amount,
+        "receivable_origin" => receivable_origin
+      }
+    end
+
+    def assert_outbox_payload_hash_matches!(idempotency_key:, payload_hash:, code:, message:)
       existing = OutboxEvent.find_by!(
         tenant_id: @tenant_id,
-        idempotency_key: funding_idempotency_key
+        idempotency_key: idempotency_key
       )
       stored_hash = existing.payload&.dig("payload_hash").to_s
       return if stored_hash.blank? || stored_hash == payload_hash
 
-      raise IdempotencyConflict.new(
-        code: "fdic_funding_idempotency_conflict",
-        message: "FDIC funding idempotency key was already used with a different payload."
-      )
+      raise IdempotencyConflict.new(code: code, message: message)
     end
 
     def create_failure_log(error:, anticipation_request_id:, actor_party_id:)
@@ -431,10 +461,7 @@ module AnticipationRequests
     end
 
     def receivable_origin_payload(receivable)
-      ownership = HospitalOwnership
-        .where(tenant_id: @tenant_id, hospital_party_id: receivable.debtor_party_id, active: true)
-        .includes(:organization_party)
-        .first
+      ownership = active_hospital_ownership(hospital_party_id: receivable.debtor_party_id)
 
       {
         "receivable_id" => receivable.id,
@@ -446,6 +473,20 @@ module AnticipationRequests
         "organization_legal_name" => ownership&.organization_party&.legal_name,
         "organization_document_number" => ownership&.organization_party&.document_number
       }.compact
+    end
+
+    def active_hospital_ownership(hospital_party_id:)
+      HospitalOwnership
+        .where(tenant_id: @tenant_id, hospital_party_id: hospital_party_id, active: true)
+        .includes(:organization_party)
+        .first
+    end
+
+    def challenge_reference_payload(email_challenge:, whatsapp_challenge:)
+      {
+        email_challenge_id: email_challenge.id,
+        whatsapp_challenge_id: whatsapp_challenge.id
+      }
     end
 
     def normalized_metadata(raw_metadata)
