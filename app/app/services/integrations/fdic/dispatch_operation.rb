@@ -175,20 +175,24 @@ module Integrations
 
       def persist_pending_operation!(operation:, outbox_event:, source:, provider_code:, operation_type:, amount:, currency:, payload_hash:, payload:)
         operation.assign_attributes(
-          tenant_id: outbox_event.tenant_id,
-          anticipation_request_id: source[:anticipation_request]&.id,
-          receivable_payment_settlement_id: source[:settlement]&.id,
-          provider: provider_code,
-          operation_type: operation_type,
-          status: "PENDING",
-          amount: amount,
-          currency: currency,
-          requested_at: operation.requested_at || Time.current,
-          metadata: merge_metadata(operation.metadata, {
-            PAYLOAD_HASH_METADATA_KEY => payload_hash,
-            "outbox_event_id" => outbox_event.id,
-            "payload" => payload
-          })
+          source_reference_attributes(
+            anticipation_request: source[:anticipation_request],
+            settlement: source[:settlement]
+          ).merge(
+            tenant_id: outbox_event.tenant_id,
+            provider: provider_code,
+            operation_type: operation_type,
+            status: "PENDING",
+            amount: amount,
+            currency: currency,
+            requested_at: operation.requested_at || Time.current,
+            metadata: merged_operation_metadata(
+              existing_metadata: operation.metadata,
+              outbox_event: outbox_event,
+              payload: payload,
+              extra: { PAYLOAD_HASH_METADATA_KEY => payload_hash }
+            )
+          )
         )
         operation.save! if operation.new_record? || operation.changed?
       end
@@ -334,10 +338,12 @@ module Integrations
           processed_at: status == "SENT" ? now : nil,
           last_error_code: nil,
           last_error_message: nil,
-          metadata: merge_metadata(operation.metadata, {
-            "payload" => payload,
-            "provider_result" => normalize_metadata(provider_result.metadata)
-          })
+          metadata: merged_operation_metadata(
+            existing_metadata: operation.metadata,
+            outbox_event: nil,
+            payload: payload,
+            extra: { "provider_result" => normalize_metadata(provider_result.metadata) }
+          )
         )
         operation.save!
         operation
@@ -351,11 +357,12 @@ module Integrations
           processed_at: nil,
           last_error_code: error.code,
           last_error_message: error.message.to_s.truncate(500),
-          metadata: merge_metadata(operation.metadata, {
-            "outbox_event_id" => outbox_event.id,
-            "payload" => payload,
-            "error_details" => error.details
-          })
+          metadata: merged_operation_metadata(
+            existing_metadata: operation.metadata,
+            outbox_event: outbox_event,
+            payload: payload,
+            extra: { "error_details" => error.details }
+          )
         )
         operation.save!
 
@@ -437,6 +444,19 @@ module Integrations
           occurred_at: Time.current,
           metadata: normalize_metadata(metadata)
         )
+      end
+
+      def source_reference_attributes(anticipation_request:, settlement:)
+        {
+          anticipation_request_id: anticipation_request&.id,
+          receivable_payment_settlement_id: settlement&.id
+        }
+      end
+
+      def merged_operation_metadata(existing_metadata:, outbox_event:, payload:, extra: {})
+        base = { "payload" => payload }.merge(extra)
+        base["outbox_event_id"] = outbox_event.id if outbox_event.present?
+        merge_metadata(existing_metadata, base)
       end
 
       def merge_metadata(existing, incoming)
