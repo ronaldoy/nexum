@@ -212,20 +212,24 @@ module Integrations
 
       def persist_pending_payout!(payout:, outbox_event:, source:, recipient_party:, escrow_account:, provider_code:, amount:, payload:)
         payout.assign_attributes(
-          tenant_id: outbox_event.tenant_id,
-          anticipation_request_id: source[:anticipation_request]&.id,
-          receivable_payment_settlement_id: source[:settlement]&.id,
-          party_id: recipient_party.id,
-          escrow_account_id: escrow_account.id,
-          provider: provider_code,
-          status: payout.status.presence || "PENDING",
-          amount: amount,
-          currency: "BRL",
-          requested_at: payout.requested_at || Time.current,
-          metadata: merge_metadata(payout.metadata, {
-            "outbox_event_id" => outbox_event.id,
-            "payload" => payload
-          })
+          source_reference_attributes(
+            anticipation_request: source[:anticipation_request],
+            settlement: source[:settlement]
+          ).merge(
+            tenant_id: outbox_event.tenant_id,
+            party_id: recipient_party.id,
+            escrow_account_id: escrow_account.id,
+            provider: provider_code,
+            status: payout.status.presence || "PENDING",
+            amount: amount,
+            currency: "BRL",
+            requested_at: payout.requested_at || Time.current,
+            metadata: merged_payout_metadata(
+              existing_metadata: payout.metadata,
+              outbox_event: outbox_event,
+              payload: payload
+            )
+          )
         )
         payout.save! if payout.new_record? || payout.changed?
       end
@@ -282,7 +286,7 @@ module Integrations
           provider: provider.provider_code
         )
 
-        if account.present? && account.status == "ACTIVE" && account.provider_account_id.present?
+        if active_escrow_account?(account)
           return account
         end
 
@@ -295,7 +299,7 @@ module Integrations
             provider_code: provider.provider_code,
             seed: metadata_seed
           )
-          return account if account.status == "ACTIVE" && account.provider_account_id.present?
+          return account if active_escrow_account?(account)
         end
 
         provision_result = provider.open_escrow_account!(
@@ -319,7 +323,7 @@ module Integrations
         account.metadata = merge_metadata(account.metadata, provision_result.metadata)
         account.save!
 
-        if account.status != "ACTIVE" || account.provider_account_id.blank?
+        unless active_escrow_account?(account)
           raise ValidationError.new(
             code: "escrow_account_not_active",
             message: "Escrow account is not active yet.",
@@ -354,29 +358,37 @@ module Integrations
         account
       end
 
+      def active_escrow_account?(account)
+        account.present? && account.status == "ACTIVE" && account.provider_account_id.present?
+      end
+
       def persist_payout_success!(payout:, outbox_event:, anticipation_request:, settlement:, recipient_party:, escrow_account:, provider_code:, amount:, payout_result:, payload:)
         now = Time.current
 
         payout.assign_attributes(
-          tenant_id: outbox_event.tenant_id,
-          anticipation_request_id: anticipation_request&.id,
-          receivable_payment_settlement_id: settlement&.id,
-          party_id: recipient_party.id,
-          escrow_account_id: escrow_account.id,
-          provider: provider_code,
-          status: payout_result.status.to_s.upcase,
-          amount: amount,
-          currency: "BRL",
-          requested_at: payout.requested_at || now,
-          processed_at: payout_result.status.to_s.upcase == "SENT" ? now : nil,
-          provider_transfer_id: payout_result.provider_transfer_id,
-          last_error_code: nil,
-          last_error_message: nil,
-          metadata: merge_metadata(payout.metadata, {
-            "outbox_event_id" => outbox_event.id,
-            "payload" => payload,
-            "provider_result" => payout_result.metadata
-          })
+          source_reference_attributes(
+            anticipation_request: anticipation_request,
+            settlement: settlement
+          ).merge(
+            tenant_id: outbox_event.tenant_id,
+            party_id: recipient_party.id,
+            escrow_account_id: escrow_account.id,
+            provider: provider_code,
+            status: payout_result.status.to_s.upcase,
+            amount: amount,
+            currency: "BRL",
+            requested_at: payout.requested_at || now,
+            processed_at: payout_result.status.to_s.upcase == "SENT" ? now : nil,
+            provider_transfer_id: payout_result.provider_transfer_id,
+            last_error_code: nil,
+            last_error_message: nil,
+            metadata: merged_payout_metadata(
+              existing_metadata: payout.metadata,
+              outbox_event: outbox_event,
+              payload: payload,
+              extra: { "provider_result" => payout_result.metadata }
+            )
+          )
         )
         payout.save!
         payout
@@ -386,22 +398,26 @@ module Integrations
         return if payout.blank?
 
         payout.assign_attributes(
-          tenant_id: outbox_event.tenant_id,
-          anticipation_request_id: anticipation_request&.id,
-          receivable_payment_settlement_id: settlement&.id,
-          party_id: recipient_party&.id,
-          provider: provider_code.to_s.presence || payout.provider || ProviderConfig::DEFAULT_PROVIDER,
-          amount: amount.to_d.positive? ? amount : payout.amount,
-          currency: "BRL",
-          status: "FAILED",
-          requested_at: payout.requested_at || Time.current,
-          last_error_code: error.code,
-          last_error_message: error.message.to_s.truncate(500),
-          metadata: merge_metadata(payout.metadata, {
-            "outbox_event_id" => outbox_event.id,
-            "payload" => payload,
-            "error_details" => error.details
-          })
+          source_reference_attributes(
+            anticipation_request: anticipation_request,
+            settlement: settlement
+          ).merge(
+            tenant_id: outbox_event.tenant_id,
+            party_id: recipient_party&.id,
+            provider: provider_code.to_s.presence || payout.provider || ProviderConfig::DEFAULT_PROVIDER,
+            amount: amount.to_d.positive? ? amount : payout.amount,
+            currency: "BRL",
+            status: "FAILED",
+            requested_at: payout.requested_at || Time.current,
+            last_error_code: error.code,
+            last_error_message: error.message.to_s.truncate(500),
+            metadata: merged_payout_metadata(
+              existing_metadata: payout.metadata,
+              outbox_event: outbox_event,
+              payload: payload,
+              extra: { "error_details" => error.details }
+            )
+          )
         )
         payout.save!
 
@@ -440,6 +456,20 @@ module Integrations
           occurred_at: Time.current,
           metadata: normalize_metadata(metadata)
         )
+      end
+
+      def source_reference_attributes(anticipation_request:, settlement:)
+        {
+          anticipation_request_id: anticipation_request&.id,
+          receivable_payment_settlement_id: settlement&.id
+        }
+      end
+
+      def merged_payout_metadata(existing_metadata:, outbox_event:, payload:, extra: {})
+        merge_metadata(existing_metadata, {
+          "outbox_event_id" => outbox_event.id,
+          "payload" => payload
+        }.merge(extra))
       end
 
       def ensure_party_payable!(party)
