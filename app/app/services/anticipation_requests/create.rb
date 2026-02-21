@@ -171,19 +171,12 @@ module AnticipationRequests
 
     def normalize_intent(raw_payload, default_requester_party_id:)
       payload = raw_payload.to_h.deep_symbolize_keys
-      requester_party_id = payload[:requester_party_id].presence || default_requester_party_id
-      raise_validation_error!("requester_party_required", "Requester party is required.") if requester_party_id.blank?
-
-      channel = payload[:channel].presence || "API"
-      normalized_channel = channel.to_s.upcase
-      unless AnticipationRequest::CHANNELS.include?(normalized_channel)
-        raise_validation_error!("invalid_channel", "Channel is invalid.")
-      end
-
-      metadata = normalize_metadata(payload[:metadata] || {})
-      unless metadata.is_a?(Hash)
-        raise_validation_error!("invalid_metadata", "Metadata must be a JSON object.")
-      end
+      requester_party_id = normalize_requester_party_id(
+        payload_requester_party_id: payload[:requester_party_id],
+        default_requester_party_id: default_requester_party_id
+      )
+      normalized_channel = normalize_channel(payload[:channel])
+      metadata = normalize_intent_metadata(payload[:metadata])
 
       Intent.new(
         receivable_id: payload[:receivable_id].to_s,
@@ -194,6 +187,28 @@ module AnticipationRequests
         channel: normalized_channel,
         metadata:
       )
+    end
+
+    def normalize_requester_party_id(payload_requester_party_id:, default_requester_party_id:)
+      requester_party_id = payload_requester_party_id.presence || default_requester_party_id
+      raise_validation_error!("requester_party_required", "Requester party is required.") if requester_party_id.blank?
+
+      requester_party_id.to_s
+    end
+
+    def normalize_channel(raw_channel)
+      channel = raw_channel.presence || "API"
+      normalized_channel = channel.to_s.upcase
+      return normalized_channel if AnticipationRequest::CHANNELS.include?(normalized_channel)
+
+      raise_validation_error!("invalid_channel", "Channel is invalid.")
+    end
+
+    def normalize_intent_metadata(raw_metadata)
+      metadata = normalize_metadata(raw_metadata || {})
+      return metadata if metadata.is_a?(Hash)
+
+      raise_validation_error!("invalid_metadata", "Metadata must be a JSON object.")
     end
 
     def parse_decimal(raw_value, field:)
@@ -388,7 +403,11 @@ module AnticipationRequests
     end
 
     def idempotency_payload_hash(intent)
-      payload = {
+      Digest::SHA256.hexdigest(canonical_json(idempotency_payload(intent)))
+    end
+
+    def idempotency_payload(intent)
+      {
         receivable_id: intent.receivable_id,
         receivable_allocation_id: intent.receivable_allocation_id,
         requester_party_id: intent.requester_party_id,
@@ -397,8 +416,6 @@ module AnticipationRequests
         channel: intent.channel,
         metadata: intent.metadata
       }
-
-      Digest::SHA256.hexdigest(canonical_json(payload))
     end
 
     def canonical_json(value)
