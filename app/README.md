@@ -75,11 +75,15 @@ For full architecture, domain flow, and demo walkthrough see root `README.md`.
   - `QITECH_PRIVATE_KEY`
   - `QITECH_KEY_ID`
   - `QITECH_SOURCE_ACCOUNT_KEY`
-  - `QITECH_WEBHOOK_SECRET` or `QITECH_WEBHOOK_TOKEN`
+  - `QITECH_WEBHOOK_SECRET__<TENANT_SLUG>` or `QITECH_WEBHOOK_TOKEN__<TENANT_SLUG>`
   - `QITECH_OPEN_TIMEOUT_SECONDS`
   - `QITECH_READ_TIMEOUT_SECONDS`
 - StarkBank (feature-flagged):
-  - `STARKBANK_WEBHOOK_SECRET` or `STARKBANK_WEBHOOK_TOKEN`
+  - `STARKBANK_WEBHOOK_SECRET__<TENANT_SLUG>` or `STARKBANK_WEBHOOK_TOKEN__<TENANT_SLUG>`
+
+Webhook auth credentials are tenant-scoped and resolved from:
+- `integrations.<provider>.webhooks.tenants.<tenant_slug>.webhook_secret`
+- `integrations.<provider>.webhooks.tenants.<tenant_slug>.webhook_token`
 
 ### Party onboarding metadata
 - Account opening payload:

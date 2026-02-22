@@ -1,0 +1,20 @@
+title = "Nexum Secret Scanning"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Ignore generated/runtime artifacts and large binary collateral outside app source."
+paths = [
+  '''^\.bundle-home/''',
+  '''^\.cache/''',
+  '''^app/log/''',
+  '''^app/tmp/''',
+  '''^app/vendor/''',
+  '''^Apresentacao Antecipacao v1\.1\.pptx$''',
+  '''^Apresentacao Antecipacao v1\.1\.pptx\.pdf$''',
+  '''^fluxo_antecipacao\.docx$'''
+]
+regexes = [
+  '''^(?:idem|settle)-[a-z0-9-]+$'''
+]

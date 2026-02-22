@@ -5,6 +5,11 @@
 
 # Environment files
 .env
+credentials.md
+
+# Local secret scan outputs
+.gitleaks-report*.json
+.gitleaks-report*.sarif
 
 # Rails runtime/build artifacts under app/
 app/log/*

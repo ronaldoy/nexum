@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+GITLEAKS_IMAGE="ghcr.io/gitleaks/gitleaks:v8.24.2"
+
+if command -v gitleaks >/dev/null 2>&1; then
+  exec gitleaks git --staged --config "$REPO_ROOT/.gitleaks.toml" --redact
+fi
+
+if command -v docker >/dev/null 2>&1; then
+  exec docker run --rm \
+    -v "$REPO_ROOT:/repo" \
+    -w /repo \
+    "$GITLEAKS_IMAGE" \
+    git --staged --config .gitleaks.toml --redact
+fi
+
+echo "pre-commit secret scan failed: install gitleaks or docker." >&2
+exit 1

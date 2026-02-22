@@ -34,6 +34,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Scan repository for leaked secrets
+        run: ../bin/secret-scan --no-banner
+
       - name: Install PostgreSQL client headers
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libpq-dev
 

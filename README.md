@@ -107,12 +107,16 @@ Configure via Rails credentials (`integrations.qitech.*`) or environment:
 - `QITECH_PRIVATE_KEY`
 - `QITECH_KEY_ID`
 - `QITECH_SOURCE_ACCOUNT_KEY`
-- `QITECH_WEBHOOK_SECRET` or `QITECH_WEBHOOK_TOKEN`
+- `QITECH_WEBHOOK_SECRET__<TENANT_SLUG>` or `QITECH_WEBHOOK_TOKEN__<TENANT_SLUG>`
 - `QITECH_OPEN_TIMEOUT_SECONDS`
 - `QITECH_READ_TIMEOUT_SECONDS`
-- `STARKBANK_WEBHOOK_SECRET` or `STARKBANK_WEBHOOK_TOKEN`
+- `STARKBANK_WEBHOOK_SECRET__<TENANT_SLUG>` or `STARKBANK_WEBHOOK_TOKEN__<TENANT_SLUG>`
 - `ESCROW_DEFAULT_PROVIDER` (`QITECH` in v1)
 - `ESCROW_ENABLE_STARKBANK` (`false` by default)
+
+Webhook auth credentials are tenant-scoped and resolved from:
+- `integrations.<provider>.webhooks.tenants.<tenant_slug>.webhook_secret`
+- `integrations.<provider>.webhooks.tenants.<tenant_slug>.webhook_token`
 
 For account opening, provide provider-specific payload in party metadata:
 
@@ -187,6 +191,14 @@ rv ruby run -- -S bin/rails server
 - Dependabot: `.github/dependabot.yml`
 - Kamal scaffold: `app/config/deploy.yml`
 - Upright monitor deploy scaffold: `monitoring/upright/config/deploy.yml`
+
+### Secret scanning guardrails
+
+- Repository scanning command:
+  - `./bin/secret-scan --no-banner`
+- Local pre-commit enforcement:
+  - `./bin/setup-git-hooks`
+- Pre-commit hook scans staged changes with `gitleaks` (or Docker fallback) and blocks commits on detected secrets.
 
 ## Monitoring (37signals Upright)
 
