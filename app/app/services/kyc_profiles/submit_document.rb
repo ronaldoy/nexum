@@ -4,6 +4,7 @@ module KycProfiles
   class SubmitDocument
     include Idempotency::OutboxReplayValidation
     include DirectUploads::BlobValidation
+    include Metadata::ClientMetadataSanitization
 
     OUTBOX_EVENT_TYPE = "KYC_DOCUMENT_SUBMITTED".freeze
     TARGET_TYPE = "KycProfile".freeze
@@ -214,26 +215,12 @@ module KycProfiles
       provided_storage_key.presence || blob.key
     end
 
-    def sanitize_client_metadata(raw_metadata)
-      metadata = normalize_metadata(raw_metadata)
-      unless metadata.is_a?(Hash)
-        raise_validation_error!("invalid_metadata", "metadata must be a JSON object.")
-      end
-
-      MetadataSanitizer.sanitize(
-        metadata,
-        allowed_keys: allowed_client_metadata_keys
-      )
+    def metadata_allowed_keys_credential_key
+      :kyc_document_metadata_allowed_keys
     end
 
-    def allowed_client_metadata_keys
-      configured = Rails.app.creds.option(
-        :security,
-        :kyc_document_metadata_allowed_keys,
-        default: ENV["KYC_DOCUMENT_METADATA_ALLOWED_KEYS"]
-      )
-      keys = Array(configured).flat_map { |value| value.to_s.split(",") }.map { |value| value.strip }.reject(&:blank?)
-      keys.presence || DEFAULT_CLIENT_METADATA_KEYS
+    def metadata_allowed_keys_env_var
+      "KYC_DOCUMENT_METADATA_ALLOWED_KEYS"
     end
 
     def parse_date(raw_date, field:)
