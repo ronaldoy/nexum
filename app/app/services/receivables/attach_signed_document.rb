@@ -2,6 +2,8 @@ require "digest"
 
 module Receivables
   class AttachSignedDocument
+    include DirectUploads::BlobValidation
+
     OUTBOX_EVENT_TYPE = "RECEIVABLE_DOCUMENT_ATTACHED".freeze
     TARGET_TYPE = "Receivable".freeze
     PAYLOAD_HASH_KEY = "payload_hash".freeze
@@ -317,55 +319,12 @@ module Receivables
       raise_validation_error!("invalid_#{field}", "#{field} is invalid.")
     end
 
-    def resolve_blob(raw_signed_id:)
-      signed_id = raw_signed_id.to_s.strip
-      return nil if signed_id.blank?
-
-      ActiveStorage::Blob.find_signed!(signed_id)
-    rescue ActiveSupport::MessageVerifier::InvalidSignature, ActiveRecord::RecordNotFound
-      raise_validation_error!("invalid_blob_signed_id", "blob_signed_id is invalid.")
-    end
-
     def validate_blob_sha256!(blob:, expected_sha256:)
       actual = Digest::SHA256.hexdigest(blob.download)
       return if expected_sha256.bytesize == actual.bytesize &&
         ActiveSupport::SecurityUtils.secure_compare(actual, expected_sha256)
 
       raise_validation_error!("sha256_mismatch", "sha256 does not match uploaded content.")
-    end
-
-    def validate_blob_tenant_metadata!(blob:)
-      metadata_tenant_id = blob.metadata&.dig("tenant_id").to_s.strip
-      if metadata_tenant_id.blank?
-        raise_validation_error!("missing_blob_tenant_metadata", "blob metadata tenant is required.")
-      end
-      return if metadata_tenant_id == @tenant_id.to_s
-
-      raise_validation_error!("blob_tenant_mismatch", "blob metadata tenant does not match request tenant.")
-    end
-
-    def validate_blob_actor_party_metadata!(blob:, expected_actor_party_id:)
-      return unless enforce_blob_actor_metadata?(blob)
-
-      metadata_actor_party_id = blob.metadata&.dig("actor_party_id").to_s.strip
-      if metadata_actor_party_id.blank?
-        raise_validation_error!("missing_blob_actor_party_metadata", "blob metadata actor party is required.")
-      end
-      return if metadata_actor_party_id == expected_actor_party_id.to_s
-
-      raise_validation_error!("blob_actor_party_mismatch", "blob metadata actor party does not match request actor.")
-    end
-
-    def enforce_blob_actor_metadata?(blob)
-      metadata = blob.metadata.is_a?(Hash) ? blob.metadata : {}
-      metadata["direct_upload_actor_key"].to_s.strip.present? ||
-        metadata["direct_upload_idempotency_key"].to_s.strip.present?
-    end
-
-    def attach_blob!(record:, blob:)
-      return if blob.blank?
-
-      record.file.attach(blob)
     end
 
     def resolve_actor_party!(actor_party_id)
