@@ -37,7 +37,14 @@ module Metadata
     end
 
     def default_client_metadata_keys
-      self.class::DEFAULT_CLIENT_METADATA_KEYS
+      required_class_constant!(:DEFAULT_CLIENT_METADATA_KEYS)
+    end
+
+    def required_class_constant!(constant_name)
+      return self.class.const_get(constant_name) if self.class.const_defined?(constant_name)
+
+      raise NotImplementedError,
+        "#{self.class.name} must define #{constant_name} to include Metadata::ClientMetadataSanitization."
     end
   end
 end

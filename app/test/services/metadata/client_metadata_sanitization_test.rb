@@ -52,6 +52,41 @@ module Metadata
       end
     end
 
+    class MissingDefaultKeysService
+      include Metadata::ClientMetadataSanitization
+
+      class ValidationError < StandardError
+        attr_reader :code
+
+        def initialize(code:, message:)
+          super(message)
+          @code = code
+        end
+      end
+
+      private
+
+      def metadata_allowed_keys_credential_key
+        :dummy_metadata_allowed_keys
+      end
+
+      def metadata_allowed_keys_env_var
+        "DUMMY_METADATA_ALLOWED_KEYS"
+      end
+
+      def configured_metadata_allowed_keys
+        nil
+      end
+
+      def normalize_metadata(raw_metadata)
+        raw_metadata
+      end
+
+      def raise_validation_error!(code, message)
+        raise ValidationError.new(code:, message:)
+      end
+    end
+
     setup do
       @service = DummyService.new
       @env_key = "DUMMY_METADATA_ALLOWED_KEYS"
@@ -116,6 +151,16 @@ module Metadata
 
       assert_equal "invalid_metadata", error.code
       assert_equal "metadata must be a JSON object.", error.message
+    end
+
+    test "raises not implemented error when default allowed keys constant is missing" do
+      service = MissingDefaultKeysService.new
+
+      error = assert_raises(NotImplementedError) do
+        service.send(:allowed_client_metadata_keys)
+      end
+
+      assert_includes error.message, "MissingDefaultKeysService must define DEFAULT_CLIENT_METADATA_KEYS"
     end
   end
 end
