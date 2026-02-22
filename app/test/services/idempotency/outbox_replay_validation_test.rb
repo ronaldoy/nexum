@@ -2,7 +2,7 @@ require "test_helper"
 
 module Idempotency
   class OutboxReplayValidationTest < ActiveSupport::TestCase
-    OutboxDouble = Struct.new(:event_type, :aggregate_type, :payload, keyword_init: true)
+    OutboxDouble = Struct.new(:id, :event_type, :aggregate_type, :payload, keyword_init: true)
 
     class DummyService
       include Idempotency::OutboxReplayValidation
@@ -32,7 +32,7 @@ module Idempotency
     class LegacyPayloadHashService < DummyService
       private
 
-      def allow_blank_replay_payload_hash?
+      def allow_blank_replay_payload_hash?(existing_outbox:)
         true
       end
     end
@@ -59,6 +59,7 @@ module Idempotency
 
     test "accepts replay when outbox operation matches expected operation" do
       outbox = OutboxDouble.new(
+        id: SecureRandom.uuid,
         event_type: "TEST_EVENT",
         aggregate_type: "TestAggregate",
         payload: {}
@@ -71,6 +72,7 @@ module Idempotency
 
     test "rejects replay when outbox operation differs from expected operation" do
       outbox = OutboxDouble.new(
+        id: SecureRandom.uuid,
         event_type: "OTHER_EVENT",
         aggregate_type: "TestAggregate",
         payload: {}
@@ -86,6 +88,7 @@ module Idempotency
 
     test "accepts replay when payload hash matches" do
       outbox = OutboxDouble.new(
+        id: SecureRandom.uuid,
         event_type: "TEST_EVENT",
         aggregate_type: "TestAggregate",
         payload: { "payload_hash" => "abc123" }
@@ -98,6 +101,7 @@ module Idempotency
 
     test "rejects replay when outbox payload hash is missing" do
       outbox = OutboxDouble.new(
+        id: SecureRandom.uuid,
         event_type: "TEST_EVENT",
         aggregate_type: "TestAggregate",
         payload: {}
@@ -113,6 +117,7 @@ module Idempotency
 
     test "rejects replay when payload hash differs" do
       outbox = OutboxDouble.new(
+        id: SecureRandom.uuid,
         event_type: "TEST_EVENT",
         aggregate_type: "TestAggregate",
         payload: { "payload_hash" => "stored-hash" }
@@ -128,6 +133,7 @@ module Idempotency
 
     test "supports custom payload conflict message overrides" do
       outbox = OutboxDouble.new(
+        id: SecureRandom.uuid,
         event_type: "TEST_EVENT",
         aggregate_type: "TestAggregate",
         payload: { "payload_hash" => "stored-hash" }
@@ -143,6 +149,7 @@ module Idempotency
 
     test "supports legacy explicit opt-in to allow blank stored payload hash" do
       outbox = OutboxDouble.new(
+        id: SecureRandom.uuid,
         event_type: "TEST_EVENT",
         aggregate_type: "TestAggregate",
         payload: {}
@@ -156,6 +163,7 @@ module Idempotency
 
     test "raises not implemented error when required constants are missing" do
       outbox = OutboxDouble.new(
+        id: SecureRandom.uuid,
         event_type: "ANY_EVENT",
         aggregate_type: "TestAggregate",
         payload: {}
@@ -167,6 +175,32 @@ module Idempotency
       end
 
       assert_includes error.message, "MissingEventTypeService must define OUTBOX_EVENT_TYPE"
+    end
+
+    test "emits idempotency conflict notification payload" do
+      outbox = OutboxDouble.new(
+        id: "outbox-1",
+        event_type: "TEST_EVENT",
+        aggregate_type: "TestAggregate",
+        payload: {}
+      )
+      events = []
+
+      subscriber = ActiveSupport::Notifications.subscribe("idempotency.conflict") do |*args|
+        events << ActiveSupport::Notifications::Event.new(*args)
+      end
+
+      assert_raises(DummyService::IdempotencyConflict) do
+        @service.send(:ensure_replay_payload_hash!, existing_outbox: outbox, payload_hash: "incoming-hash")
+      end
+
+      assert_equal 1, events.size
+      payload = events.first.payload
+      assert_equal "idempotency_key_reused_without_payload_hash", payload[:code]
+      assert_equal "Idempotency::OutboxReplayValidationTest::DummyService", payload[:service]
+      assert_equal "outbox-1", payload[:outbox_event_id]
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
     end
   end
 end

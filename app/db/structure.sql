@@ -968,6 +968,7 @@ CREATE TABLE public.outbox_events (
     payload jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT outbox_events_idempotency_payload_hash_present_check CHECK (((idempotency_key IS NULL) OR (created_at < '2026-02-21 21:00:00-03'::timestamp with time zone) OR (NULLIF(btrim((payload ->> 'payload_hash'::text)), ''::text) IS NOT NULL))),
     CONSTRAINT outbox_events_status_check CHECK (((status)::text = ANY (ARRAY[('PENDING'::character varying)::text, ('SENT'::character varying)::text, ('FAILED'::character varying)::text, ('CANCELLED'::character varying)::text])))
 );
 
@@ -4847,6 +4848,7 @@ CREATE POLICY webauthn_credentials_tenant_policy ON public.webauthn_credentials 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260222103000'),
 ('20260221162000'),
 ('20260221143000'),
 ('20260220103000'),

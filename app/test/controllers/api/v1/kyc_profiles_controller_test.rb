@@ -148,6 +148,43 @@ module Api
         assert_equal "idempotency_key_reused_with_different_payload", response.parsed_body.dig("error", "code")
       end
 
+      test "returns conflict when kyc profile replay evidence is missing payload hash" do
+        party = nil
+        profile = nil
+        idempotency_key = "idem-kyc-profile-missing-hash-001"
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          party = create_physician_party!(tenant: @tenant, suffix: "profile-missing-hash")
+          profile = KycProfile.create!(
+            tenant: @tenant,
+            party: party,
+            status: "DRAFT",
+            risk_level: "UNKNOWN",
+            metadata: {}
+          )
+          insert_legacy_outbox_without_payload_hash!(
+            tenant_id: @tenant.id,
+            aggregate_type: "KycProfile",
+            aggregate_id: profile.id,
+            event_type: "KYC_PROFILE_CREATED",
+            idempotency_key: idempotency_key,
+            payload: { "kyc_profile_id" => profile.id }
+          )
+        end
+
+        post api_v1_kyc_profiles_path,
+          headers: authorization_headers(@write_token, idempotency_key: idempotency_key),
+          params: {
+            kyc_profile: {
+              party_id: party.id
+            }
+          },
+          as: :json
+
+        assert_response :conflict
+        assert_equal "idempotency_key_reused_without_payload_hash", response.parsed_body.dig("error", "code")
+      end
+
       test "returns unprocessable entity when kyc profile already exists and logs failure" do
         post api_v1_kyc_profiles_path,
           headers: authorization_headers(@write_token, idempotency_key: "idem-kyc-profile-existing-001"),
@@ -315,6 +352,58 @@ module Api
         assert_equal "idempotency_key_reused_with_different_payload", response.parsed_body.dig("error", "code")
       end
 
+      test "returns conflict when kyc document replay evidence is missing payload hash" do
+        idempotency_key = "idem-kyc-doc-missing-hash-001"
+        document_id = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          document = KycDocument.create!(
+            tenant: @tenant,
+            kyc_profile: @kyc_profile,
+            party: @party,
+            document_type: "RG",
+            issuing_country: "BR",
+            issuing_state: "SP",
+            is_key_document: false,
+            status: "SUBMITTED",
+            storage_key: "kyc/legacy-controller-submit.pdf",
+            sha256: "sha-legacy-controller-submit",
+            metadata: {}
+          )
+          document_id = document.id
+
+          insert_legacy_outbox_without_payload_hash!(
+            tenant_id: @tenant.id,
+            aggregate_type: "KycProfile",
+            aggregate_id: @kyc_profile.id,
+            event_type: "KYC_DOCUMENT_SUBMITTED",
+            idempotency_key: idempotency_key,
+            payload: {
+              "kyc_profile_id" => @kyc_profile.id,
+              "kyc_document_id" => document.id
+            }
+          )
+        end
+
+        post submit_document_api_v1_kyc_profile_path(@kyc_profile.id),
+          headers: authorization_headers(@write_token, idempotency_key: idempotency_key),
+          params: {
+            kyc_document: {
+              document_type: "RG",
+              storage_key: "kyc/input-controller-submit.pdf",
+              sha256: "sha-input-controller-submit"
+            }
+          },
+          as: :json
+
+        assert_response :conflict
+        assert_equal "idempotency_key_reused_without_payload_hash", response.parsed_body.dig("error", "code")
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          assert_equal 1, KycDocument.where(tenant_id: @tenant.id, id: document_id).count
+        end
+      end
+
       test "returns unprocessable entity for invalid kyc document payload" do
         post submit_document_api_v1_kyc_profile_path(@kyc_profile.id),
           headers: authorization_headers(@write_token, idempotency_key: "idem-kyc-doc-invalid-001"),
@@ -458,6 +547,30 @@ module Api
           legal_name: "Medico #{suffix}",
           document_number: valid_cpf_from_seed("physician-#{suffix}")
         )
+      end
+
+      def insert_legacy_outbox_without_payload_hash!(tenant_id:, aggregate_type:, aggregate_id:, event_type:, idempotency_key:, payload:)
+        connection = ActiveRecord::Base.connection
+        timestamp = Time.utc(2026, 2, 21, 23, 59, 59)
+        payload_json = payload.to_json
+
+        connection.execute(<<~SQL)
+          INSERT INTO outbox_events (
+            id, tenant_id, aggregate_type, aggregate_id, event_type, status, attempts, idempotency_key, payload, created_at, updated_at
+          ) VALUES (
+            #{connection.quote(SecureRandom.uuid)},
+            #{connection.quote(tenant_id)},
+            #{connection.quote(aggregate_type)},
+            #{connection.quote(aggregate_id)},
+            #{connection.quote(event_type)},
+            'PENDING',
+            0,
+            #{connection.quote(idempotency_key)},
+            #{connection.quote(payload_json)}::jsonb,
+            #{connection.quote(timestamp)},
+            #{connection.quote(timestamp)}
+          )
+        SQL
       end
     end
   end

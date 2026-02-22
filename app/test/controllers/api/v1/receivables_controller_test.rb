@@ -711,6 +711,61 @@ module Api
         assert_equal "idempotency_key_reused_with_different_payload", response.parsed_body.dig("error", "code")
       end
 
+      test "returns conflict when attach document replay evidence is missing payload hash" do
+        idempotency_key = "idem-document-missing-hash-001"
+        signed_at = Time.current
+        document = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          document = Document.create!(
+            tenant: @tenant,
+            receivable: @receivable,
+            actor_party: @receivable.creditor_party,
+            document_type: "ASSIGNMENT_CONTRACT",
+            signature_method: "OWN_PLATFORM_CONFIRMATION",
+            status: "SIGNED",
+            sha256: "sha-controller-missing-hash",
+            storage_key: "docs/controller-missing-hash.pdf",
+            signed_at: signed_at,
+            metadata: {}
+          )
+          insert_legacy_outbox_without_payload_hash!(
+            tenant_id: @tenant.id,
+            aggregate_type: "Receivable",
+            aggregate_id: @receivable.id,
+            event_type: "RECEIVABLE_DOCUMENT_ATTACHED",
+            idempotency_key: idempotency_key,
+            payload: {
+              "receivable_id" => @receivable.id,
+              "document_id" => document.id
+            }
+          )
+        end
+
+        post attach_document_api_v1_receivable_path(@receivable.id),
+          headers: authorization_headers(@document_token, idempotency_key: idempotency_key),
+          params: {
+            document: {
+              actor_party_id: @receivable.creditor_party_id,
+              document_type: "assignment_contract",
+              sha256: "sha-controller-input-missing-hash",
+              storage_key: "docs/controller-input-missing-hash.pdf",
+              signed_at: signed_at.iso8601,
+              provider_envelope_id: "env-controller-missing-hash",
+              email_challenge_id: SecureRandom.uuid,
+              whatsapp_challenge_id: SecureRandom.uuid
+            }
+          },
+          as: :json
+
+        assert_response :conflict
+        assert_equal "idempotency_key_reused_without_payload_hash", response.parsed_body.dig("error", "code")
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          assert_equal 1, Document.where(tenant_id: @tenant.id, id: document.id).count
+        end
+      end
+
       test "returns unprocessable entity for invalid attach document payload and logs failure" do
         post attach_document_api_v1_receivable_path(@receivable.id),
           headers: authorization_headers(@document_token, idempotency_key: "idem-document-invalid-001"),
@@ -1194,6 +1249,30 @@ module Api
           target_id: receivable.id,
           metadata: {}
         )
+      end
+
+      def insert_legacy_outbox_without_payload_hash!(tenant_id:, aggregate_type:, aggregate_id:, event_type:, idempotency_key:, payload:)
+        connection = ActiveRecord::Base.connection
+        timestamp = Time.utc(2026, 2, 21, 23, 59, 59)
+        payload_json = payload.to_json
+
+        connection.execute(<<~SQL)
+          INSERT INTO outbox_events (
+            id, tenant_id, aggregate_type, aggregate_id, event_type, status, attempts, idempotency_key, payload, created_at, updated_at
+          ) VALUES (
+            #{connection.quote(SecureRandom.uuid)},
+            #{connection.quote(tenant_id)},
+            #{connection.quote(aggregate_type)},
+            #{connection.quote(aggregate_id)},
+            #{connection.quote(event_type)},
+            'PENDING',
+            0,
+            #{connection.quote(idempotency_key)},
+            #{connection.quote(payload_json)}::jsonb,
+            #{connection.quote(timestamp)},
+            #{connection.quote(timestamp)}
+          )
+        SQL
       end
     end
   end

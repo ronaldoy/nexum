@@ -53,12 +53,11 @@ module KycProfiles
           risk_level: "UNKNOWN",
           metadata: {}
         )
-        OutboxEvent.create!(
+        insert_legacy_outbox_without_payload_hash!(
           tenant_id: @tenant.id,
           aggregate_type: "KycProfile",
           aggregate_id: profile.id,
           event_type: "KYC_PROFILE_CREATED",
-          status: "PENDING",
           idempotency_key: idempotency_key,
           payload: { "kyc_profile_id" => profile.id }
         )
@@ -84,6 +83,30 @@ module KycProfiles
         endpoint_path: "/api/v1/kyc_profiles",
         http_method: "POST"
       )
+    end
+
+    def insert_legacy_outbox_without_payload_hash!(tenant_id:, aggregate_type:, aggregate_id:, event_type:, idempotency_key:, payload:)
+      connection = ActiveRecord::Base.connection
+      timestamp = Time.utc(2026, 2, 21, 23, 59, 59)
+      payload_json = payload.to_json
+
+      connection.execute(<<~SQL)
+        INSERT INTO outbox_events (
+          id, tenant_id, aggregate_type, aggregate_id, event_type, status, attempts, idempotency_key, payload, created_at, updated_at
+        ) VALUES (
+          #{connection.quote(SecureRandom.uuid)},
+          #{connection.quote(tenant_id)},
+          #{connection.quote(aggregate_type)},
+          #{connection.quote(aggregate_id)},
+          #{connection.quote(event_type)},
+          'PENDING',
+          0,
+          #{connection.quote(idempotency_key)},
+          #{connection.quote(payload_json)}::jsonb,
+          #{connection.quote(timestamp)},
+          #{connection.quote(timestamp)}
+        )
+      SQL
     end
   end
 end
