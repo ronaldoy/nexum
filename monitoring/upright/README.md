@@ -43,6 +43,13 @@ Current probes monitor:
 - `GET /ready`
 - `GET /session/new`
 
+`/ready` in Nexum also covers security readiness and will return `503` when:
+
+- the application DB role is `SUPERUSER` or has `BYPASSRLS`.
+- rolling `idempotency.conflict` volume exceeds the configured threshold.
+
+This lets Upright + Alertmanager page on these regressions using the existing readiness probe.
+
 ## Production deploy (Kamal)
 
 From `monitoring/upright`:

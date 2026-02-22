@@ -207,6 +207,16 @@ rv ruby run -- -S bin/rails server
 - Nexum probe definitions: `monitoring/upright/probes/http_probes.yml.erb`
 - Probe scheduling: `monitoring/upright/config/recurring.yml`
 - Site topology: `monitoring/upright/config/sites.yml`
+- `/ready` includes security readiness checks for:
+  - database role privilege posture (must not be `SUPERUSER`/`BYPASSRLS`)
+  - rolling `idempotency.conflict` spike threshold
+- Security readiness tuning:
+  - `DB_ROLE_SECURITY_ENFORCED`
+  - `DB_ROLE_SECURITY_READY_CHECK_ENABLED`
+  - `DB_ROLE_SECURITY_ALLOW_INSECURE`
+  - `SECURITY_IDEMPOTENCY_MONITOR_ENABLED`
+  - `SECURITY_IDEMPOTENCY_CONFLICT_THRESHOLD`
+  - `SECURITY_IDEMPOTENCY_CONFLICT_WINDOW_SECONDS`
 
 Quick start:
 

@@ -1,6 +1,7 @@
 class OutboxEvent < ApplicationRecord
   STATUSES = %w[PENDING SENT FAILED CANCELLED].freeze
   PAYLOAD_HASH_KEY = "payload_hash".freeze
+  PAYLOAD_HASH_FORMAT = /\A[0-9a-f]{64}\z/.freeze
   PAYLOAD_HASH_ROLLOUT_CUTOFF_UTC = Time.utc(2026, 2, 22, 0, 0, 0).freeze
 
   belongs_to :tenant
@@ -10,6 +11,7 @@ class OutboxEvent < ApplicationRecord
 
   validates :aggregate_type, :aggregate_id, :event_type, :status, presence: true
   validates :status, inclusion: { in: STATUSES }
+  validate :idempotency_payload_hash_must_be_valid
 
   after_commit :enqueue_dispatch_job!, on: :create
 
@@ -27,6 +29,17 @@ class OutboxEvent < ApplicationRecord
 
     normalized_payload[PAYLOAD_HASH_KEY] = CanonicalJson.digest(normalized_payload.except(PAYLOAD_HASH_KEY))
     self.payload = normalized_payload
+  end
+
+  def idempotency_payload_hash_must_be_valid
+    return if idempotency_key.to_s.strip.blank?
+
+    normalized_payload = normalize_payload(payload)
+    payload_hash = normalized_payload[PAYLOAD_HASH_KEY].to_s
+
+    unless payload_hash.match?(PAYLOAD_HASH_FORMAT)
+      errors.add(:payload, "payload_hash must be a lowercase sha256 hex digest.")
+    end
   end
 
   def normalize_payload(raw_payload)

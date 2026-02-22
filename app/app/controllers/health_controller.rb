@@ -4,7 +4,7 @@ class HealthController < ActionController::API
   end
 
   def ready
-    checks = database_checks
+    checks = database_checks.merge(security_checks)
     render_readiness_response(checks)
   end
 
@@ -37,6 +37,13 @@ class HealthController < ActionController::API
     postgres_configs.each_with_object({}) do |db_config, output|
       output[db_config.name.to_s] = postgres_ready?(db_config) ? "ok" : "error"
     end
+  end
+
+  def security_checks
+    {
+      "database_role" => Security::DatabaseRoleGuard.readiness_status,
+      "idempotency_conflicts" => Security::IdempotencyConflictMonitor.readiness_status
+    }
   end
 
   def postgres_configs

@@ -24,17 +24,38 @@ class OutboxEventTest < ActiveSupport::TestCase
 
   test "preserves explicit payload hash when provided by service layer" do
     with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
+      payload_without_hash = {
+        "kind" => "test_event",
+        "reference" => "explicit-payload-hash"
+      }
+      explicit_hash = CanonicalJson.digest(payload_without_hash)
+
       event = create_outbox_event!(
         tenant: @tenant,
         aggregate_id: SecureRandom.uuid,
         idempotency_key: "outbox-explicit-hash-#{SecureRandom.hex(6)}",
-        payload: {
-          "payload_hash" => "a" * 64,
-          "kind" => "test_event"
-        }
+        payload: payload_without_hash.merge("payload_hash" => explicit_hash)
       )
 
-      assert_equal "a" * 64, event.payload["payload_hash"]
+      assert_equal explicit_hash, event.payload["payload_hash"]
+    end
+  end
+
+  test "rejects explicit payload hash with invalid format" do
+    with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
+      error = assert_raises(ActiveRecord::RecordInvalid) do
+        create_outbox_event!(
+          tenant: @tenant,
+          aggregate_id: SecureRandom.uuid,
+          idempotency_key: "outbox-invalid-format-#{SecureRandom.hex(6)}",
+          payload: {
+            "kind" => "test_event",
+            "payload_hash" => "not-a-sha256"
+          }
+        )
+      end
+
+      assert_includes error.record.errors[:payload], "payload_hash must be a lowercase sha256 hex digest."
     end
   end
 
@@ -179,6 +200,37 @@ class OutboxEventTest < ActiveSupport::TestCase
       end
 
       assert_match(/outbox_events_idempotency_payload_hash_present_check/, error.message)
+    end
+  end
+
+  test "db guardrail rejects malformed payload hash after rollout cutoff" do
+    with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
+      connection = ActiveRecord::Base.connection
+      timestamp = Time.utc(2026, 2, 22, 0, 0, 1)
+
+      error = assert_raises(ActiveRecord::StatementInvalid) do
+        ActiveRecord::Base.transaction(requires_new: true) do
+          connection.execute(<<~SQL)
+            INSERT INTO outbox_events (
+              id, tenant_id, aggregate_type, aggregate_id, event_type, status, attempts, idempotency_key, payload, created_at, updated_at
+            ) VALUES (
+              #{connection.quote(SecureRandom.uuid)},
+              #{connection.quote(@tenant.id)},
+              'OutboxGuardrail',
+              #{connection.quote(SecureRandom.uuid)},
+              'OUTBOX_GUARDRAIL_MALFORMED',
+              'PENDING',
+              0,
+              'outbox-malformed-hash-after-cutoff',
+              '{"payload_hash":"not-a-sha256"}'::jsonb,
+              #{connection.quote(timestamp)},
+              #{connection.quote(timestamp)}
+            )
+          SQL
+        end
+      end
+
+      assert_match(/outbox_events_idempotency_payload_hash_format_check/, error.message)
     end
   end
 
