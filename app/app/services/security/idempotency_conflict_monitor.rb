@@ -1,7 +1,7 @@
 module Security
   class IdempotencyConflictMonitor
     CACHE_NAMESPACE = "security:idempotency_conflicts".freeze
-    ALERT_EVENT_NAME = "security.alert".freeze
+    ALERT_EVENT_NAME = "alert.security".freeze
     DEFAULT_THRESHOLD = 20
     DEFAULT_WINDOW_SECONDS = 300
 
