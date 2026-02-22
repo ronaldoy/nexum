@@ -2,6 +2,7 @@ require "digest"
 
 module Receivables
   class AttachSignedDocument
+    include Idempotency::OutboxReplayValidation
     include DirectUploads::BlobValidation
 
     OUTBOX_EVENT_TYPE = "RECEIVABLE_DOCUMENT_ATTACHED".freeze
@@ -445,25 +446,6 @@ module Receivables
       )
 
       Result.new(document:, replayed: true)
-    end
-
-    def ensure_replay_outbox_operation!(existing_outbox)
-      return if existing_outbox.event_type == OUTBOX_EVENT_TYPE && existing_outbox.aggregate_type == TARGET_TYPE
-
-      raise IdempotencyConflict.new(
-        code: "idempotency_key_reused_with_different_operation",
-        message: "Idempotency-Key was already used with a different operation."
-      )
-    end
-
-    def ensure_replay_payload_hash!(existing_outbox:, payload_hash:)
-      existing_payload_hash = existing_outbox.payload&.dig(PAYLOAD_HASH_KEY).to_s
-      return if existing_payload_hash.blank? || existing_payload_hash == payload_hash
-
-      raise IdempotencyConflict.new(
-        code: "idempotency_key_reused_with_different_payload",
-        message: "Idempotency-Key was already used with a different payload."
-      )
     end
 
     def find_replay_document(existing_outbox)

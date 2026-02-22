@@ -2,6 +2,8 @@ require "digest"
 
 module KycProfiles
   class Create
+    include Idempotency::OutboxReplayValidation
+
     OUTBOX_EVENT_TYPE = "KYC_PROFILE_CREATED".freeze
     TARGET_TYPE = "KycProfile".freeze
     PAYLOAD_HASH_KEY = "payload_hash".freeze
@@ -197,25 +199,6 @@ module KycProfiles
       )
 
       Result.new(kyc_profile: kyc_profile, replayed: true)
-    end
-
-    def ensure_replay_outbox_operation!(existing_outbox)
-      return if existing_outbox.event_type == OUTBOX_EVENT_TYPE && existing_outbox.aggregate_type == TARGET_TYPE
-
-      raise IdempotencyConflict.new(
-        code: "idempotency_key_reused_with_different_operation",
-        message: "Idempotency-Key was already used with a different operation."
-      )
-    end
-
-    def ensure_replay_payload_hash!(existing_outbox:, payload_hash:)
-      existing_payload_hash = existing_outbox.payload&.dig(PAYLOAD_HASH_KEY).to_s
-      return if existing_payload_hash.blank? || existing_payload_hash == payload_hash
-
-      raise IdempotencyConflict.new(
-        code: "idempotency_key_reused_with_different_payload",
-        message: "Idempotency-Key was already used with a different payload."
-      )
     end
 
     def create_kyc_event!(kyc_profile:, party:, event_type:, payload:)
