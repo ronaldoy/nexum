@@ -14,9 +14,10 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   DEFAULT_MAX_UPLOAD_BYTES = 25.megabytes
 
   before_action :authenticate_direct_upload_actor!
+  before_action :verify_csrf_for_session_authentication!
   before_action :require_idempotency_key!
   before_action :enforce_upload_limits!
-  skip_forgery_protection
+  protect_from_forgery with: :exception, unless: :token_authenticated_request?
 
   def create
     payload_hash = direct_upload_payload_hash
@@ -59,10 +60,23 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   end
 
   def authenticate_direct_upload_actor!
-    return if authenticate_from_session!
-    return if authenticate_from_api_token!
+    if authenticate_from_session!
+      @authenticated_via_session = true
+      return
+    end
+    if authenticate_from_api_token!
+      @authenticated_via_session = false
+      return
+    end
 
     render_unauthorized
+  end
+
+  def verify_csrf_for_session_authentication!
+    return unless @authenticated_via_session
+    return if valid_session_authenticity_token?
+
+    raise ActionController::InvalidCrossOriginRequest, "Can't verify CSRF token authenticity."
   end
 
   def authenticate_from_session!
@@ -161,6 +175,17 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
     return nil unless scheme&.casecmp("Bearer")&.zero?
 
     value&.strip
+  end
+
+  def token_authenticated_request?
+    bearer_token.present?
+  end
+
+  def valid_session_authenticity_token?
+    token = request.headers["X-CSRF-Token"].to_s.presence || params[:authenticity_token].to_s.presence
+    return false if token.blank?
+
+    valid_authenticity_token?(session, token)
   end
 
   def enforce_upload_limits!

@@ -78,6 +78,12 @@ module Webhooks
             provider_event_id: "evt-webhook-success"
           )
           assert_equal "PROCESSED", receipt.status
+          assert_equal true, receipt.payload["redacted"]
+          assert_equal payload.keys.sort, receipt.payload["top_level_keys"]
+          assert_nil receipt.payload["request_control_key"]
+          assert_equal true, receipt.request_headers["x_qitech_signature_present"]
+          assert_equal false, receipt.request_headers["x_starkbank_signature_present"]
+          assert_nil receipt.request_headers["x_qitech_signature"]
         end
       end
     end

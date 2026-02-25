@@ -51,6 +51,50 @@ class ActiveStorage::DirectUploadsControllerTest < ActionDispatch::IntegrationTe
     assert_equal @tenant.id.to_s, blob.metadata["tenant_id"]
   end
 
+  test "allows bearer token direct upload without csrf token when forgery protection is enabled" do
+    with_forgery_protection do
+      post rails_direct_uploads_path,
+        headers: authorization_headers("direct-upload-csrf-bearer-001"),
+        params: valid_blob_payload,
+        as: :json
+    end
+
+    assert_response :success
+  end
+
+  test "rejects session-authenticated direct upload without csrf token when forgery protection is enabled" do
+    sign_in_as(@user)
+
+    with_forgery_protection do
+      post rails_direct_uploads_path,
+        headers: { "Idempotency-Key" => "direct-upload-csrf-session-001" },
+        params: valid_blob_payload,
+        as: :json
+    end
+
+    assert_response :unprocessable_entity
+  end
+
+  test "accepts session-authenticated direct upload with csrf token when forgery protection is enabled" do
+    sign_in_as(@user)
+
+    with_forgery_protection do
+      get root_path
+      csrf_token = response.body.match(/name="csrf-token" content="([^"]+)"/)&.captures&.first
+      assert csrf_token.present?
+
+      post rails_direct_uploads_path,
+        headers: {
+          "Idempotency-Key" => "direct-upload-csrf-session-valid-001",
+          "X-CSRF-Token" => csrf_token
+        },
+        params: valid_blob_payload,
+        as: :json
+    end
+
+    assert_response :success
+  end
+
   test "overwrites spoofed tenant metadata on direct upload" do
     secondary_tenant = tenants(:secondary)
     payload = valid_blob_payload.deep_dup
@@ -170,5 +214,16 @@ class ActiveStorage::DirectUploadsControllerTest < ActionDispatch::IntegrationTe
     headers = { "Authorization" => "Bearer #{@token}" }
     headers["Idempotency-Key"] = idempotency_key if idempotency_key.present?
     headers
+  end
+
+  def with_forgery_protection
+    original_base = ActionController::Base.allow_forgery_protection
+    original_direct_uploads = ActiveStorage::DirectUploadsController.allow_forgery_protection
+    ActionController::Base.allow_forgery_protection = true
+    ActiveStorage::DirectUploadsController.allow_forgery_protection = true
+    yield
+  ensure
+    ActionController::Base.allow_forgery_protection = original_base
+    ActiveStorage::DirectUploadsController.allow_forgery_protection = original_direct_uploads
   end
 end

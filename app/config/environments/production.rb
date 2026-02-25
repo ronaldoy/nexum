@@ -118,7 +118,7 @@ Rails.application.configure do
                     .reject(&:blank?)
   config.hosts = allowed_hosts if allowed_hosts.any?
 
-  if allowed_hosts.empty? && ENV["ALLOW_EMPTY_HOSTS"] != "true"
+  if allowed_hosts.empty?
     raise "APP_ALLOWED_HOSTS must be configured in production."
   end
   #

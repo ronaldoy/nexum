@@ -152,7 +152,7 @@ module Webhooks
         event_type: context.event_type,
         signature: context.signature,
         payload_sha256: context.payload_sha256,
-        payload: context.payload,
+        payload: persisted_payload(context.payload),
         request_headers: persisted_request_headers,
         status: result.status,
         processed_at: Time.current
@@ -168,7 +168,7 @@ module Webhooks
         code: "escrow_webhook_resource_not_found",
         message: "Webhook payload did not match any escrow account or payout.",
         payload_sha256: context.payload_sha256,
-        payload: context.payload,
+        payload: persisted_payload(context.payload),
         metadata: {
           "receipt_id" => outcome.receipt.id,
           "reconciliation_result" => outcome.result.metadata
@@ -234,7 +234,7 @@ module Webhooks
         code: error.code,
         message: error.message,
         payload_sha256: context&.payload_sha256,
-        payload: context&.payload || {},
+        payload: persisted_payload(context&.payload || {}),
         metadata: {
           "exception_class" => error.class.name
         }
@@ -371,7 +371,7 @@ module Webhooks
         event_type: context.event_type,
         signature: context.signature,
         payload_sha256: context.payload_sha256,
-        payload: context.payload,
+        payload: persisted_payload(context.payload),
         request_headers: persisted_request_headers,
         status: "FAILED",
         error_code: error.code,
@@ -388,11 +388,22 @@ module Webhooks
       {
         "x_webhook_id" => request.headers["X-Webhook-Id"].to_s,
         "x_request_id" => request.headers["X-Request-Id"].to_s,
-        "x_qitech_signature" => request.headers["X-QITECH-Signature"].to_s,
-        "x_starkbank_signature" => request.headers["X-STARKBANK-Signature"].to_s,
+        "x_qitech_signature_present" => request.headers["X-QITECH-Signature"].present?,
+        "x_starkbank_signature_present" => request.headers["X-STARKBANK-Signature"].present?,
         "authorization_present" => request.authorization.present?,
         "content_type" => request.content_type.to_s
       }
+    end
+
+    def persisted_payload(payload)
+      normalized_payload = payload.is_a?(Hash) ? payload : {}
+
+      {
+        "redacted" => true,
+        "event_type" => normalized_payload["event_type"].to_s.presence || normalized_payload["type"].to_s.presence,
+        "status" => normalized_payload["status"].to_s.presence,
+        "top_level_keys" => normalized_payload.keys.map(&:to_s).sort
+      }.compact
     end
 
     def capture_reconciliation_exception!(
