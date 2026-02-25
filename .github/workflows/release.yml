@@ -41,7 +41,7 @@ jobs:
         working-directory: app
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Scan repository for leaked secrets
         run: ../bin/secret-scan --no-banner
@@ -78,7 +78,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Validate changelog entry
         run: |

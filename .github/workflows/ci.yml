@@ -32,7 +32,7 @@ jobs:
         working-directory: app
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Scan repository for leaked secrets
         run: ../bin/secret-scan --no-banner
@@ -62,7 +62,7 @@ jobs:
         working-directory: app
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install PostgreSQL client headers
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libpq-dev
@@ -96,7 +96,7 @@ jobs:
         working-directory: app
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install PostgreSQL client headers
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libpq-dev
@@ -134,7 +134,7 @@ jobs:
         working-directory: app
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install PostgreSQL client headers
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libpq-dev
