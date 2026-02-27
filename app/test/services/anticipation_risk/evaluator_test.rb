@@ -52,6 +52,56 @@ module AnticipationRisk
       end
     end
 
+    test "matches cnpj scope across multiple parties with same document number" do
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+        bundle = create_cnpj_bundle!(tenant: @tenant, suffix: "risk-evaluator-cnpj-duplicate")
+        mirror_party = Party.create!(
+          tenant: @tenant,
+          kind: "SUPPLIER",
+          legal_name: "Fornecedor Espelho CNPJ",
+          document_number: bundle[:legal_entity].document_number
+        )
+
+        AnticipationRequest.create!(
+          tenant: @tenant,
+          receivable: bundle[:receivable],
+          receivable_allocation: bundle[:allocation],
+          requester_party: mirror_party,
+          idempotency_key: "idem-risk-evaluator-cnpj-duplicate-001",
+          requested_amount: "100.00",
+          discount_rate: "0.05000000",
+          discount_amount: "5.00",
+          net_amount: "95.00",
+          status: "REQUESTED",
+          channel: "API",
+          requested_at: Time.current,
+          settlement_target_date: BusinessCalendar.next_business_day(from: Time.current),
+          metadata: {}
+        )
+
+        AnticipationRiskRule.create!(
+          tenant: @tenant,
+          scope_type: "CNPJ_PARTY",
+          scope_party: bundle[:legal_entity],
+          decision: "BLOCK",
+          max_outstanding_exposure_amount: "100.00"
+        )
+
+        decision = Evaluator.new(tenant_id: @tenant.id).evaluate!(
+          receivable: bundle[:receivable],
+          receivable_allocation: bundle[:allocation],
+          requester_party: bundle[:legal_entity],
+          requested_amount: BigDecimal("10.00"),
+          net_amount: BigDecimal("10.00"),
+          stage: :create
+        )
+
+        assert_not decision.allowed?
+        assert_equal "risk_limit_exceeded_outstanding_exposure_cnpj", decision.code
+        assert_equal bundle[:legal_entity].id, decision.scope_party_id
+      end
+    end
+
     private
 
     def create_cnpj_bundle!(tenant:, suffix:)

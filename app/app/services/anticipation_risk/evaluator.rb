@@ -48,6 +48,8 @@ module AnticipationRisk
     def initialize(tenant_id:)
       @tenant_id = tenant_id
       @usage_cache = {}
+      @cnpj_party_ids_by_document_number = {}
+      @cnpj_party_ids_by_scope_party_id = {}
     end
 
     def evaluate!(receivable:, receivable_allocation:, requester_party:, requested_amount:, net_amount:, stage:)
@@ -99,19 +101,20 @@ module AnticipationRisk
       scope_conditions = []
       scope_values = {}
 
-      scope_map.each do |scope_type, scope_party_id|
+      scope_map.each do |scope_type, scope_party_ids|
         type_key = :"#{scope_key(scope_type)}_type"
-        party_key = :"#{scope_key(scope_type)}_party_id"
+        party_key = :"#{scope_key(scope_type)}_party_ids"
+        normalized_party_ids = Array(scope_party_ids).compact.uniq
 
-        if scope_party_id.nil?
+        if normalized_party_ids.empty?
           scope_conditions << "(scope_type = :#{type_key} AND scope_party_id IS NULL)"
           scope_values[type_key] = scope_type
           next
         end
 
-        scope_conditions << "(scope_type = :#{type_key} AND scope_party_id = :#{party_key})"
+        scope_conditions << "(scope_type = :#{type_key} AND scope_party_id IN (:#{party_key}))"
         scope_values[type_key] = scope_type
-        scope_values[party_key] = scope_party_id
+        scope_values[party_key] = normalized_party_ids
       end
 
       return [] if scope_conditions.empty?
@@ -122,16 +125,16 @@ module AnticipationRisk
     end
 
     def scope_map(receivable:, receivable_allocation:, requester_party:)
-      map = { "TENANT_DEFAULT" => nil }
+      map = { "TENANT_DEFAULT" => [] }
 
       physician_party_id = physician_scope_party_id(receivable_allocation:, requester_party:)
-      map["PHYSICIAN_PARTY"] = physician_party_id if physician_party_id.present?
+      map["PHYSICIAN_PARTY"] = [ physician_party_id ] if physician_party_id.present?
 
-      cnpj_party_id = cnpj_scope_party_id(receivable:, receivable_allocation:, requester_party:)
-      map["CNPJ_PARTY"] = cnpj_party_id if cnpj_party_id.present?
+      cnpj_party_ids = cnpj_scope_party_ids(receivable:, receivable_allocation:, requester_party:)
+      map["CNPJ_PARTY"] = cnpj_party_ids if cnpj_party_ids.any?
 
       hospital_party_id = hospital_scope_party_id(receivable: receivable)
-      map["HOSPITAL_PARTY"] = hospital_party_id if hospital_party_id.present?
+      map["HOSPITAL_PARTY"] = [ hospital_party_id ] if hospital_party_id.present?
 
       map
     end
@@ -144,7 +147,7 @@ module AnticipationRisk
       nil
     end
 
-    def cnpj_scope_party_id(receivable:, receivable_allocation:, requester_party:)
+    def cnpj_scope_party_ids(receivable:, receivable_allocation:, requester_party:)
       candidates = [
         requester_party,
         receivable_allocation&.allocated_party,
@@ -152,7 +155,14 @@ module AnticipationRisk
         receivable.beneficiary_party
       ].compact
 
-      candidates.find { |party| party.document_type == "CNPJ" }&.id
+      document_numbers = candidates
+        .select { |party| party.document_type == "CNPJ" }
+        .map(&:document_number)
+        .compact_blank
+        .uniq
+      return [] if document_numbers.empty?
+
+      document_numbers.flat_map { |document_number| cnpj_party_ids_for_document_number(document_number) }.uniq
     end
 
     def hospital_scope_party_id(receivable:)
@@ -259,17 +269,20 @@ module AnticipationRisk
             party_id: rule.scope_party_id
           )
       when "CNPJ_PARTY"
+        party_ids = cnpj_party_ids_for_rule(rule)
+        return scope.none if party_ids.empty?
+
         scope
           .left_outer_joins(:receivable_allocation)
           .joins(:receivable)
           .where(
             <<~SQL,
-              anticipation_requests.requester_party_id = :party_id
-              OR receivable_allocations.allocated_party_id = :party_id
-              OR receivables.creditor_party_id = :party_id
-              OR receivables.beneficiary_party_id = :party_id
+              anticipation_requests.requester_party_id IN (:party_ids)
+              OR receivable_allocations.allocated_party_id IN (:party_ids)
+              OR receivables.creditor_party_id IN (:party_ids)
+              OR receivables.beneficiary_party_id IN (:party_ids)
             SQL
-            party_id: rule.scope_party_id
+            party_ids: party_ids
           )
       when "HOSPITAL_PARTY"
         scope
@@ -353,6 +366,29 @@ module AnticipationRisk
 
     def scope_key(scope_type)
       scope_type.to_s.downcase
+    end
+
+    def cnpj_party_ids_for_rule(rule)
+      return [] if rule.scope_party_id.blank?
+
+      @cnpj_party_ids_by_scope_party_id[rule.scope_party_id] ||= begin
+        scope_party = Party.where(tenant_id: @tenant_id)
+          .select(:id, :document_type, :document_number)
+          .find_by(id: rule.scope_party_id)
+
+        if scope_party.blank? || scope_party.document_type != "CNPJ" || scope_party.document_number.blank?
+          [ rule.scope_party_id ]
+        else
+          cnpj_party_ids = cnpj_party_ids_for_document_number(scope_party.document_number)
+          cnpj_party_ids.presence || [ rule.scope_party_id ]
+        end
+      end
+    end
+
+    def cnpj_party_ids_for_document_number(document_number)
+      @cnpj_party_ids_by_document_number[document_number] ||= Party
+        .where(tenant_id: @tenant_id, document_type: "CNPJ", document_number: document_number)
+        .pluck(:id)
     end
 
     def decimal_to_string(value)
