@@ -54,13 +54,19 @@ module AnticipationRisk
 
     def evaluate!(receivable:, receivable_allocation:, requester_party:, requested_amount:, net_amount:, stage:)
       now = Time.current
-      lock_scope = lock_scope_key(receivable:, receivable_allocation:, requester_party:)
-      advisory_lock!(lock_scope)
+      scope_map = scope_map(receivable:, receivable_allocation:, requester_party:)
+      advisory_lock_keys(
+        receivable: receivable,
+        receivable_allocation: receivable_allocation,
+        requester_party: requester_party,
+        scope_map: scope_map
+      ).each { |lock_key| advisory_lock!(lock_key) }
 
       rules = applicable_rules(
         receivable: receivable,
         receivable_allocation: receivable_allocation,
         requester_party: requester_party,
+        scope_map: scope_map,
         now: now
       )
       return allow_decision if rules.empty?
@@ -92,8 +98,8 @@ module AnticipationRisk
       )
     end
 
-    def applicable_rules(receivable:, receivable_allocation:, requester_party:, now:)
-      scope_map = scope_map(receivable:, receivable_allocation:, requester_party:)
+    def applicable_rules(receivable:, receivable_allocation:, requester_party:, now:, scope_map: nil)
+      scope_map ||= scope_map(receivable:, receivable_allocation:, requester_party:)
       rule_scope = AnticipationRiskRule.where(tenant_id: @tenant_id).active
       rule_scope = rule_scope.where("effective_from IS NULL OR effective_from <= ?", now)
       rule_scope = rule_scope.where("effective_until IS NULL OR effective_until >= ?", now)
@@ -148,18 +154,11 @@ module AnticipationRisk
     end
 
     def cnpj_scope_party_ids(receivable:, receivable_allocation:, requester_party:)
-      candidates = [
-        requester_party,
-        receivable_allocation&.allocated_party,
-        receivable.creditor_party,
-        receivable.beneficiary_party
-      ].compact
-
-      document_numbers = candidates
-        .select { |party| party.document_type == "CNPJ" }
-        .map(&:document_number)
-        .compact_blank
-        .uniq
+      document_numbers = cnpj_scope_document_numbers(
+        receivable: receivable,
+        receivable_allocation: receivable_allocation,
+        requester_party: requester_party
+      )
       return [] if document_numbers.empty?
 
       document_numbers.flat_map { |document_number| cnpj_party_ids_for_document_number(document_number) }.uniq
@@ -355,17 +354,38 @@ module AnticipationRisk
       )
     end
 
-    def lock_scope_key(receivable:, receivable_allocation:, requester_party:)
-      [
-        @tenant_id,
-        receivable.id,
-        receivable_allocation&.id,
-        requester_party.id
-      ].join(":")
+    def advisory_lock_keys(receivable:, receivable_allocation:, requester_party:, scope_map:)
+      keys = [ "#{@tenant_id}:tenant_default" ]
+      keys.concat(Array(scope_map["PHYSICIAN_PARTY"]).map { |party_id| "#{@tenant_id}:physician:#{party_id}" })
+      keys.concat(Array(scope_map["HOSPITAL_PARTY"]).map { |party_id| "#{@tenant_id}:hospital:#{party_id}" })
+      keys.concat(
+        cnpj_scope_document_numbers(
+          receivable: receivable,
+          receivable_allocation: receivable_allocation,
+          requester_party: requester_party
+        ).map { |document_number| "#{@tenant_id}:cnpj:#{document_number}" }
+      )
+
+      keys.compact.uniq.sort
     end
 
     def scope_key(scope_type)
       scope_type.to_s.downcase
+    end
+
+    def cnpj_scope_document_numbers(receivable:, receivable_allocation:, requester_party:)
+      candidates = [
+        requester_party,
+        receivable_allocation&.allocated_party,
+        receivable.creditor_party,
+        receivable.beneficiary_party
+      ].compact
+
+      candidates
+        .select { |party| party.document_type == "CNPJ" }
+        .map(&:document_number)
+        .compact_blank
+        .uniq
     end
 
     def cnpj_party_ids_for_rule(rule)

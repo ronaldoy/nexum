@@ -102,6 +102,53 @@ module AnticipationRisk
       end
     end
 
+    test "acquires advisory locks by tenant, physician, cnpj document and hospital scopes" do
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+        bundle = create_cnpj_bundle!(tenant: @tenant, suffix: "risk-evaluator-lock-keys")
+        physician_party = Party.create!(
+          tenant: @tenant,
+          kind: "PHYSICIAN_PF",
+          legal_name: "Medico Lock Scope",
+          document_number: valid_cpf_from_seed("risk-evaluator-lock-scope-physician")
+        )
+        bundle[:allocation].update!(physician_party: physician_party)
+
+        captured_keys = []
+        evaluator = Evaluator.new(tenant_id: @tenant.id)
+        singleton = class << evaluator
+          self
+        end
+
+        singleton.send(:alias_method, :advisory_lock_without_capture_for_test, :advisory_lock!)
+        singleton.send(:define_method, :advisory_lock!) do |key|
+          captured_keys << key
+        end
+
+        begin
+          evaluator.evaluate!(
+            receivable: bundle[:receivable],
+            receivable_allocation: bundle[:allocation],
+            requester_party: bundle[:legal_entity],
+            requested_amount: BigDecimal("10.00"),
+            net_amount: BigDecimal("10.00"),
+            stage: :create
+          )
+        ensure
+          singleton.send(:alias_method, :advisory_lock!, :advisory_lock_without_capture_for_test)
+          singleton.send(:remove_method, :advisory_lock_without_capture_for_test)
+        end
+
+        expected_keys = [
+          "#{@tenant.id}:tenant_default",
+          "#{@tenant.id}:physician:#{physician_party.id}",
+          "#{@tenant.id}:hospital:#{bundle[:hospital].id}",
+          "#{@tenant.id}:cnpj:#{bundle[:legal_entity].document_number}"
+        ].sort
+
+        assert_equal expected_keys, captured_keys
+      end
+    end
+
     private
 
     def create_cnpj_bundle!(tenant:, suffix:)
