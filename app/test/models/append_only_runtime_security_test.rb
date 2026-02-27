@@ -7,6 +7,8 @@ class AppendOnlyRuntimeSecurityTest < ActiveSupport::TestCase
 
   APPEND_ONLY_TABLES = %w[
     action_ip_logs
+    anticipation_risk_decisions
+    anticipation_risk_rule_events
     anticipation_request_events
     anticipation_settlement_entries
     document_events
@@ -58,6 +60,7 @@ class AppendOnlyRuntimeSecurityTest < ActiveSupport::TestCase
   test "functional RLS rejects insert with mismatched tenant_id for append-only tables" do
     with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
       bundle = create_core_bundle!(tenant: @tenant, suffix: "runtime-mismatch")
+      ensure_risk_rule_for_runtime!(tenant: @secondary_tenant)
 
       with_rls_enforced_role(tables: APPEND_ONLY_TABLES) do
         APPEND_ONLY_TABLES.each do |table_name|
@@ -255,6 +258,47 @@ class AppendOnlyRuntimeSecurityTest < ActiveSupport::TestCase
         occurred_at: Time.current,
         metadata: {}
       ).id
+    when "anticipation_risk_decisions"
+      AnticipationRiskDecision.create!(
+        tenant: tenant,
+        anticipation_request: bundle[:anticipation_request],
+        receivable: bundle[:receivable],
+        receivable_allocation: bundle[:allocation],
+        requester_party: bundle[:beneficiary],
+        stage: "CREATE",
+        decision_action: "BLOCK",
+        decision_code: "risk_limit_exceeded_daily_requested_hospital",
+        decision_metric: "daily_requested",
+        requested_amount: "100.00",
+        net_amount: "90.00",
+        request_id: "append-only-runtime-risk-decision-#{suffix}-#{SecureRandom.hex(4)}",
+        idempotency_key: "append-only-runtime-risk-idem-#{suffix}-#{SecureRandom.hex(4)}",
+        evaluated_at: Time.current,
+        details: {}
+      ).id
+    when "anticipation_risk_rule_events"
+      risk_rule = ensure_risk_rule_for_runtime!(tenant: tenant)
+      sequence = next_sequence_for(scope: :anticipation_risk_rule_events, owner_id: risk_rule.id)
+      prev_hash = risk_rule.anticipation_risk_rule_events.order(sequence: :desc).limit(1).pick(:event_hash)
+      payload = {
+        "source" => "append-only-runtime",
+        "event_type" => "RULE_UPDATED",
+        "rule_id" => risk_rule.id
+      }
+
+      AnticipationRiskRuleEvent.create!(
+        tenant: tenant,
+        anticipation_risk_rule: risk_rule,
+        sequence: sequence,
+        event_type: "RULE_UPDATED",
+        actor_party: bundle[:beneficiary],
+        actor_role: "ops_admin",
+        request_id: "append-only-runtime-risk-rule-event-#{suffix}-#{SecureRandom.hex(4)}",
+        occurred_at: Time.current,
+        prev_hash: prev_hash,
+        event_hash: Digest::SHA256.hexdigest("risk-rule-event:#{suffix}:#{sequence}:#{CanonicalJson.encode(payload)}"),
+        payload: payload
+      ).id
     when "anticipation_request_events"
       sequence = next_sequence_for(scope: :anticipation_request_events, owner_id: bundle[:anticipation_request].id)
       payload = {
@@ -376,6 +420,19 @@ class AppendOnlyRuntimeSecurityTest < ActiveSupport::TestCase
       status: "PENDING",
       idempotency_key: "append-only-runtime-outbox-#{suffix}-#{SecureRandom.hex(6)}",
       payload: { "source" => "append-only-runtime", "suffix" => suffix }
+    )
+  end
+
+  def ensure_risk_rule_for_runtime!(tenant:)
+    @risk_rules_by_tenant ||= {}
+    key = tenant.id
+
+    @risk_rules_by_tenant[key] ||= AnticipationRiskRule.create!(
+      tenant: tenant,
+      scope_type: "TENANT_DEFAULT",
+      decision: "BLOCK",
+      priority: 100,
+      max_single_request_amount: "1000.00"
     )
   end
 

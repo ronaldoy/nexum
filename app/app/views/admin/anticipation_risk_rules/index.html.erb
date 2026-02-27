@@ -1,0 +1,231 @@
+<main class="dashboard-shell">
+  <section class="hero-panel">
+    <div>
+      <p class="hero-kicker">Fraude e risco de crédito</p>
+      <h2>Regras de risco de antecipação</h2>
+      <p class="hero-subtitle">
+        Configure limites por médico, CNPJ, hospital e regra padrão do tenant para bloquear ou sinalizar solicitações.
+      </p>
+      <p class="hero-subtitle">
+        Todas as alterações geram histórico imutável para auditoria.
+      </p>
+    </div>
+    <div class="hero-meta">
+      <p><strong>Perfil:</strong> <%= role_label(Current.user&.role) %></p>
+      <p><strong>Usuário:</strong> <%= Current.user&.email_address %></p>
+      <p><strong>Tenant selecionado:</strong> <%= @selected_tenant.slug %></p>
+      <%= link_to "Voltar ao painel admin", admin_dashboard_path, class: "button button-primary" %>
+    </div>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Nova regra</h3>
+      <p>Valores monetários em BRL com duas casas decimais. Regras ativas entram em vigor imediatamente.</p>
+    </header>
+
+    <%= form_with url: admin_anticipation_risk_rules_path, method: :post, scope: :anticipation_risk_rule, class: "receivable-selector" do |form| %>
+      <div class="field">
+        <%= form.label :tenant_id, "Tenant" %>
+        <%= form.select :tenant_id,
+          options_from_collection_for_select(@tenants, :id, ->(tenant) { "#{tenant.slug} - #{tenant.name}" }, @selected_tenant.id),
+          {},
+          required: true %>
+      </div>
+
+      <div class="field">
+        <%= form.label :scope_type, "Escopo" %>
+        <%= form.select :scope_type, options_for_select(@scope_type_options, "TENANT_DEFAULT"), {}, required: true %>
+      </div>
+
+      <div class="field">
+        <%= form.label :scope_party_id, "Parte do escopo" %>
+        <%= form.select :scope_party_id,
+          options_for_select(@scope_parties.map { |party| ["[#{party.kind}] #{party.legal_name} (#{party.document_number})", party.id] }),
+          { include_blank: "Não se aplica para Padrão do tenant" } %>
+      </div>
+
+      <div class="field">
+        <%= form.label :decision, "Ação" %>
+        <%= form.select :decision, options_for_select(@decision_options, "BLOCK"), {}, required: true %>
+      </div>
+
+      <div class="field">
+        <%= form.label :priority, "Prioridade" %>
+        <%= form.number_field :priority, min: 1, value: 100, required: true %>
+      </div>
+
+      <div class="field">
+        <%= form.label :max_single_request_amount, "Limite por solicitação (R$)" %>
+        <%= form.text_field :max_single_request_amount, placeholder: "10000.00" %>
+      </div>
+
+      <div class="field">
+        <%= form.label :max_daily_requested_amount, "Limite diário solicitado (R$)" %>
+        <%= form.text_field :max_daily_requested_amount, placeholder: "50000.00" %>
+      </div>
+
+      <div class="field">
+        <%= form.label :max_outstanding_exposure_amount, "Limite de exposição em aberto (R$)" %>
+        <%= form.text_field :max_outstanding_exposure_amount, placeholder: "200000.00" %>
+      </div>
+
+      <div class="field">
+        <%= form.label :max_open_requests_count, "Limite de solicitações em aberto" %>
+        <%= form.number_field :max_open_requests_count, min: 1, step: 1 %>
+      </div>
+
+      <div class="field">
+        <%= form.label :effective_from, "Início de vigência" %>
+        <%= form.datetime_local_field :effective_from %>
+      </div>
+
+      <div class="field">
+        <%= form.label :effective_until, "Fim de vigência" %>
+        <%= form.datetime_local_field :effective_until %>
+      </div>
+
+      <div>
+        <%= form.submit "Criar regra", class: "button button-primary" %>
+      </div>
+    <% end %>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Regras cadastradas</h3>
+      <p><%= @risk_rules.size %> regras para o tenant selecionado.</p>
+    </header>
+
+    <div class="table-wrapper">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Escopo</th>
+            <th>Ação</th>
+            <th>Prioridade</th>
+            <th>Limites</th>
+            <th>Vigência</th>
+            <th>Status</th>
+            <th>Ajustar</th>
+            <th>Ativar/Desativar</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @risk_rules.each do |rule| %>
+            <tr>
+              <td>
+                <strong><%= rule.scope_type %></strong><br>
+                <% if rule.scope_party.present? %>
+                  <small><%= rule.scope_party.legal_name %></small>
+                <% else %>
+                  <small>Sem parte específica</small>
+                <% end %>
+              </td>
+              <td><span class="status-pill"><%= rule.decision %></span></td>
+              <td><%= rule.priority %></td>
+              <td>
+                <code>solicitação: <%= rule.max_single_request_amount&.to_d&.to_s("F") || "-" %></code><br>
+                <code>diário: <%= rule.max_daily_requested_amount&.to_d&.to_s("F") || "-" %></code><br>
+                <code>exposição: <%= rule.max_outstanding_exposure_amount&.to_d&.to_s("F") || "-" %></code><br>
+                <code>abertas: <%= rule.max_open_requests_count || "-" %></code>
+              </td>
+              <td>
+                <%= l(rule.effective_from, format: :short) if rule.effective_from.present? %><br>
+                <%= l(rule.effective_until, format: :short) if rule.effective_until.present? %>
+              </td>
+              <td><span class="status-pill"><%= rule.active ? "Ativa" : "Inativa" %></span></td>
+              <td>
+                <%= form_with url: admin_anticipation_risk_rule_path(rule.id), method: :patch, scope: :anticipation_risk_rule, class: "receivable-selector" do |form| %>
+                  <%= form.hidden_field :tenant_id, value: @selected_tenant.id %>
+                  <div class="field">
+                    <%= form.label :decision, "Ação" %>
+                    <%= form.select :decision, options_for_select(@decision_options, rule.decision), {}, required: true %>
+                  </div>
+                  <div class="field">
+                    <%= form.label :priority, "Prioridade" %>
+                    <%= form.number_field :priority, min: 1, value: rule.priority, required: true %>
+                  </div>
+                  <div class="field">
+                    <%= form.label :max_single_request_amount, "Solicitação" %>
+                    <%= form.text_field :max_single_request_amount, value: rule.max_single_request_amount&.to_d&.to_s("F") %>
+                  </div>
+                  <div class="field">
+                    <%= form.label :max_daily_requested_amount, "Diário" %>
+                    <%= form.text_field :max_daily_requested_amount, value: rule.max_daily_requested_amount&.to_d&.to_s("F") %>
+                  </div>
+                  <div class="field">
+                    <%= form.label :max_outstanding_exposure_amount, "Exposição" %>
+                    <%= form.text_field :max_outstanding_exposure_amount, value: rule.max_outstanding_exposure_amount&.to_d&.to_s("F") %>
+                  </div>
+                  <div class="field">
+                    <%= form.label :max_open_requests_count, "Abertas" %>
+                    <%= form.number_field :max_open_requests_count, min: 1, step: 1, value: rule.max_open_requests_count %>
+                  </div>
+                  <div class="field">
+                    <%= form.label :effective_from, "Início" %>
+                    <%= form.datetime_local_field :effective_from, value: rule.effective_from&.in_time_zone(BusinessCalendar.time_zone)&.strftime("%Y-%m-%dT%H:%M") %>
+                  </div>
+                  <div class="field">
+                    <%= form.label :effective_until, "Fim" %>
+                    <%= form.datetime_local_field :effective_until, value: rule.effective_until&.in_time_zone(BusinessCalendar.time_zone)&.strftime("%Y-%m-%dT%H:%M") %>
+                  </div>
+                  <%= form.submit "Salvar", class: "button button-primary" %>
+                <% end %>
+              </td>
+              <td>
+                <% if rule.active? %>
+                  <%= button_to "Desativar",
+                    deactivate_admin_anticipation_risk_rule_path(rule.id, tenant_id: @selected_tenant.id),
+                    method: :patch,
+                    class: "button button-outline",
+                    form: { data: { turbo_confirm: "Desativar esta regra de risco?" } } %>
+                <% else %>
+                  <%= button_to "Ativar",
+                    activate_admin_anticipation_risk_rule_path(rule.id, tenant_id: @selected_tenant.id),
+                    method: :patch,
+                    class: "button button-primary",
+                    form: { data: { turbo_confirm: "Ativar esta regra de risco?" } } %>
+                <% end %>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Histórico de alterações</h3>
+      <p>Eventos append-only de criação, atualização e mudança de status.</p>
+    </header>
+
+    <div class="table-wrapper">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Ocorrido em</th>
+            <th>Evento</th>
+            <th>Regra</th>
+            <th>Sequência</th>
+            <th>Ator</th>
+            <th>Request ID</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @risk_rule_events.each do |event| %>
+            <tr>
+              <td><%= l(event.occurred_at, format: :short) %></td>
+              <td><span class="status-pill"><%= event.event_type %></span></td>
+              <td><code><%= event.anticipation_risk_rule_id %></code></td>
+              <td><%= event.sequence %></td>
+              <td><%= event.actor_party&.legal_name.presence || event.actor_role.presence || "Sistema" %></td>
+              <td><code><%= event.request_id %></code></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>

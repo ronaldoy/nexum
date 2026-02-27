@@ -20,6 +20,9 @@ class Tenant < ApplicationRecord
   has_many :escrow_accounts, dependent: :restrict_with_exception
   has_many :escrow_payouts, dependent: :restrict_with_exception
   has_many :fdic_operations, dependent: :restrict_with_exception
+  has_many :anticipation_risk_rules, dependent: :restrict_with_exception
+  has_many :anticipation_risk_rule_events, dependent: :restrict_with_exception
+  has_many :anticipation_risk_decisions, dependent: :restrict_with_exception
   has_many :hospital_parties, -> { where(kind: "HOSPITAL") }, class_name: "Party"
   has_many :organization_parties, -> { where(kind: "LEGAL_ENTITY_PJ") }, class_name: "Party"
 

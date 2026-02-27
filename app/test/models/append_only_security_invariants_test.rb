@@ -6,6 +6,8 @@ class AppendOnlySecurityInvariantsTest < ActiveSupport::TestCase
 
   REQUIRED_APPEND_ONLY_TABLES = %w[
     action_ip_logs
+    anticipation_risk_decisions
+    anticipation_risk_rule_events
     anticipation_request_events
     anticipation_settlement_entries
     document_events

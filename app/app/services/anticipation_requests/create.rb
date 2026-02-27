@@ -80,6 +80,13 @@ module AnticipationRequests
     def create_new_request(intent:, intent_hash:)
       receivable, allocation, requester_party = load_request_context!(intent)
       financials = calculate_financials(intent)
+      risk_decision = enforce_risk_policy!(
+        receivable: receivable,
+        allocation: allocation,
+        requester_party: requester_party,
+        requested_amount: intent.requested_amount,
+        net_amount: financials.net_amount
+      )
       anticipation_request = create_anticipation_request_record!(
         intent: intent,
         intent_hash: intent_hash,
@@ -87,6 +94,15 @@ module AnticipationRequests
         allocation: allocation,
         requester_party: requester_party,
         financials: financials
+      )
+      create_risk_decision_record!(
+        decision: risk_decision,
+        receivable: receivable,
+        allocation: allocation,
+        requester_party: requester_party,
+        requested_amount: intent.requested_amount,
+        net_amount: financials.net_amount,
+        anticipation_request: anticipation_request
       )
 
       mark_receivable_as_anticipated!(receivable)
@@ -129,6 +145,66 @@ module AnticipationRequests
       ensure_requested_amount_available!(receivable:, allocation:, requested_amount: intent.requested_amount)
 
       [ receivable, allocation, requester_party ]
+    end
+
+    def enforce_risk_policy!(receivable:, allocation:, requester_party:, requested_amount:, net_amount:)
+      decision = risk_evaluator.evaluate!(
+        receivable: receivable,
+        receivable_allocation: allocation,
+        requester_party: requester_party,
+        requested_amount: requested_amount,
+        net_amount: net_amount,
+        stage: :create
+      )
+
+      return decision if decision.allowed?
+
+      create_risk_decision_record!(
+        decision: decision,
+        receivable: receivable,
+        allocation: allocation,
+        requester_party: requester_party,
+        requested_amount: requested_amount,
+        net_amount: net_amount,
+        anticipation_request: nil
+      )
+
+      create_action_log!(
+        action_type: "ANTICIPATION_RISK_REJECTED",
+        success: false,
+        requester_party_id: requester_party.id,
+        target_id: nil,
+        metadata: decision.metadata.merge(
+          receivable_id: receivable.id,
+          receivable_allocation_id: allocation&.id,
+          idempotency_key: @idempotency_key
+        )
+      )
+
+      raise_validation_error!(decision.code, decision.message)
+    end
+
+    def create_risk_decision_record!(decision:, receivable:, allocation:, requester_party:, requested_amount:, net_amount:, anticipation_request:)
+      AnticipationRiskDecision.create!(
+        tenant_id: @tenant_id,
+        anticipation_request: anticipation_request,
+        receivable: receivable,
+        receivable_allocation: allocation,
+        requester_party: requester_party,
+        scope_party_id: decision.scope_party_id,
+        trigger_rule_id: decision.rule&.id,
+        scope_type: decision.scope_type,
+        stage: "CREATE",
+        decision_action: decision.action,
+        decision_code: decision.code,
+        decision_metric: decision.metric,
+        requested_amount: round_currency(requested_amount),
+        net_amount: round_currency(net_amount),
+        request_id: @request_id,
+        idempotency_key: @idempotency_key,
+        evaluated_at: Time.current,
+        details: normalize_metadata(decision.details || {})
+      )
     end
 
     def calculate_financials(intent)
@@ -443,6 +519,10 @@ module AnticipationRequests
 
     def raise_validation_error!(code, message)
       raise ValidationError.new(code:, message:)
+    end
+
+    def risk_evaluator
+      @risk_evaluator ||= AnticipationRisk::Evaluator.new(tenant_id: @tenant_id)
     end
   end
 end

@@ -79,6 +79,13 @@ module Api
           assert_equal "ANTICIPATION_REQUESTED", created.receivable.reload.status
           assert_equal 1, ReceivableEvent.where(receivable_id: created.receivable_id, event_type: "ANTICIPATION_REQUESTED").count
           assert_equal 1, ActionIpLog.where(target_id: created.id, action_type: "ANTICIPATION_REQUEST_CREATED").count
+          risk_decision = AnticipationRiskDecision.find_by!(
+            tenant_id: @tenant.id,
+            anticipation_request_id: created.id,
+            stage: "CREATE"
+          )
+          assert_equal "ALLOW", risk_decision.decision_action
+          assert_equal "risk_check_passed", risk_decision.decision_code
         end
       end
 
@@ -218,6 +225,82 @@ module Api
 
         assert_response :unprocessable_entity
         assert_equal "requested_amount_exceeds_available", response.parsed_body.dig("error", "code")
+      end
+
+      test "blocks create when physician single request risk limit is exceeded" do
+        shared_bundle = nil
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          shared_bundle = create_shared_cnpj_physician_bundle!(tenant: @tenant, suffix: "risk-physician-single")
+          AnticipationRiskRule.create!(
+            tenant: @tenant,
+            scope_type: "PHYSICIAN_PARTY",
+            scope_party: shared_bundle[:physician_one],
+            decision: "BLOCK",
+            max_single_request_amount: "50.00"
+          )
+        end
+
+        payload = create_payload(
+          receivable_id: shared_bundle[:receivable].id,
+          receivable_allocation_id: shared_bundle[:allocation].id,
+          requester_party_id: shared_bundle[:physician_one].id
+        )
+        payload[:anticipation_request][:requested_amount] = "60.00"
+
+        post api_v1_anticipation_requests_path,
+          headers: authorization_headers(@write_token, idempotency_key: "idem-risk-physician-single-001"),
+          params: payload,
+          as: :json
+
+        assert_response :unprocessable_entity
+        assert_equal "risk_limit_exceeded_single_request_physician", response.parsed_body.dig("error", "code")
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          risk_decision = AnticipationRiskDecision.find_by!(
+            tenant_id: @tenant.id,
+            idempotency_key: "idem-risk-physician-single-001",
+            stage: "CREATE"
+          )
+          assert_equal "BLOCK", risk_decision.decision_action
+          assert_equal "risk_limit_exceeded_single_request_physician", risk_decision.decision_code
+        end
+      end
+
+      test "blocks create when hospital daily requested risk limit is exceeded" do
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          AnticipationRiskRule.create!(
+            tenant: @tenant,
+            scope_type: "HOSPITAL_PARTY",
+            scope_party: @tenant_bundle[:debtor],
+            decision: "BLOCK",
+            max_daily_requested_amount: "150.00"
+          )
+          create_direct_anticipation_request!(
+            tenant_bundle: @tenant_bundle,
+            idempotency_key: "idem-internal-risk-hospital-daily-001"
+          )
+        end
+
+        payload = create_payload
+        payload[:anticipation_request][:requested_amount] = "60.00"
+
+        post api_v1_anticipation_requests_path,
+          headers: authorization_headers(@write_token, idempotency_key: "idem-risk-hospital-daily-001"),
+          params: payload,
+          as: :json
+
+        assert_response :unprocessable_entity
+        assert_equal "risk_limit_exceeded_daily_requested_hospital", response.parsed_body.dig("error", "code")
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          risk_decision = AnticipationRiskDecision.find_by!(
+            tenant_id: @tenant.id,
+            idempotency_key: "idem-risk-hospital-daily-001",
+            stage: "CREATE"
+          )
+          assert_equal "BLOCK", risk_decision.decision_action
+          assert_equal "risk_limit_exceeded_daily_requested_hospital", risk_decision.decision_code
+        end
       end
 
       test "requires idempotency key header for create" do
@@ -448,6 +531,12 @@ module Api
           anticipation_request.reload
           assert_equal "APPROVED", anticipation_request.status
           assert_equal 1, ReceivableEvent.where(receivable_id: anticipation_request.receivable_id, event_type: "ANTICIPATION_CONFIRMED").count
+          risk_decision = AnticipationRiskDecision.find_by!(
+            tenant_id: @tenant.id,
+            anticipation_request_id: anticipation_request.id,
+            stage: "CONFIRM"
+          )
+          assert_equal "ALLOW", risk_decision.decision_action
 
           email_challenge = AuthChallenge.find_by!(
             tenant_id: @tenant.id,
@@ -674,6 +763,53 @@ module Api
 
         assert_response :unprocessable_entity
         assert_equal "missing_idempotency_key", response.parsed_body.dig("error", "code")
+      end
+
+      test "blocks confirmation when tenant outstanding exposure risk limit is exceeded" do
+        anticipation_request = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          anticipation_request = create_direct_anticipation_request!(
+            tenant_bundle: @tenant_bundle,
+            idempotency_key: "idem-internal-confirm-risk-001"
+          )
+          create_confirmation_challenges!(
+            anticipation_request: anticipation_request,
+            email_code: "919191",
+            whatsapp_code: "828282"
+          )
+          AnticipationRiskRule.create!(
+            tenant: @tenant,
+            scope_type: "TENANT_DEFAULT",
+            decision: "BLOCK",
+            max_outstanding_exposure_amount: "90.00"
+          )
+        end
+
+        post confirm_api_v1_anticipation_request_path(anticipation_request.id),
+          headers: authorization_headers(@confirm_token, idempotency_key: "idem-confirm-risk-001"),
+          params: {
+            confirmation: {
+              email_code: "919191",
+              whatsapp_code: "828282"
+            }
+          },
+          as: :json
+
+        assert_response :unprocessable_entity
+        assert_equal "risk_limit_exceeded_outstanding_exposure_tenant", response.parsed_body.dig("error", "code")
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          anticipation_request.reload
+          assert_equal "REQUESTED", anticipation_request.status
+          risk_decision = AnticipationRiskDecision.find_by!(
+            tenant_id: @tenant.id,
+            anticipation_request_id: anticipation_request.id,
+            stage: "CONFIRM",
+            idempotency_key: "idem-confirm-risk-001"
+          )
+          assert_equal "BLOCK", risk_decision.decision_action
+        end
       end
 
       test "issues challenges then confirms using outbox-generated codes" do

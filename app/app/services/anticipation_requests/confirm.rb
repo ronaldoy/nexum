@@ -102,6 +102,7 @@ module AnticipationRequests
     end
 
     def confirm_requested_anticipation(anticipation_request:, payload_hash:, email_code:, whatsapp_code:)
+      enforce_risk_policy!(anticipation_request)
       email_challenge, whatsapp_challenge = load_confirmation_challenges!(anticipation_request)
       verify_confirmation_codes!(
         email_challenge: email_challenge,
@@ -127,6 +128,44 @@ module AnticipationRequests
       log_confirmation_success!(anticipation_request: anticipation_request)
 
       Result.new(anticipation_request:, replayed: false)
+    end
+
+    def enforce_risk_policy!(anticipation_request)
+      decision = risk_evaluator.evaluate!(
+        receivable: anticipation_request.receivable,
+        receivable_allocation: anticipation_request.receivable_allocation,
+        requester_party: anticipation_request.requester_party,
+        requested_amount: anticipation_request.requested_amount.to_d,
+        net_amount: anticipation_request.net_amount.to_d,
+        stage: :confirm
+      )
+      create_risk_decision_record!(anticipation_request: anticipation_request, decision: decision)
+      return if decision.allowed?
+
+      raise_validation_error!(decision.code, decision.message)
+    end
+
+    def create_risk_decision_record!(anticipation_request:, decision:)
+      AnticipationRiskDecision.create!(
+        tenant_id: @tenant_id,
+        anticipation_request: anticipation_request,
+        receivable: anticipation_request.receivable,
+        receivable_allocation: anticipation_request.receivable_allocation,
+        requester_party: anticipation_request.requester_party,
+        scope_party_id: decision.scope_party_id,
+        trigger_rule_id: decision.rule&.id,
+        scope_type: decision.scope_type,
+        stage: "CONFIRM",
+        decision_action: decision.action,
+        decision_code: decision.code,
+        decision_metric: decision.metric,
+        requested_amount: anticipation_request.requested_amount.to_d,
+        net_amount: anticipation_request.net_amount.to_d,
+        request_id: @request_id,
+        idempotency_key: @idempotency_key,
+        evaluated_at: Time.current,
+        details: normalized_metadata(decision.details || {})
+      )
     end
 
     def load_confirmation_challenges!(anticipation_request)
@@ -500,6 +539,10 @@ module AnticipationRequests
 
     def raise_validation_error!(code, message)
       raise ValidationError.new(code:, message:)
+    end
+
+    def risk_evaluator
+      @risk_evaluator ||= AnticipationRisk::Evaluator.new(tenant_id: @tenant_id)
     end
   end
 end

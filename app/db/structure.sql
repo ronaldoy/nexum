@@ -501,6 +501,101 @@ ALTER TABLE ONLY public.anticipation_requests FORCE ROW LEVEL SECURITY;
 
 
 --
+-- Name: anticipation_risk_decisions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.anticipation_risk_decisions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    anticipation_request_id uuid,
+    receivable_id uuid NOT NULL,
+    receivable_allocation_id uuid,
+    requester_party_id uuid NOT NULL,
+    scope_party_id uuid,
+    trigger_rule_id uuid,
+    scope_type character varying,
+    stage character varying NOT NULL,
+    decision_action character varying NOT NULL,
+    decision_code character varying NOT NULL,
+    decision_metric character varying,
+    requested_amount numeric(18,2) NOT NULL,
+    net_amount numeric(18,2) NOT NULL,
+    request_id character varying,
+    idempotency_key character varying,
+    evaluated_at timestamp(6) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT anticipation_risk_decisions_action_check CHECK (((decision_action)::text = ANY ((ARRAY['ALLOW'::character varying, 'REVIEW'::character varying, 'BLOCK'::character varying])::text[]))),
+    CONSTRAINT anticipation_risk_decisions_net_amount_positive_check CHECK ((net_amount > (0)::numeric)),
+    CONSTRAINT anticipation_risk_decisions_requested_amount_positive_check CHECK ((requested_amount > (0)::numeric)),
+    CONSTRAINT anticipation_risk_decisions_stage_check CHECK (((stage)::text = ANY ((ARRAY['CREATE'::character varying, 'CONFIRM'::character varying])::text[])))
+);
+
+ALTER TABLE ONLY public.anticipation_risk_decisions FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: anticipation_risk_rule_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.anticipation_risk_rule_events (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    anticipation_risk_rule_id uuid CONSTRAINT anticipation_risk_rule_event_anticipation_risk_rule_id_not_null NOT NULL,
+    sequence integer NOT NULL,
+    event_type character varying NOT NULL,
+    actor_party_id uuid,
+    actor_role character varying,
+    request_id character varying,
+    occurred_at timestamp(6) without time zone NOT NULL,
+    prev_hash character varying,
+    event_hash character varying NOT NULL,
+    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT anticipation_risk_rule_events_event_type_check CHECK (((event_type)::text = ANY ((ARRAY['RULE_CREATED'::character varying, 'RULE_UPDATED'::character varying, 'RULE_ACTIVATED'::character varying, 'RULE_DEACTIVATED'::character varying])::text[])))
+);
+
+ALTER TABLE ONLY public.anticipation_risk_rule_events FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: anticipation_risk_rules; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.anticipation_risk_rules (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    scope_party_id uuid,
+    scope_type character varying NOT NULL,
+    decision character varying DEFAULT 'BLOCK'::character varying NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    priority integer DEFAULT 100 NOT NULL,
+    max_single_request_amount numeric(18,2),
+    max_daily_requested_amount numeric(18,2),
+    max_outstanding_exposure_amount numeric(18,2),
+    max_open_requests_count integer,
+    effective_from timestamp(6) without time zone,
+    effective_until timestamp(6) without time zone,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT anticipation_risk_rules_daily_amount_positive_check CHECK (((max_daily_requested_amount IS NULL) OR (max_daily_requested_amount > (0)::numeric))),
+    CONSTRAINT anticipation_risk_rules_decision_check CHECK (((decision)::text = ANY ((ARRAY['ALLOW'::character varying, 'REVIEW'::character varying, 'BLOCK'::character varying])::text[]))),
+    CONSTRAINT anticipation_risk_rules_effective_window_check CHECK (((effective_until IS NULL) OR (effective_from IS NULL) OR (effective_until >= effective_from))),
+    CONSTRAINT anticipation_risk_rules_open_count_positive_check CHECK (((max_open_requests_count IS NULL) OR (max_open_requests_count > 0))),
+    CONSTRAINT anticipation_risk_rules_outstanding_amount_positive_check CHECK (((max_outstanding_exposure_amount IS NULL) OR (max_outstanding_exposure_amount > (0)::numeric))),
+    CONSTRAINT anticipation_risk_rules_requires_any_limit_check CHECK (((max_single_request_amount IS NOT NULL) OR (max_daily_requested_amount IS NOT NULL) OR (max_outstanding_exposure_amount IS NOT NULL) OR (max_open_requests_count IS NOT NULL))),
+    CONSTRAINT anticipation_risk_rules_scope_party_check CHECK (((((scope_type)::text = 'TENANT_DEFAULT'::text) AND (scope_party_id IS NULL)) OR (((scope_type)::text <> 'TENANT_DEFAULT'::text) AND (scope_party_id IS NOT NULL)))),
+    CONSTRAINT anticipation_risk_rules_scope_type_check CHECK (((scope_type)::text = ANY ((ARRAY['TENANT_DEFAULT'::character varying, 'PHYSICIAN_PARTY'::character varying, 'CNPJ_PARTY'::character varying, 'HOSPITAL_PARTY'::character varying])::text[]))),
+    CONSTRAINT anticipation_risk_rules_single_amount_positive_check CHECK (((max_single_request_amount IS NULL) OR (max_single_request_amount > (0)::numeric)))
+);
+
+ALTER TABLE ONLY public.anticipation_risk_rules FORCE ROW LEVEL SECURITY;
+
+
+--
 -- Name: anticipation_settlement_entries; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1578,6 +1673,30 @@ ALTER TABLE ONLY public.anticipation_requests
 
 
 --
+-- Name: anticipation_risk_decisions anticipation_risk_decisions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_risk_decisions
+    ADD CONSTRAINT anticipation_risk_decisions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: anticipation_risk_rule_events anticipation_risk_rule_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_risk_rule_events
+    ADD CONSTRAINT anticipation_risk_rule_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: anticipation_risk_rules anticipation_risk_rules_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_risk_rules
+    ADD CONSTRAINT anticipation_risk_rules_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: anticipation_settlement_entries anticipation_settlement_entries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2023,6 +2142,13 @@ CREATE INDEX idx_on_anticipation_request_id_a246566b52 ON public.anticipation_se
 
 
 --
+-- Name: idx_on_anticipation_risk_rule_id_52b95a2eda; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_on_anticipation_risk_rule_id_52b95a2eda ON public.anticipation_risk_rule_events USING btree (anticipation_risk_rule_id);
+
+
+--
 -- Name: idx_on_beneficiary_physician_party_id_49cb368edd; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2230,6 +2356,132 @@ CREATE UNIQUE INDEX index_anticipation_requests_on_tenant_id_and_idempotency_key
 --
 
 CREATE INDEX index_anticipation_requests_on_tenant_receivable_status ON public.anticipation_requests USING btree (tenant_id, receivable_id, status);
+
+
+--
+-- Name: index_anticipation_risk_decisions_on_anticipation_request_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_risk_decisions_on_anticipation_request_id ON public.anticipation_risk_decisions USING btree (anticipation_request_id);
+
+
+--
+-- Name: index_anticipation_risk_decisions_on_receivable_allocation_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_risk_decisions_on_receivable_allocation_id ON public.anticipation_risk_decisions USING btree (receivable_allocation_id);
+
+
+--
+-- Name: index_anticipation_risk_decisions_on_receivable_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_risk_decisions_on_receivable_id ON public.anticipation_risk_decisions USING btree (receivable_id);
+
+
+--
+-- Name: index_anticipation_risk_decisions_on_requester_party_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_risk_decisions_on_requester_party_id ON public.anticipation_risk_decisions USING btree (requester_party_id);
+
+
+--
+-- Name: index_anticipation_risk_decisions_on_scope_party_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_risk_decisions_on_scope_party_id ON public.anticipation_risk_decisions USING btree (scope_party_id);
+
+
+--
+-- Name: index_anticipation_risk_decisions_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_risk_decisions_on_tenant_id ON public.anticipation_risk_decisions USING btree (tenant_id);
+
+
+--
+-- Name: index_anticipation_risk_decisions_on_trigger_rule_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_risk_decisions_on_trigger_rule_id ON public.anticipation_risk_decisions USING btree (trigger_rule_id);
+
+
+--
+-- Name: index_anticipation_risk_decisions_tenant_action; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_risk_decisions_tenant_action ON public.anticipation_risk_decisions USING btree (tenant_id, decision_action, evaluated_at);
+
+
+--
+-- Name: index_anticipation_risk_decisions_tenant_evaluated_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_risk_decisions_tenant_evaluated_at ON public.anticipation_risk_decisions USING btree (tenant_id, evaluated_at);
+
+
+--
+-- Name: index_anticipation_risk_decisions_tenant_receivable; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_risk_decisions_tenant_receivable ON public.anticipation_risk_decisions USING btree (tenant_id, receivable_id, evaluated_at);
+
+
+--
+-- Name: index_anticipation_risk_rule_events_on_actor_party_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_risk_rule_events_on_actor_party_id ON public.anticipation_risk_rule_events USING btree (actor_party_id);
+
+
+--
+-- Name: index_anticipation_risk_rule_events_on_event_hash; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_anticipation_risk_rule_events_on_event_hash ON public.anticipation_risk_rule_events USING btree (event_hash);
+
+
+--
+-- Name: index_anticipation_risk_rule_events_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_risk_rule_events_on_tenant_id ON public.anticipation_risk_rule_events USING btree (tenant_id);
+
+
+--
+-- Name: index_anticipation_risk_rule_events_unique_sequence; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_anticipation_risk_rule_events_unique_sequence ON public.anticipation_risk_rule_events USING btree (tenant_id, anticipation_risk_rule_id, sequence);
+
+
+--
+-- Name: index_anticipation_risk_rules_active_scope; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_risk_rules_active_scope ON public.anticipation_risk_rules USING btree (tenant_id, active, scope_type, scope_party_id);
+
+
+--
+-- Name: index_anticipation_risk_rules_on_scope_party_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_risk_rules_on_scope_party_id ON public.anticipation_risk_rules USING btree (scope_party_id);
+
+
+--
+-- Name: index_anticipation_risk_rules_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_risk_rules_on_tenant_id ON public.anticipation_risk_rules USING btree (tenant_id);
+
+
+--
+-- Name: index_anticipation_risk_rules_priority; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_anticipation_risk_rules_priority ON public.anticipation_risk_rules USING btree (tenant_id, priority, created_at);
 
 
 --
@@ -3304,6 +3556,20 @@ CREATE TRIGGER anticipation_requests_protect_mutation BEFORE DELETE OR UPDATE ON
 
 
 --
+-- Name: anticipation_risk_decisions anticipation_risk_decisions_no_update_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER anticipation_risk_decisions_no_update_delete BEFORE DELETE OR UPDATE ON public.anticipation_risk_decisions FOR EACH ROW EXECUTE FUNCTION public.app_forbid_mutation();
+
+
+--
+-- Name: anticipation_risk_rule_events anticipation_risk_rule_events_no_update_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER anticipation_risk_rule_events_no_update_delete BEFORE DELETE OR UPDATE ON public.anticipation_risk_rule_events FOR EACH ROW EXECUTE FUNCTION public.app_forbid_mutation();
+
+
+--
 -- Name: anticipation_settlement_entries anticipation_settlement_entries_no_update_delete; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3622,6 +3888,14 @@ ALTER TABLE ONLY public.user_roles
 
 
 --
+-- Name: anticipation_risk_decisions fk_rails_3bd2a93087; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_risk_decisions
+    ADD CONSTRAINT fk_rails_3bd2a93087 FOREIGN KEY (requester_party_id) REFERENCES public.parties(id);
+
+
+--
 -- Name: receivable_statistics_daily fk_rails_3c4e69e879; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3699,6 +3973,14 @@ ALTER TABLE ONLY public.escrow_accounts
 
 ALTER TABLE ONLY public.sessions
     ADD CONSTRAINT fk_rails_55a0fc2018 FOREIGN KEY (user_uuid_id) REFERENCES public.users(uuid_id);
+
+
+--
+-- Name: anticipation_risk_rule_events fk_rails_59f0c848c2; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_risk_rule_events
+    ADD CONSTRAINT fk_rails_59f0c848c2 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 
 --
@@ -3798,6 +4080,14 @@ ALTER TABLE ONLY public.api_access_tokens
 
 
 --
+-- Name: anticipation_risk_rule_events fk_rails_7a941435df; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_risk_rule_events
+    ADD CONSTRAINT fk_rails_7a941435df FOREIGN KEY (anticipation_risk_rule_id) REFERENCES public.anticipation_risk_rules(id);
+
+
+--
 -- Name: provider_webhook_receipts fk_rails_7ac28905bd; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3827,6 +4117,14 @@ ALTER TABLE ONLY public.parties
 
 ALTER TABLE ONLY public.partner_applications
     ADD CONSTRAINT fk_rails_8092ee2601 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
+-- Name: anticipation_risk_rules fk_rails_81920115bb; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_risk_rules
+    ADD CONSTRAINT fk_rails_81920115bb FOREIGN KEY (scope_party_id) REFERENCES public.parties(id);
 
 
 --
@@ -3870,6 +4168,14 @@ ALTER TABLE ONLY public.outbox_dispatch_attempts
 
 
 --
+-- Name: anticipation_risk_decisions fk_rails_8f578808aa; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_risk_decisions
+    ADD CONSTRAINT fk_rails_8f578808aa FOREIGN KEY (scope_party_id) REFERENCES public.parties(id);
+
+
+--
 -- Name: physician_cnpj_split_policies fk_rails_91a5618ab5; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3899,6 +4205,14 @@ ALTER TABLE ONLY public.escrow_payouts
 
 ALTER TABLE ONLY public.receivable_allocations
     ADD CONSTRAINT fk_rails_95ffa4a06a FOREIGN KEY (physician_party_id) REFERENCES public.parties(id);
+
+
+--
+-- Name: anticipation_risk_rule_events fk_rails_9719a9dbfd; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_risk_rule_events
+    ADD CONSTRAINT fk_rails_9719a9dbfd FOREIGN KEY (actor_party_id) REFERENCES public.parties(id);
 
 
 --
@@ -3974,6 +4288,14 @@ ALTER TABLE ONLY public.partner_applications
 
 
 --
+-- Name: anticipation_risk_decisions fk_rails_b45e8d132a; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_risk_decisions
+    ADD CONSTRAINT fk_rails_b45e8d132a FOREIGN KEY (receivable_allocation_id) REFERENCES public.receivable_allocations(id);
+
+
+--
 -- Name: auth_challenges fk_rails_b664f3fd7a; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4027,6 +4349,22 @@ ALTER TABLE ONLY public.receivable_events
 
 ALTER TABLE ONLY public.active_storage_attachments
     ADD CONSTRAINT fk_rails_c3b3935057 FOREIGN KEY (blob_id) REFERENCES public.active_storage_blobs(id);
+
+
+--
+-- Name: anticipation_risk_decisions fk_rails_c71a729229; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_risk_decisions
+    ADD CONSTRAINT fk_rails_c71a729229 FOREIGN KEY (trigger_rule_id) REFERENCES public.anticipation_risk_rules(id);
+
+
+--
+-- Name: anticipation_risk_rules fk_rails_c8dc717e8b; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_risk_rules
+    ADD CONSTRAINT fk_rails_c8dc717e8b FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 
 --
@@ -4142,6 +4480,14 @@ ALTER TABLE ONLY public.ledger_transactions
 
 
 --
+-- Name: anticipation_risk_decisions fk_rails_dc379f85f9; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_risk_decisions
+    ADD CONSTRAINT fk_rails_dc379f85f9 FOREIGN KEY (anticipation_request_id) REFERENCES public.anticipation_requests(id);
+
+
+--
 -- Name: hospital_ownerships fk_rails_dfbe05a360; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4214,6 +4560,14 @@ ALTER TABLE ONLY public.outbox_dispatch_attempts
 
 
 --
+-- Name: anticipation_risk_decisions fk_rails_ef42f2e8a0; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_risk_decisions
+    ADD CONSTRAINT fk_rails_ef42f2e8a0 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
 -- Name: action_ip_logs fk_rails_f0fed210ec; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4259,6 +4613,14 @@ ALTER TABLE ONLY public.receivable_payment_settlements
 
 ALTER TABLE ONLY public.partner_applications
     ADD CONSTRAINT fk_rails_ff6346f9d2 FOREIGN KEY (actor_party_id) REFERENCES public.parties(id);
+
+
+--
+-- Name: anticipation_risk_decisions fk_rails_ffe9164fa5; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_risk_decisions
+    ADD CONSTRAINT fk_rails_ffe9164fa5 FOREIGN KEY (receivable_id) REFERENCES public.receivables(id);
 
 
 --
@@ -4345,6 +4707,45 @@ ALTER TABLE public.anticipation_requests ENABLE ROW LEVEL SECURITY;
 --
 
 CREATE POLICY anticipation_requests_tenant_policy ON public.anticipation_requests USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
+-- Name: anticipation_risk_decisions; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.anticipation_risk_decisions ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: anticipation_risk_decisions anticipation_risk_decisions_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY anticipation_risk_decisions_tenant_policy ON public.anticipation_risk_decisions USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
+-- Name: anticipation_risk_rule_events; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.anticipation_risk_rule_events ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: anticipation_risk_rule_events anticipation_risk_rule_events_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY anticipation_risk_rule_events_tenant_policy ON public.anticipation_risk_rule_events USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
+-- Name: anticipation_risk_rules; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.anticipation_risk_rules ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: anticipation_risk_rules anticipation_risk_rules_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY anticipation_risk_rules_tenant_policy ON public.anticipation_risk_rules USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
 
 
 --
@@ -4849,6 +5250,9 @@ CREATE POLICY webauthn_credentials_tenant_policy ON public.webauthn_credentials 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260227120000'),
+('20260227111500'),
+('20260227103000'),
 ('20260222121500'),
 ('20260222103000'),
 ('20260221162000'),

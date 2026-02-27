@@ -38,6 +38,10 @@ Rails.application.routes.draw do
 
     get :dashboard, to: "dashboard#show"
     resources :api_access_tokens, only: %i[index create destroy]
+    resources :anticipation_risk_rules, only: %i[index create update] do
+      patch :activate, on: :member
+      patch :deactivate, on: :member
+    end
     resources :partner_applications, only: %i[index create] do
       post :rotate_secret, on: :member
       patch :deactivate, on: :member
