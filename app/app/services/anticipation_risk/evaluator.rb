@@ -1,3 +1,5 @@
+require "digest"
+
 module AnticipationRisk
   class Evaluator
     OPEN_STATUSES = %w[REQUESTED APPROVED FUNDED].freeze
@@ -59,7 +61,8 @@ module AnticipationRisk
         receivable: receivable,
         receivable_allocation: receivable_allocation,
         requester_party: requester_party,
-        scope_map: scope_map
+        scope_map: scope_map,
+        now: now
       ).each { |lock_key| advisory_lock!(lock_key) }
 
       rules = applicable_rules(
@@ -301,10 +304,10 @@ module AnticipationRisk
       end
 
       Decision.new(
-        allowed: false,
+        allowed: decision_allows_request?(rule.decision),
         action: rule.decision,
         code: "#{base_code}_#{scope_label}",
-        message: violation_message(rule:, metric:, limit_value:, observed_value:, scope_label: scope_label),
+        message: violation_message(rule:, metric:, scope_label: scope_label),
         rule: rule,
         metric: metric,
         scope_type: rule.scope_type,
@@ -333,9 +336,17 @@ module AnticipationRisk
       end
     end
 
-    def violation_message(rule:, metric:, limit_value:, observed_value:, scope_label:)
-      action_label = rule.decision == "REVIEW" ? "requires manual review" : "was blocked"
-      "Anticipation request #{action_label} by #{scope_label} #{metric.tr('_', ' ')} limit: observed #{decimal_to_string(observed_value)} exceeds #{decimal_to_string(limit_value)}."
+    def violation_message(rule:, metric:, scope_label:)
+      action_label = case rule.decision
+      when "ALLOW"
+        "was allowed under override"
+      when "REVIEW"
+        "requires manual review"
+      else
+        "was blocked"
+      end
+
+      "Anticipation request #{action_label} by #{scope_label} #{metric.tr('_', ' ')} rule."
     end
 
     def business_day_range(now)
@@ -354,8 +365,9 @@ module AnticipationRisk
       )
     end
 
-    def advisory_lock_keys(receivable:, receivable_allocation:, requester_party:, scope_map:)
-      keys = [ "#{@tenant_id}:tenant_default" ]
+    def advisory_lock_keys(receivable:, receivable_allocation:, requester_party:, scope_map:, now:)
+      keys = []
+      keys << "#{@tenant_id}:tenant_default" if tenant_default_rules_active?(now)
       keys.concat(Array(scope_map["PHYSICIAN_PARTY"]).map { |party_id| "#{@tenant_id}:physician:#{party_id}" })
       keys.concat(Array(scope_map["HOSPITAL_PARTY"]).map { |party_id| "#{@tenant_id}:hospital:#{party_id}" })
       keys.concat(
@@ -363,7 +375,7 @@ module AnticipationRisk
           receivable: receivable,
           receivable_allocation: receivable_allocation,
           requester_party: requester_party
-        ).map { |document_number| "#{@tenant_id}:cnpj:#{document_number}" }
+        ).map { |document_number| cnpj_lock_key(document_number) }
       )
 
       keys.compact.uniq.sort
@@ -409,6 +421,22 @@ module AnticipationRisk
       @cnpj_party_ids_by_document_number[document_number] ||= Party
         .where(tenant_id: @tenant_id, document_type: "CNPJ", document_number: document_number)
         .pluck(:id)
+    end
+
+    def tenant_default_rules_active?(now)
+      AnticipationRiskRule.where(tenant_id: @tenant_id, scope_type: "TENANT_DEFAULT", active: true)
+        .where("effective_from IS NULL OR effective_from <= ?", now)
+        .where("effective_until IS NULL OR effective_until >= ?", now)
+        .exists?
+    end
+
+    def cnpj_lock_key(document_number)
+      digest = Digest::SHA256.hexdigest(document_number.to_s)
+      "#{@tenant_id}:cnpj_sha256:#{digest[0, 16]}"
+    end
+
+    def decision_allows_request?(decision_action)
+      decision_action == "ALLOW"
     end
 
     def decimal_to_string(value)

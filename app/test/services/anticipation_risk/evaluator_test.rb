@@ -1,4 +1,5 @@
 require "test_helper"
+require "digest"
 
 module AnticipationRisk
   class EvaluatorTest < ActiveSupport::TestCase
@@ -112,19 +113,15 @@ module AnticipationRisk
           document_number: valid_cpf_from_seed("risk-evaluator-lock-scope-physician")
         )
         bundle[:allocation].update!(physician_party: physician_party)
+        AnticipationRiskRule.create!(
+          tenant: @tenant,
+          scope_type: "TENANT_DEFAULT",
+          decision: "BLOCK",
+          max_outstanding_exposure_amount: "999999.99"
+        )
 
-        captured_keys = []
         evaluator = Evaluator.new(tenant_id: @tenant.id)
-        singleton = class << evaluator
-          self
-        end
-
-        singleton.send(:alias_method, :advisory_lock_without_capture_for_test, :advisory_lock!)
-        singleton.send(:define_method, :advisory_lock!) do |key|
-          captured_keys << key
-        end
-
-        begin
+        captured_keys = capture_lock_keys(evaluator) do
           evaluator.evaluate!(
             receivable: bundle[:receivable],
             receivable_allocation: bundle[:allocation],
@@ -133,19 +130,65 @@ module AnticipationRisk
             net_amount: BigDecimal("10.00"),
             stage: :create
           )
-        ensure
-          singleton.send(:alias_method, :advisory_lock!, :advisory_lock_without_capture_for_test)
-          singleton.send(:remove_method, :advisory_lock_without_capture_for_test)
         end
 
         expected_keys = [
           "#{@tenant.id}:tenant_default",
           "#{@tenant.id}:physician:#{physician_party.id}",
           "#{@tenant.id}:hospital:#{bundle[:hospital].id}",
-          "#{@tenant.id}:cnpj:#{bundle[:legal_entity].document_number}"
+          "#{@tenant.id}:cnpj_sha256:#{Digest::SHA256.hexdigest(bundle[:legal_entity].document_number)[0, 16]}"
         ].sort
 
         assert_equal expected_keys, captured_keys
+      end
+    end
+
+    test "does not acquire tenant default lock key when no active tenant default rules exist" do
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+        bundle = create_cnpj_bundle!(tenant: @tenant, suffix: "risk-evaluator-lock-no-tenant-default")
+        evaluator = Evaluator.new(tenant_id: @tenant.id)
+
+        captured_keys = capture_lock_keys(evaluator) do
+          evaluator.evaluate!(
+            receivable: bundle[:receivable],
+            receivable_allocation: bundle[:allocation],
+            requester_party: bundle[:legal_entity],
+            requested_amount: BigDecimal("10.00"),
+            net_amount: BigDecimal("10.00"),
+            stage: :create
+          )
+        end
+
+        assert captured_keys.none? { |key| key.end_with?(":tenant_default") }
+      end
+    end
+
+    test "allows request when allow decision rule is exceeded" do
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+        bundle = create_cnpj_bundle!(tenant: @tenant, suffix: "risk-evaluator-allow")
+
+        AnticipationRiskRule.create!(
+          tenant: @tenant,
+          scope_type: "CNPJ_PARTY",
+          scope_party: bundle[:legal_entity],
+          decision: "ALLOW",
+          max_single_request_amount: "50.00"
+        )
+
+        decision = Evaluator.new(tenant_id: @tenant.id).evaluate!(
+          receivable: bundle[:receivable],
+          receivable_allocation: bundle[:allocation],
+          requester_party: bundle[:legal_entity],
+          requested_amount: BigDecimal("60.00"),
+          net_amount: BigDecimal("60.00"),
+          stage: :create
+        )
+
+        assert decision.allowed?
+        assert_equal "ALLOW", decision.action
+        assert_equal "risk_limit_exceeded_single_request_cnpj", decision.code
+        assert_match(/override/, decision.message)
+        refute_match(/60\.00|50\.00|observed|exceeds/, decision.message)
       end
     end
 
@@ -202,6 +245,27 @@ module AnticipationRisk
         receivable: receivable,
         allocation: allocation
       }
+    end
+
+    def capture_lock_keys(evaluator)
+      captured_keys = []
+      singleton = class << evaluator
+        self
+      end
+
+      singleton.send(:alias_method, :advisory_lock_without_capture_for_test, :advisory_lock!)
+      singleton.send(:define_method, :advisory_lock!) do |key|
+        captured_keys << key
+      end
+
+      begin
+        yield
+      ensure
+        singleton.send(:alias_method, :advisory_lock!, :advisory_lock_without_capture_for_test)
+        singleton.send(:remove_method, :advisory_lock_without_capture_for_test)
+      end
+
+      captured_keys
     end
   end
 end

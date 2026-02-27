@@ -8,6 +8,8 @@ module AnticipationRequests
     CURRENCY_SCALE = 2
     RATE_SCALE = 8
     PAYLOAD_HASH_METADATA_KEY = "_idempotency_payload_hash".freeze
+    RISK_BLOCKED_PUBLIC_MESSAGE = "Anticipation request blocked by risk policy.".freeze
+    RISK_REVIEW_PUBLIC_MESSAGE = "Anticipation request requires manual review.".freeze
 
     Intent = Struct.new(
       :receivable_id,
@@ -181,7 +183,7 @@ module AnticipationRequests
         )
       )
 
-      raise_validation_error!(decision.code, decision.message)
+      raise_validation_error!(decision.code, risk_public_message(decision))
     end
 
     def create_risk_decision_record!(decision:, receivable:, allocation:, requester_party:, requested_amount:, net_amount:, anticipation_request:)
@@ -519,6 +521,12 @@ module AnticipationRequests
 
     def raise_validation_error!(code, message)
       raise ValidationError.new(code:, message:)
+    end
+
+    def risk_public_message(decision)
+      return RISK_REVIEW_PUBLIC_MESSAGE if decision.action == "REVIEW"
+
+      RISK_BLOCKED_PUBLIC_MESSAGE
     end
 
     def risk_evaluator

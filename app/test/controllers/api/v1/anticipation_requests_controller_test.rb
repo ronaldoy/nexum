@@ -254,6 +254,7 @@ module Api
 
         assert_response :unprocessable_entity
         assert_equal "risk_limit_exceeded_single_request_physician", response.parsed_body.dig("error", "code")
+        assert_equal "Anticipation request blocked by risk policy.", response.parsed_body.dig("error", "message")
 
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
           risk_decision = AnticipationRiskDecision.find_by!(
@@ -263,6 +264,85 @@ module Api
           )
           assert_equal "BLOCK", risk_decision.decision_action
           assert_equal "risk_limit_exceeded_single_request_physician", risk_decision.decision_code
+        end
+      end
+
+      test "allows create when limit is exceeded under allow decision rule" do
+        shared_bundle = nil
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          shared_bundle = create_shared_cnpj_physician_bundle!(tenant: @tenant, suffix: "risk-physician-allow")
+          AnticipationRiskRule.create!(
+            tenant: @tenant,
+            scope_type: "PHYSICIAN_PARTY",
+            scope_party: shared_bundle[:physician_one],
+            decision: "ALLOW",
+            max_single_request_amount: "50.00"
+          )
+        end
+
+        payload = create_payload(
+          receivable_id: shared_bundle[:receivable].id,
+          receivable_allocation_id: shared_bundle[:allocation].id,
+          requester_party_id: shared_bundle[:physician_one].id
+        )
+        payload[:anticipation_request][:requested_amount] = "60.00"
+
+        post api_v1_anticipation_requests_path,
+          headers: authorization_headers(@write_token, idempotency_key: "idem-risk-physician-allow-001"),
+          params: payload,
+          as: :json
+
+        assert_response :created
+        assert_equal "REQUESTED", response.parsed_body.dig("data", "status")
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          risk_decision = AnticipationRiskDecision.find_by!(
+            tenant_id: @tenant.id,
+            idempotency_key: "idem-risk-physician-allow-001",
+            stage: "CREATE"
+          )
+          assert_equal "ALLOW", risk_decision.decision_action
+          assert_equal "risk_limit_exceeded_single_request_physician", risk_decision.decision_code
+        end
+      end
+
+      test "requires manual review when review decision rule is exceeded" do
+        shared_bundle = nil
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          shared_bundle = create_shared_cnpj_physician_bundle!(tenant: @tenant, suffix: "risk-physician-review")
+          AnticipationRiskRule.create!(
+            tenant: @tenant,
+            scope_type: "PHYSICIAN_PARTY",
+            scope_party: shared_bundle[:physician_one],
+            decision: "REVIEW",
+            max_single_request_amount: "50.00"
+          )
+        end
+
+        payload = create_payload(
+          receivable_id: shared_bundle[:receivable].id,
+          receivable_allocation_id: shared_bundle[:allocation].id,
+          requester_party_id: shared_bundle[:physician_one].id
+        )
+        payload[:anticipation_request][:requested_amount] = "60.00"
+
+        post api_v1_anticipation_requests_path,
+          headers: authorization_headers(@write_token, idempotency_key: "idem-risk-physician-review-001"),
+          params: payload,
+          as: :json
+
+        assert_response :unprocessable_entity
+        assert_equal "risk_manual_review_required_physician", response.parsed_body.dig("error", "code")
+        assert_equal "Anticipation request requires manual review.", response.parsed_body.dig("error", "message")
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          risk_decision = AnticipationRiskDecision.find_by!(
+            tenant_id: @tenant.id,
+            idempotency_key: "idem-risk-physician-review-001",
+            stage: "CREATE"
+          )
+          assert_equal "REVIEW", risk_decision.decision_action
+          assert_equal "risk_manual_review_required_physician", risk_decision.decision_code
         end
       end
 
@@ -798,6 +878,7 @@ module Api
 
         assert_response :unprocessable_entity
         assert_equal "risk_limit_exceeded_outstanding_exposure_tenant", response.parsed_body.dig("error", "code")
+        assert_equal "Anticipation request blocked by risk policy.", response.parsed_body.dig("error", "message")
 
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
           anticipation_request.reload
