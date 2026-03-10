@@ -31,8 +31,8 @@ en:
   sessions:
     new:
       eyebrow: "Operations Portal"
-      title: "Sign in to Nexum Capital"
-      subtitle: "Track anticipations, signed documents, and settlements in one place."
+      title: "Sign in to Averta"
+      subtitle: "Manage performed receivables, FDIC loans, and settlements in one cockpit."
       fields:
         tenant_slug:
           label: "Organization code"
@@ -46,8 +46,8 @@ en:
         submit: "Sign in"
         forgot_password: "Forgot your password?"
       demo:
-        title: "Demo access"
-        subtitle: "Use the profiles below to review end-to-end flows."
+        title: "Seed access"
+        subtitle: "Use the profiles below to validate the cockpit end-to-end."
         roles:
           hospital_org: "Hospital organization"
           hospital_unit: "Hospital unit"
@@ -55,9 +55,10 @@ en:
           physician: "Physician"
           fdic: "FDIC"
         users:
-          hospital_org: "hospital_org_user@demo.nexum.capital"
-          hospital_unit: "hospital_unit_user@demo.nexum.capital"
-          supplier: "supplier_user@demo.nexum.capital"
-          physician: "physician_user@demo.nexum.capital"
-          fdic: "fdic_user@demo.nexum.capital"
-        password_hint: "Demo password:"
+          hospital_org: "hospital_org_user@avertacapital.com.br"
+          hospital_unit: "hospital_unit_user@avertacapital.com.br"
+          supplier: "supplier_user@avertacapital.com.br"
+          physician: "physician_user@avertacapital.com.br"
+          fdic: "fdic_manager@avertacapital.com.br"
+        password_hint: "Seed password:"
+        privileged_otp_hint: "Current MFA code for privileged profiles:"

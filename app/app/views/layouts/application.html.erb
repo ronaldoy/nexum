@@ -1,10 +1,11 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <title><%= content_for(:title) || "Nexum Capital" %></title>
+    <title><%= content_for(:title) || platform_name %></title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="theme-color" content="#0a1628">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="application-name" content="Nexum Capital">
+    <meta name="application-name" content="<%= platform_name %>">
     <meta name="mobile-web-app-capable" content="yes">
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
@@ -14,8 +15,8 @@
     <%# Enable PWA manifest for installable apps (make sure to enable in config/routes.rb too!) %>
     <%#= tag.link rel: "manifest", href: pwa_manifest_path(format: :json) %>
 
-    <link rel="icon" href="/icon.png" type="image/png">
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="icon" href="/icon.png" type="image/png">
     <link rel="apple-touch-icon" href="/icon.png">
 
     <%# Includes all stylesheet files in app/assets/stylesheets %>
@@ -26,10 +27,18 @@
   <body class="<%= authenticated? ? "app-authenticated" : "app-public" %>">
     <% if authenticated? %>
       <header class="topbar">
-        <div class="topbar-brand">
-          <p class="topbar-kicker">Plataforma de Recebíveis</p>
-          <h1>Nexum Capital</h1>
-        </div>
+        <%= link_to root_path, class: "topbar-brand", aria: { label: "#{platform_name} home" } do %>
+          <%= image_tag "/averta-logo.png", alt: "Averta Capital", class: "topbar-brand-logo", loading: "eager", decoding: "async" %>
+        <% end %>
+        <% if Current.user&.role == "ops_admin" %>
+          <nav class="topbar-nav" aria-label="Atalhos do cockpit">
+            <%= link_to "Cockpit", admin_dashboard_path, class: admin_nav_link_class(admin_dashboard_path) %>
+            <%= link_to "Contrapartes", admin_counterparties_path, class: admin_nav_link_class(admin_counterparties_path) %>
+            <%= link_to "Empréstimos", admin_loans_path, class: admin_nav_link_class(admin_loans_path) %>
+            <%= link_to "Risco", admin_anticipation_risk_rules_path, class: admin_nav_link_class(admin_anticipation_risk_rules_path) %>
+            <%= link_to "Revisões", admin_anticipation_reviews_path, class: admin_nav_link_class(admin_anticipation_reviews_path) %>
+          </nav>
+        <% end %>
         <div class="topbar-user">
           <p class="topbar-user-role"><%= role_label(Current.user&.role) %></p>
           <p class="topbar-user-email"><%= Current.user&.email_address %></p>

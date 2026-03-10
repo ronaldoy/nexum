@@ -10,8 +10,8 @@ pt-BR:
   sessions:
     new:
       eyebrow: "Portal de Operações"
-      title: "Entrar na Nexum Capital"
-      subtitle: "Acompanhe antecipações, documentos assinados e liquidações em um único fluxo."
+      title: "Entrar na Averta"
+      subtitle: "Gerencie recebíveis performados, empréstimos FDIC e liquidações em um único cockpit."
       fields:
         tenant_slug:
           label: "Código da organização"
@@ -25,8 +25,8 @@ pt-BR:
         submit: "Entrar no portal"
         forgot_password: "Esqueceu sua senha?"
       demo:
-        title: "Acessos de demonstração"
-        subtitle: "Use os perfis abaixo para revisar o fluxo ponta a ponta."
+        title: "Acessos de seed"
+        subtitle: "Use os perfis abaixo para validar o cockpit ponta a ponta."
         roles:
           hospital_org: "Organização hospitalar"
           hospital_unit: "Unidade hospitalar"
@@ -34,9 +34,10 @@ pt-BR:
           physician: "Médico"
           fdic: "FDIC"
         users:
-          hospital_org: "hospital_org_user@demo.nexum.capital"
-          hospital_unit: "hospital_unit_user@demo.nexum.capital"
-          supplier: "supplier_user@demo.nexum.capital"
-          physician: "physician_user@demo.nexum.capital"
-          fdic: "fdic_user@demo.nexum.capital"
-        password_hint: "Senha de demonstração:"
+          hospital_org: "hospital_org_user@avertacapital.com.br"
+          hospital_unit: "hospital_unit_user@avertacapital.com.br"
+          supplier: "supplier_user@avertacapital.com.br"
+          physician: "physician_user@avertacapital.com.br"
+          fdic: "fdic_manager@avertacapital.com.br"
+        password_hint: "Senha configurada para seed:"
+        privileged_otp_hint: "Código MFA atual para perfis privilegiados:"

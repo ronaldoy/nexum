@@ -9,6 +9,9 @@ module Admin
       receivable_count
       anticipation_count
       funded_anticipation_count
+      pending_review_count
+      risk_review_24h_count
+      risk_block_24h_count
       settlement_count
       outbox_pending_count
       outbox_dead_letter_count
@@ -27,6 +30,9 @@ module Admin
       hospital_organizations_count
       receivables_count
       anticipations_count
+      pending_review_count
+      risk_review_24h_count
+      risk_block_24h_count
       settlements_count
       outbox_pending_count
       outbox_dead_letter_count
@@ -45,6 +51,9 @@ module Admin
       hospital_organizations_count: :hospital_organization_count,
       receivables_count: :receivable_count,
       anticipations_count: :anticipation_count,
+      pending_review_count: :pending_review_count,
+      risk_review_24h_count: :risk_review_24h_count,
+      risk_block_24h_count: :risk_block_24h_count,
       settlements_count: :settlement_count,
       outbox_pending_count: :outbox_pending_count,
       outbox_dead_letter_count: :outbox_dead_letter_count,
@@ -67,6 +76,10 @@ module Admin
       " (SELECT COUNT(*) FROM anticipation_requests WHERE tenant_id = $1::uuid) AS anticipation_count",
       " (SELECT COALESCE(SUM(requested_amount), 0) FROM anticipation_requests WHERE tenant_id = $1::uuid) AS anticipation_requested_amount",
       " (SELECT COUNT(*) FROM anticipation_requests WHERE tenant_id = $1::uuid AND status IN ('APPROVED', 'FUNDED', 'SETTLED')) AS funded_anticipation_count",
+      " (SELECT COUNT(*) FROM anticipation_requests WHERE tenant_id = $1::uuid AND status = 'PENDING_REVIEW') AS pending_review_count",
+      " (SELECT MIN(requested_at) FROM anticipation_requests WHERE tenant_id = $1::uuid AND status = 'PENDING_REVIEW') AS pending_review_oldest_requested_at",
+      " (SELECT COUNT(*) FROM anticipation_risk_decisions WHERE tenant_id = $1::uuid AND decision_action = 'REVIEW' AND evaluated_at >= NOW() - INTERVAL '24 hours') AS risk_review_24h_count",
+      " (SELECT COUNT(*) FROM anticipation_risk_decisions WHERE tenant_id = $1::uuid AND decision_action = 'BLOCK' AND evaluated_at >= NOW() - INTERVAL '24 hours') AS risk_block_24h_count",
       " (SELECT COUNT(*) FROM receivable_payment_settlements WHERE tenant_id = $1::uuid) AS settlement_count",
       " (SELECT COALESCE(SUM(paid_amount), 0) FROM receivable_payment_settlements WHERE tenant_id = $1::uuid) AS settlement_paid_amount",
       <<~SQL.squish,
@@ -128,6 +141,8 @@ module Admin
         generated_at: Time.current,
         totals: build_totals(tenant_rows),
         tenant_rows: tenant_rows,
+        pending_review_backlog: build_pending_review_backlog(rows: tenant_rows),
+        recent_risk_signals: build_recent_risk_signals(tenants: tenants),
         recent_reconciliation_exceptions: build_recent_reconciliation_exceptions(tenants: tenants)
       }
     end
@@ -150,6 +165,7 @@ module Admin
       ).merge(
         metrics_by_fields(metrics:, fields: DECIMAL_ROW_FIELDS, converter: method(:decimal_value))
       ).merge(
+        pending_review_oldest_requested_at: time_value(metrics["pending_review_oldest_requested_at"]),
         last_activity_at: time_value(metrics["last_activity_at"])
       )
     end
@@ -196,6 +212,57 @@ module Admin
     def build_recent_reconciliation_exceptions(tenants:, global_limit: 20, per_tenant_limit: 10)
       rows = tenants.flat_map { |tenant| recent_open_exceptions_for_tenant(tenant: tenant, per_tenant_limit: per_tenant_limit) }
       sort_and_limit_reconciliation_exceptions(rows: rows, global_limit: global_limit)
+    end
+
+    def build_pending_review_backlog(rows:, limit: 20)
+      rows
+        .select { |row| row[:pending_review_count].positive? }
+        .sort_by { |row| [ -row[:pending_review_count], row[:pending_review_oldest_requested_at] || Time.current ] }
+        .first(limit)
+        .map do |row|
+          {
+            tenant_id: row[:tenant_id],
+            tenant_slug: row[:tenant_slug],
+            tenant_name: row[:tenant_name],
+            pending_review_count: row[:pending_review_count],
+            oldest_pending_requested_at: row[:pending_review_oldest_requested_at]
+          }
+        end
+    end
+
+    def build_recent_risk_signals(tenants:, global_limit: 30, per_tenant_limit: 10)
+      rows = tenants.flat_map { |tenant| recent_risk_signals_for_tenant(tenant: tenant, per_tenant_limit: per_tenant_limit) }
+      rows
+        .sort_by { |row| row[:evaluated_at] || Time.at(0) }
+        .reverse
+        .first(global_limit)
+    end
+
+    def recent_risk_signals_for_tenant(tenant:, per_tenant_limit:)
+      with_tenant_database_context(tenant_id: tenant.id, actor_id: actor_id, role: role) do
+        AnticipationRiskDecision
+          .where(tenant_id: tenant.id, decision_action: %w[REVIEW BLOCK])
+          .where("evaluated_at >= ?", 24.hours.ago)
+          .includes(:requester_party)
+          .order(evaluated_at: :desc)
+          .limit(per_tenant_limit)
+          .map { |decision| risk_signal_row(decision:, tenant:) }
+      end
+    end
+
+    def risk_signal_row(decision:, tenant:)
+      {
+        tenant_id: tenant.id,
+        tenant_slug: tenant.slug,
+        tenant_name: tenant.name,
+        decision_action: decision.decision_action,
+        stage: decision.stage,
+        decision_code: decision.decision_code,
+        requester_party_id: decision.requester_party_id,
+        requester_party_name: decision.requester_party&.legal_name,
+        evaluated_at: decision.evaluated_at,
+        request_id: decision.request_id
+      }
     end
 
     def recent_open_exceptions_for_tenant(tenant:, per_tenant_limit:)

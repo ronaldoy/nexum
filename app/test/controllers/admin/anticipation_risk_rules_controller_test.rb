@@ -162,5 +162,82 @@ module Admin
         assert_equal %w[RULE_DEACTIVATED RULE_ACTIVATED], events.pluck(:event_type)
       end
     end
+
+    test "requires change reason when creating active conflicting rule decision" do
+      with_tenant_db_context(tenant_id: @secondary_tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
+        AnticipationRiskRule.create!(
+          tenant: @secondary_tenant,
+          scope_type: "TENANT_DEFAULT",
+          decision: "BLOCK",
+          priority: 100,
+          max_single_request_amount: "1000.00",
+          active: true
+        )
+      end
+
+      sign_in_as(@ops_user, admin_webauthn_verified: true)
+
+      post admin_anticipation_risk_rules_path, params: {
+        anticipation_risk_rule: {
+          tenant_id: @secondary_tenant.id,
+          scope_type: "TENANT_DEFAULT",
+          decision: "REVIEW",
+          priority: 10,
+          max_single_request_amount: "800.00",
+          change_reason: ""
+        }
+      }
+
+      assert_response :unprocessable_entity
+      with_tenant_db_context(tenant_id: @secondary_tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
+        assert_equal 1, AnticipationRiskRule.where(tenant_id: @secondary_tenant.id).count
+      end
+    end
+
+    test "records change reason and conflicting ids when creating conflicting rule with justification" do
+      existing_rule_id = nil
+
+      with_tenant_db_context(tenant_id: @secondary_tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
+        existing_rule = AnticipationRiskRule.create!(
+          tenant: @secondary_tenant,
+          scope_type: "TENANT_DEFAULT",
+          decision: "BLOCK",
+          priority: 100,
+          max_single_request_amount: "1000.00",
+          active: true
+        )
+        existing_rule_id = existing_rule.id
+      end
+
+      sign_in_as(@ops_user, admin_webauthn_verified: true)
+
+      post admin_anticipation_risk_rules_path, params: {
+        anticipation_risk_rule: {
+          tenant_id: @secondary_tenant.id,
+          scope_type: "TENANT_DEFAULT",
+          decision: "REVIEW",
+          priority: 10,
+          max_single_request_amount: "800.00",
+          change_reason: "Aplicar revisão manual temporária para aumento atípico."
+        }
+      }
+
+      assert_redirected_to admin_anticipation_risk_rules_path(tenant_id: @secondary_tenant.id)
+
+      with_tenant_db_context(tenant_id: @secondary_tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
+        rule = AnticipationRiskRule.where(tenant_id: @secondary_tenant.id, decision: "REVIEW").order(created_at: :desc).first
+        event = AnticipationRiskRuleEvent.find_by!(tenant_id: @secondary_tenant.id, anticipation_risk_rule_id: rule.id, sequence: 1)
+        assert_equal "Aplicar revisão manual temporária para aumento atípico.", event.payload["change_reason"]
+        assert_equal [ existing_rule_id ], event.payload["conflicting_rule_ids"]
+
+        action_log = ActionIpLog.find_by!(
+          tenant_id: @secondary_tenant.id,
+          action_type: "ANTICIPATION_RISK_RULE_CREATED",
+          target_id: rule.id
+        )
+        assert_equal "Aplicar revisão manual temporária para aumento atípico.", action_log.metadata["change_reason"]
+        assert_equal [ existing_rule_id ], action_log.metadata["conflicting_rule_ids"]
+      end
+    end
   end
 end

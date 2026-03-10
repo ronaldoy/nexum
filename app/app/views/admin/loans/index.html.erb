@@ -1,0 +1,140 @@
+<main class="dashboard-shell">
+  <%= render "admin/shared/cockpit_nav" %>
+
+  <section class="hero-panel hero-panel-brand" id="loan-origination">
+    <div>
+      <p class="hero-kicker">Originação FDIC</p>
+      <h2>Empréstimos baseados em recebíveis performados</h2>
+      <p class="hero-subtitle">
+        Cada empréstimo nasce com recebível, alocação e pedido de antecipação. Depois o gestor acompanha aprovação, funding, liquidação e rentabilidade no detalhe.
+      </p>
+    </div>
+    <div class="hero-meta">
+      <p><strong>Parâmetro de seed:</strong> operações próximas de R$ 1.500 e vencimento entre 30 e 60 dias.</p>
+      <p><strong>Moeda:</strong> BRL</p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Novo empréstimo</h3>
+      <p>Originação interna para a carteira do FDIC.</p>
+    </header>
+
+    <%= form_with url: admin_loans_path, scope: :loan, class: "compact-form" do |form| %>
+      <div class="form-grid form-grid-3">
+        <div class="field">
+          <%= form.label :loan_name, "Nome interno" %>
+          <%= form.text_field :loan_name, placeholder: "Carteira Hospital Santa Aurora" %>
+        </div>
+        <div class="field">
+          <%= form.label :external_reference, "Referência externa" %>
+          <%= form.text_field :external_reference, placeholder: "AVR-202603-001" %>
+        </div>
+        <div class="field">
+          <%= form.label :contract_reference, "Referência contratual" %>
+          <%= form.text_field :contract_reference %>
+        </div>
+        <div class="field">
+          <%= form.label :receivable_kind_id, "Tipo de recebível" %>
+          <%= form.select :receivable_kind_id, options_from_collection_for_select(@receivable_kinds, :id, :name) %>
+        </div>
+        <div class="field">
+          <%= form.label :debtor_party_id, "Hospital devedor" %>
+          <%= form.select :debtor_party_id, options_from_collection_for_select(@hospitals, :id, :legal_name) %>
+        </div>
+        <div class="field">
+          <%= form.label :counterparty_id, "Solicitante / beneficiário" %>
+          <%= form.select :counterparty_id, options_from_collection_for_select(@counterparties, :id, :legal_name) %>
+        </div>
+        <div class="field">
+          <%= form.label :gross_amount, "Valor bruto" %>
+          <%= form.text_field :gross_amount, value: "1500.00" %>
+        </div>
+        <div class="field">
+          <%= form.label :requested_amount, "Valor solicitado" %>
+          <%= form.text_field :requested_amount, value: "1350.00" %>
+        </div>
+        <div class="field">
+          <%= form.label :discount_rate, "Taxa de desconto" %>
+          <%= form.text_field :discount_rate, value: "0.04500000" %>
+        </div>
+        <div class="field">
+          <%= form.label :performed_at, "Data de performado" %>
+          <%= form.datetime_local_field :performed_at, value: 1.day.ago.change(hour: 10).strftime("%Y-%m-%dT%H:%M") %>
+        </div>
+        <div class="field">
+          <%= form.label :due_at, "Data de vencimento" %>
+          <%= form.datetime_local_field :due_at, value: 45.days.from_now.change(hour: 18).strftime("%Y-%m-%dT%H:%M") %>
+        </div>
+      </div>
+
+      <%= form.submit "Originar empréstimo", class: "button button-primary" %>
+    <% end %>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Carteira atual</h3>
+      <p>Todas as operações com estágio, exposição aberta e rentabilidade registrada.</p>
+    </header>
+
+    <%= render "admin/shared/loan_structure_filters", selected_structure: @loan_structure_filter %>
+
+    <div class="table-wrapper">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Operação</th>
+            <th>Hospital</th>
+            <th>Solicitante</th>
+            <th>Status</th>
+            <th>Bruto</th>
+            <th>Solicitado</th>
+            <th>Desconto</th>
+            <th>Exposição</th>
+            <th>Lucro registrado</th>
+            <th>Prazo</th>
+            <th>Ação</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @loan_rows.each do |row| %>
+            <tr
+              data-controller="clickable-row"
+              data-clickable-row-url-value="<%= admin_loan_path(row[:anticipation]) %>"
+              data-action="click->clickable-row#open keydown->clickable-row#open"
+              tabindex="0"
+              role="link"
+              aria-label="Abrir detalhes da operacao <%= row[:receivable].external_reference || row[:anticipation].id.first(8) %>">
+              <td>
+                <strong><%= row[:receivable].external_reference || row[:anticipation].id.first(8) %></strong><br>
+                <small><%= row[:current_stage] %></small>
+              </td>
+              <td><%= row[:debtor]&.legal_name %></td>
+              <td>
+                <strong><%= party_display_name(row[:requester]) %></strong><br>
+                <small>
+                  <%= loan_structure_label(row[:anticipation], allocation: row[:allocation]) %>
+                  <% if row[:physician_party].present? %>
+                    · medico vinculado: <%= party_display_name(row[:physician_party]) %>
+                  <% end %>
+                </small>
+              </td>
+              <td><span class="status-pill"><%= status_label(row[:anticipation].status) %></span></td>
+              <td><%= format_brl(row[:gross_amount]) %></td>
+              <td><%= format_brl(row[:requested_amount]) %></td>
+              <td><%= format_brl(row[:discount_amount]) %></td>
+              <td><%= format_brl(row[:open_exposure]) %></td>
+              <td><%= format_brl(row[:recorded_profitability]) %></td>
+              <td><%= row[:term_days] %> dias</td>
+              <td><%= link_to "Abrir", admin_loan_path(row[:anticipation]), class: "button button-soft button-inline" %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+
+    <%= render "admin/shared/loan_pagination", pagination: @loan_pagination %>
+  </section>
+</main>

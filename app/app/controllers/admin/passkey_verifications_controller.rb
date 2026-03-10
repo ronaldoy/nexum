@@ -1,22 +1,23 @@
 module Admin
   class PasskeyVerificationsController < ApplicationController
+    include AdminPasskeyMode
+
     REGISTRATION_CHALLENGE_KEY = :admin_webauthn_registration_challenge
     AUTHENTICATION_CHALLENGE_KEY = :admin_webauthn_authentication_challenge
     RETURN_TO_KEY = :admin_webauthn_return_to
-    PUBLIC_KEY_RESPONSE_FIELDS = %i[
+    PUBLIC_KEY_REQUIRED_FIELDS = %w[id type rawId].freeze
+    PUBLIC_KEY_RESPONSE_FIELDS = %w[
       attestationObject
       clientDataJSON
       authenticatorData
       signature
       userHandle
+      transports
+      publicKeyAlgorithm
+      publicKey
     ].freeze
-    PUBLIC_KEY_CREDENTIAL_PERMITTED_FIELDS = [
-      :id,
-      :type,
-      :rawId,
-      { response: PUBLIC_KEY_RESPONSE_FIELDS },
-      { clientExtensionResults: {} }
-    ].freeze
+    REGISTRATION_RESPONSE_FIELDS = %w[attestationObject clientDataJSON].freeze
+    AUTHENTICATION_RESPONSE_FIELDS = %w[authenticatorData clientDataJSON signature].freeze
 
     PASSKEY_REGISTERED_ACTION = "ADMIN_DASHBOARD_PASSKEY_REGISTERED".freeze
     PASSKEY_VERIFIED_ACTION = "ADMIN_DASHBOARD_PASSKEY_VERIFIED".freeze
@@ -27,6 +28,12 @@ module Admin
     def new
       return_to = safe_return_to(params[:return_to])
       session[RETURN_TO_KEY] = return_to
+
+      if demo_admin_passkey_bypass_enabled?
+        Current.session&.mark_admin_webauthn_verified!
+        redirect_to return_to, notice: "Passkey desativada no modo demo."
+        return
+      end
 
       if Current.session&.admin_webauthn_verified_recently?
         redirect_to return_to, notice: "Segundo fator já validado para o painel administrativo."
@@ -61,7 +68,10 @@ module Admin
       credential_ids = current_user_credential_ids
       return render_passkey_not_registered if credential_ids.empty?
 
-      options = WebAuthn::Credential.options_for_get(allow: credential_ids, user_verification: "required")
+      options = request_relying_party.options_for_authentication(
+        allow: credential_ids,
+        user_verification: "required"
+      )
       session[AUTHENTICATION_CHALLENGE_KEY] = options.challenge
 
       render json: options
@@ -100,7 +110,7 @@ module Admin
       user = Current.user
       user_handle = user.ensure_webauthn_id!
 
-      WebAuthn::Credential.options_for_create(
+      request_relying_party.options_for_registration(
         user: registration_user_payload(user:, user_handle:),
         exclude: current_user_credential_ids,
         authenticator_selection: { user_verification: "required" }
@@ -116,9 +126,10 @@ module Admin
     end
 
     def register_passkey!
-      credential = WebAuthn::Credential.from_create(public_key_credential_params.to_h)
-      challenge = registration_challenge!
-      credential.verify(challenge, origin: request.base_url)
+      credential = request_relying_party.verify_registration(
+        public_key_credential_payload!(required_response_fields: REGISTRATION_RESPONSE_FIELDS),
+        registration_challenge!
+      )
       create_passkey_record(credential)
     end
 
@@ -145,15 +156,12 @@ module Admin
     end
 
     def verify_passkey!
-      credential = WebAuthn::Credential.from_get(public_key_credential_params.to_h)
-      stored_credential = current_user_credentials.find_by!(webauthn_id: credential.id)
-
-      credential.verify(
-        authentication_challenge!,
-        public_key: stored_credential.public_key,
-        sign_count: stored_credential.sign_count,
-        origin: request.base_url
-      )
+      credential, stored_credential = request_relying_party.verify_authentication(
+        public_key_credential_payload!(required_response_fields: AUTHENTICATION_RESPONSE_FIELDS),
+        authentication_challenge!
+      ) do |webauthn_credential|
+        current_user_credentials.find_by!(webauthn_id: webauthn_credential.id)
+      end
 
       stored_credential.update!(sign_count: credential.sign_count, last_used_at: Time.current)
       stored_credential
@@ -197,8 +205,59 @@ module Admin
       render json: { error: { code: code, message: message } }, status: :unprocessable_entity
     end
 
-    def public_key_credential_params
-      params.require(:public_key_credential).permit(*PUBLIC_KEY_CREDENTIAL_PERMITTED_FIELDS)
+    def public_key_credential_payload!(required_response_fields:)
+      credential = normalize_hash(params.require(:public_key_credential))
+      normalized_payload = {
+        "id" => credential["id"],
+        "type" => credential["type"],
+        "rawId" => credential["rawId"],
+        "authenticatorAttachment" => credential["authenticatorAttachment"],
+        "clientExtensionResults" => normalize_hash(credential["clientExtensionResults"]),
+        "response" => normalize_hash(credential["response"]).slice(*PUBLIC_KEY_RESPONSE_FIELDS)
+      }
+
+      missing_fields = PUBLIC_KEY_REQUIRED_FIELDS.select { |field| normalized_payload[field].blank? }
+      missing_fields.concat(
+        required_response_fields.select { |field| normalized_payload.dig("response", field).blank? }
+      )
+
+      if missing_fields.any?
+        raise WebAuthn::Error, "invalid_public_key_credential_payload: #{missing_fields.join(',')}"
+      end
+
+      normalized_payload
+    end
+
+    def normalize_hash(value)
+      return {} unless value.respond_to?(:to_unsafe_h) || value.respond_to?(:to_h)
+
+      raw_hash = if value.respond_to?(:to_unsafe_h)
+        value.to_unsafe_h
+      else
+        value.to_h
+      end
+
+      raw_hash.deep_stringify_keys
+    end
+
+    def request_relying_party
+      @request_relying_party ||= begin
+        base_relying_party = WebAuthn.configuration.relying_party
+
+        WebAuthn::RelyingParty.new(
+          algorithms: Array(base_relying_party.algorithms).dup,
+          encoding: base_relying_party.encoding,
+          allowed_origins: [ request.base_url ],
+          id: request.host,
+          name: base_relying_party.name,
+          verify_attestation_statement: base_relying_party.verify_attestation_statement,
+          credential_options_timeout: base_relying_party.credential_options_timeout,
+          silent_authentication: base_relying_party.silent_authentication,
+          acceptable_attestation_types: Array(base_relying_party.acceptable_attestation_types).dup,
+          attestation_root_certificates_finders: base_relying_party.attestation_root_certificates_finders,
+          legacy_u2f_appid: base_relying_party.legacy_u2f_appid
+        )
+      end
     end
 
     def safe_return_to(value)

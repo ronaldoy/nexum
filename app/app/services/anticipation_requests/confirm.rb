@@ -10,6 +10,8 @@ module AnticipationRequests
     CONFIRMATION_CHANNELS = %w[EMAIL WHATSAPP].freeze
     RISK_BLOCKED_PUBLIC_MESSAGE = "Anticipation request blocked by risk policy.".freeze
     RISK_REVIEW_PUBLIC_MESSAGE = "Anticipation request requires manual review.".freeze
+    REVIEW_PENDING_STATUS = "PENDING_REVIEW".freeze
+    REQUESTED_STATUS = "REQUESTED".freeze
 
     Result = Struct.new(:anticipation_request, :replayed, keyword_init: true) do
       def replayed?
@@ -95,7 +97,7 @@ module AnticipationRequests
     end
 
     def validate_confirmable_status!(anticipation_request)
-      return if anticipation_request.status == "REQUESTED"
+      return if anticipation_request.status == REQUESTED_STATUS
 
       raise ValidationError.new(
         code: "anticipation_status_not_confirmable",
@@ -104,7 +106,9 @@ module AnticipationRequests
     end
 
     def confirm_requested_anticipation(anticipation_request:, payload_hash:, email_code:, whatsapp_code:)
-      enforce_risk_policy!(anticipation_request)
+      risk_result = enforce_risk_policy!(anticipation_request)
+      return Result.new(anticipation_request:, replayed: false) if risk_result == :pending_review
+
       email_challenge, whatsapp_challenge = load_confirmation_challenges!(anticipation_request)
       verify_confirmation_codes!(
         email_challenge: email_challenge,
@@ -142,7 +146,11 @@ module AnticipationRequests
         stage: :confirm
       )
       create_risk_decision_record!(anticipation_request: anticipation_request, decision: decision)
-      return if decision.allowed?
+      return :allow if decision.allowed?
+      if decision.action == "REVIEW"
+        move_to_pending_review!(anticipation_request: anticipation_request, decision: decision)
+        return :pending_review
+      end
 
       raise_validation_error!(decision.code, risk_public_message(decision))
     end
@@ -166,7 +174,83 @@ module AnticipationRequests
         request_id: @request_id,
         idempotency_key: @idempotency_key,
         evaluated_at: Time.current,
-        details: normalized_metadata(decision.details || {})
+        details: normalized_metadata(
+          (decision.details || {}).merge(
+            "rule_snapshot" => risk_rule_snapshot(decision.rule)
+          )
+        )
+      )
+    end
+
+    def move_to_pending_review!(anticipation_request:, decision:)
+      reviewed_at = Time.current
+      anticipation_request.transition_status!(
+        REVIEW_PENDING_STATUS,
+        metadata: {
+          "review_pending_at" => reviewed_at.utc.iso8601(6),
+          "review_pending_reason_code" => decision.code,
+          "review_pending_idempotency_key" => @idempotency_key
+        }
+      )
+
+      create_review_pending_receivable_event!(
+        anticipation_request: anticipation_request,
+        decision: decision,
+        occurred_at: reviewed_at
+      )
+
+      create_action_log!(
+        action_type: "ANTICIPATION_REVIEW_PENDING",
+        success: true,
+        requester_party_id: anticipation_request.requester_party_id,
+        target_id: anticipation_request.id,
+        metadata: {
+          replayed: false,
+          idempotency_key: @idempotency_key,
+          decision_action: decision.action,
+          decision_code: decision.code
+        }
+      )
+    end
+
+    def create_review_pending_receivable_event!(anticipation_request:, decision:, occurred_at:)
+      receivable = anticipation_request.receivable
+      previous = receivable.receivable_events.order(sequence: :desc).limit(1).pluck(:sequence, :event_hash).first
+      sequence = previous ? previous[0] + 1 : 1
+      prev_hash = previous&.[](1)
+      event_type = "ANTICIPATION_REVIEW_PENDING"
+
+      payload = {
+        anticipation_request_id: anticipation_request.id,
+        idempotency_key: @idempotency_key,
+        decision_code: decision.code,
+        decision_metric: decision.metric
+      }.compact
+
+      event_hash = Digest::SHA256.hexdigest(
+        canonical_json(
+          receivable_id: receivable.id,
+          sequence: sequence,
+          event_type: event_type,
+          occurred_at: occurred_at.utc.iso8601(6),
+          request_id: @request_id,
+          prev_hash: prev_hash,
+          payload: payload
+        )
+      )
+
+      ReceivableEvent.create!(
+        tenant_id: @tenant_id,
+        receivable: receivable,
+        sequence: sequence,
+        event_type: event_type,
+        actor_party_id: anticipation_request.requester_party_id,
+        actor_role: @actor_role,
+        occurred_at: occurred_at,
+        request_id: @request_id,
+        prev_hash: prev_hash,
+        event_hash: event_hash,
+        payload: payload
       )
     end
 
@@ -547,6 +631,38 @@ module AnticipationRequests
       return RISK_REVIEW_PUBLIC_MESSAGE if decision.action == "REVIEW"
 
       RISK_BLOCKED_PUBLIC_MESSAGE
+    end
+
+    def risk_rule_snapshot(rule)
+      return {} if rule.blank?
+
+      {
+        id: rule.id,
+        scope_type: rule.scope_type,
+        scope_party_id: rule.scope_party_id,
+        decision: rule.decision,
+        priority: rule.priority,
+        active: rule.active,
+        max_single_request_amount: decimal_or_nil(rule.max_single_request_amount),
+        max_daily_requested_amount: decimal_or_nil(rule.max_daily_requested_amount),
+        max_outstanding_exposure_amount: decimal_or_nil(rule.max_outstanding_exposure_amount),
+        max_open_requests_count: rule.max_open_requests_count,
+        max_requests_per_minute: rule.max_requests_per_minute,
+        max_requests_per_hour: rule.max_requests_per_hour,
+        pair_spike_multiplier: decimal_or_nil(rule.pair_spike_multiplier),
+        pair_spike_min_daily_amount: decimal_or_nil(rule.pair_spike_min_daily_amount),
+        near_limit_attempts_window_minutes: rule.near_limit_attempts_window_minutes,
+        near_limit_attempts_max_count: rule.near_limit_attempts_max_count,
+        near_limit_ratio: decimal_or_nil(rule.near_limit_ratio),
+        effective_from: rule.effective_from&.utc&.iso8601(6),
+        effective_until: rule.effective_until&.utc&.iso8601(6)
+      }.compact
+    end
+
+    def decimal_or_nil(value)
+      return nil if value.blank?
+
+      decimal_as_string(value)
     end
 
     def risk_evaluator

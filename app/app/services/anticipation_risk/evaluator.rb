@@ -2,8 +2,11 @@ require "digest"
 
 module AnticipationRisk
   class Evaluator
-    OPEN_STATUSES = %w[REQUESTED APPROVED FUNDED].freeze
-    DAILY_STATUSES = %w[REQUESTED APPROVED FUNDED SETTLED].freeze
+    OPEN_STATUSES = %w[REQUESTED PENDING_REVIEW APPROVED FUNDED].freeze
+    DAILY_STATUSES = %w[REQUESTED PENDING_REVIEW APPROVED FUNDED SETTLED].freeze
+    REQUEST_ACTIVITY_STATUSES = %w[REQUESTED PENDING_REVIEW APPROVED FUNDED SETTLED].freeze
+    SPIKE_HISTORY_DAYS = 7
+    NEAR_LIMIT_DEFAULT_RATIO = BigDecimal("0.90")
     SCOPE_LABELS = {
       "TENANT_DEFAULT" => "tenant",
       "PHYSICIAN_PARTY" => "physician",
@@ -52,6 +55,9 @@ module AnticipationRisk
       @usage_cache = {}
       @cnpj_party_ids_by_document_number = {}
       @cnpj_party_ids_by_scope_party_id = {}
+      @velocity_counts_cache = {}
+      @pair_spike_cache = {}
+      @near_limit_attempts_cache = {}
     end
 
     def evaluate!(receivable:, receivable_allocation:, requester_party:, requested_amount:, net_amount:, stage:)
@@ -77,6 +83,8 @@ module AnticipationRisk
       violations = rules.flat_map do |rule|
         evaluate_rule(
           rule: rule,
+          receivable: receivable,
+          requester_party: requester_party,
           requested_amount: requested_amount,
           net_amount: net_amount,
           stage: stage,
@@ -173,7 +181,7 @@ module AnticipationRisk
       nil
     end
 
-    def evaluate_rule(rule:, requested_amount:, net_amount:, stage:, now:)
+    def evaluate_rule(rule:, receivable:, requester_party:, requested_amount:, net_amount:, stage:, now:)
       usage = usage_for_scope(rule: rule, now: now)
       projected_usage = projected_usage(
         usage: usage,
@@ -225,6 +233,100 @@ module AnticipationRisk
           usage: usage,
           projected_usage: projected_usage
         )
+      end
+
+      velocity_counts = velocity_counts_for_scope(rule: rule, now: now)
+      projected_increment = stage.to_s == "confirm" ? 0 : 1
+      if rule.max_requests_per_minute.present? && (velocity_counts[:per_minute] + projected_increment) > rule.max_requests_per_minute
+        violations << build_violation(
+          rule: rule,
+          metric: "requests_per_minute",
+          limit_value: rule.max_requests_per_minute,
+          observed_value: velocity_counts[:per_minute] + projected_increment,
+          usage: usage,
+          projected_usage: projected_usage,
+          extra_details: {
+            current_requests_per_minute: velocity_counts[:per_minute]
+          }
+        )
+      end
+
+      if rule.max_requests_per_hour.present? && (velocity_counts[:per_hour] + projected_increment) > rule.max_requests_per_hour
+        violations << build_violation(
+          rule: rule,
+          metric: "requests_per_hour",
+          limit_value: rule.max_requests_per_hour,
+          observed_value: velocity_counts[:per_hour] + projected_increment,
+          usage: usage,
+          projected_usage: projected_usage,
+          extra_details: {
+            current_requests_per_hour: velocity_counts[:per_hour]
+          }
+        )
+      end
+
+      pair_spike = pair_spike_metrics_for(
+        receivable: receivable,
+        requester_party: requester_party,
+        requested_amount: requested_amount,
+        stage: stage,
+        now: now
+      )
+      if pair_spike.present? &&
+          rule.pair_spike_multiplier.present? &&
+          rule.pair_spike_min_daily_amount.present? &&
+          pair_spike[:projected_today_amount] >= rule.pair_spike_min_daily_amount.to_d &&
+          pair_spike[:baseline_daily_amount].positive? &&
+          pair_spike[:projected_today_amount] > pair_spike[:baseline_daily_amount] * rule.pair_spike_multiplier.to_d
+        violations << build_violation(
+          rule: rule,
+          metric: "party_hospital_spike",
+          limit_value: pair_spike[:baseline_daily_amount] * rule.pair_spike_multiplier.to_d,
+          observed_value: pair_spike[:projected_today_amount],
+          usage: usage,
+          projected_usage: projected_usage,
+          extra_details: {
+            requester_party_id: requester_party.id,
+            hospital_party_id: pair_spike[:hospital_party_id],
+            baseline_daily_amount: decimal_to_string(pair_spike[:baseline_daily_amount]),
+            pair_spike_multiplier: rule.pair_spike_multiplier.to_d.to_s("F"),
+            pair_spike_min_daily_amount: decimal_to_string(rule.pair_spike_min_daily_amount),
+            history_days: SPIKE_HISTORY_DAYS
+          }
+        )
+      end
+
+      if stage.to_s != "confirm" &&
+          rule.near_limit_attempts_window_minutes.present? &&
+          rule.near_limit_attempts_max_count.present? &&
+          rule.max_single_request_amount.present?
+        near_limit_ratio = rule.near_limit_ratio.to_d.nonzero? || NEAR_LIMIT_DEFAULT_RATIO
+        near_limit_threshold = FinancialRounding.money(rule.max_single_request_amount.to_d * near_limit_ratio)
+        if requested_amount >= near_limit_threshold
+          recent_attempts = near_limit_attempts_count_for(
+            requester_party_id: requester_party.id,
+            window_minutes: rule.near_limit_attempts_window_minutes,
+            now: now
+          )
+          projected_attempts = recent_attempts + 1
+
+          if projected_attempts > rule.near_limit_attempts_max_count
+            violations << build_violation(
+              rule: rule,
+              metric: "near_limit_attempts",
+              limit_value: rule.near_limit_attempts_max_count,
+              observed_value: projected_attempts,
+              usage: usage,
+              projected_usage: projected_usage,
+              extra_details: {
+                near_limit_threshold_amount: decimal_to_string(near_limit_threshold),
+                near_limit_ratio: near_limit_ratio.to_s("F"),
+                near_limit_attempts_window_minutes: rule.near_limit_attempts_window_minutes,
+                current_near_limit_attempts_count: recent_attempts
+              }
+            )
+          end
+        end
       end
 
       violations
@@ -295,7 +397,7 @@ module AnticipationRisk
       end
     end
 
-    def build_violation(rule:, metric:, limit_value:, observed_value:, usage:, projected_usage:)
+    def build_violation(rule:, metric:, limit_value:, observed_value:, usage:, projected_usage:, extra_details: {})
       scope_label = SCOPE_LABELS.fetch(rule.scope_type)
       base_code = if rule.decision == "REVIEW"
         "risk_manual_review_required"
@@ -321,7 +423,7 @@ module AnticipationRisk
           projected_outstanding_exposure_amount: decimal_to_string(projected_usage.outstanding_exposure_amount),
           current_open_requests_count: usage.open_requests_count,
           projected_open_requests_count: projected_usage.open_requests_count
-        }
+        }.merge(extra_details)
       )
     end
 
@@ -421,6 +523,82 @@ module AnticipationRisk
       @cnpj_party_ids_by_document_number[document_number] ||= Party
         .where(tenant_id: @tenant_id, document_type: "CNPJ", document_number: document_number)
         .pluck(:id)
+    end
+
+    def velocity_counts_for_scope(rule:, now:)
+      cache_key = [ rule.scope_type, rule.scope_party_id.to_s, now.to_i / 60 ]
+      return @velocity_counts_cache.fetch(cache_key) if @velocity_counts_cache.key?(cache_key)
+
+      scoped_requests = requests_for_scope(rule: rule)
+      counts = {
+        per_minute: scoped_requests.where(status: REQUEST_ACTIVITY_STATUSES)
+          .where("requested_at >= ?", now - 1.minute).count,
+        per_hour: scoped_requests.where(status: REQUEST_ACTIVITY_STATUSES)
+          .where("requested_at >= ?", now - 1.hour).count
+      }
+      @velocity_counts_cache[cache_key] = counts
+      counts
+    end
+
+    def pair_spike_metrics_for(receivable:, requester_party:, requested_amount:, stage:, now:)
+      hospital_party_id = hospital_scope_party_id(receivable: receivable)
+      return nil if hospital_party_id.blank?
+
+      cache_key = [ requester_party.id, hospital_party_id, now.in_time_zone(BusinessCalendar.time_zone).to_date ]
+      base_metrics = @pair_spike_cache[cache_key] ||= begin
+        scope = AnticipationRequest.where(tenant_id: @tenant_id, requester_party_id: requester_party.id)
+          .joins(:receivable)
+          .where(receivables: { debtor_party_id: hospital_party_id })
+
+        today_amount = scope.where(status: DAILY_STATUSES, requested_at: business_day_range(now)).sum(:requested_amount).to_d
+
+        history_range = spike_history_range(now)
+        historical_total = if history_range
+          scope.where(status: DAILY_STATUSES, requested_at: history_range).sum(:requested_amount).to_d
+        else
+          BigDecimal("0")
+        end
+
+        {
+          hospital_party_id: hospital_party_id,
+          today_amount: today_amount,
+          baseline_daily_amount: historical_total / BigDecimal(SPIKE_HISTORY_DAYS.to_s)
+        }
+      end
+
+      projected_today_amount = base_metrics[:today_amount]
+      projected_today_amount += requested_amount unless stage.to_s == "confirm"
+
+      base_metrics.merge(projected_today_amount: projected_today_amount)
+    end
+
+    def spike_history_range(now)
+      local_time = now.in_time_zone(BusinessCalendar.time_zone)
+      local_date = local_time.to_date
+      start_date = local_date - SPIKE_HISTORY_DAYS
+      end_date = local_date - 1
+      return nil if end_date < start_date
+
+      start_at = BusinessCalendar.time_zone.parse("#{start_date} 00:00:00")
+      end_at = BusinessCalendar.cutoff_at(end_date)
+      start_at..end_at
+    end
+
+    def near_limit_attempts_count_for(requester_party_id:, window_minutes:, now:)
+      cache_key = [ requester_party_id, window_minutes, now.to_i / 60 ]
+      return @near_limit_attempts_cache.fetch(cache_key) if @near_limit_attempts_cache.key?(cache_key)
+
+      count = AnticipationRiskDecision.where(
+        tenant_id: @tenant_id,
+        requester_party_id: requester_party_id,
+        stage: "CREATE",
+        decision_action: "BLOCK"
+      ).where("evaluated_at >= ?", now - window_minutes.minutes)
+        .where("decision_metric = ? OR decision_code LIKE ?", "single_request", "risk_limit_exceeded_single_request%")
+        .count
+
+      @near_limit_attempts_cache[cache_key] = count
+      count
     end
 
     def tenant_default_rules_active?(now)

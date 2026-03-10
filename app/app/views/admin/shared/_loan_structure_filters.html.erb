@@ -1,0 +1,19 @@
+<% filter_options = [
+  { label: "Todos", value: nil },
+  { label: "Médico PF", value: "pf" },
+  { label: "Médico via PJ", value: "pj" }
+] %>
+<% base_path = request.path_parameters.symbolize_keys %>
+
+<div class="table-filter-bar">
+  <p class="table-filter-label">Filtrar solicitante</p>
+
+  <div class="table-filter-actions">
+    <% filter_options.each do |filter| %>
+      <% query = request.query_parameters.symbolize_keys.except(:page, :loan_structure) %>
+      <% query[:loan_structure] = filter[:value] if filter[:value].present? %>
+      <% active = selected_structure.to_s == filter[:value].to_s || (selected_structure.blank? && filter[:value].blank?) %>
+      <%= link_to filter[:label], url_for(base_path.merge(query).merge(only_path: true)), class: "button #{active ? "button-primary" : "button-soft"} button-inline" %>
+    <% end %>
+  </div>
+</div>

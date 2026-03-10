@@ -4,6 +4,7 @@ class User < ApplicationRecord
   ROLES = Role::CODES
   PRIVILEGED_ROLES = %w[hospital_admin ops_admin].freeze
   MFA_ALLOWED_DRIFT_STEPS = 1
+  WEBAUTHN_ID_BASE64URL_PATTERN = /\A[A-Za-z0-9_-]+\z/.freeze
 
   belongs_to :tenant
   belongs_to :party, optional: true
@@ -64,14 +65,18 @@ class User < ApplicationRecord
   end
 
   def ensure_webauthn_id!
-    return webauthn_id if webauthn_id.present?
+    return webauthn_id if valid_webauthn_id?(webauthn_id)
 
-    generated = SecureRandom.base64(32)
+    generated = SecureRandom.urlsafe_base64(32, false)
     update!(webauthn_id: generated)
     generated
   end
 
   private
+
+  def valid_webauthn_id?(value)
+    value.to_s.match?(WEBAUTHN_ID_BASE64URL_PATTERN)
+  end
 
   def ensure_uuid_id
     self.uuid_id ||= SecureRandom.uuid

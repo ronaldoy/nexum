@@ -11,16 +11,25 @@ class AnticipationRiskRule < ApplicationRecord
   validates :decision, presence: true, inclusion: { in: DECISIONS }
   validates :priority, presence: true
   validates :max_open_requests_count, numericality: { greater_than: 0, only_integer: true }, allow_nil: true
+  validates :max_requests_per_minute, numericality: { greater_than: 0, only_integer: true }, allow_nil: true
+  validates :max_requests_per_hour, numericality: { greater_than: 0, only_integer: true }, allow_nil: true
+  validates :near_limit_attempts_window_minutes, numericality: { greater_than: 0, only_integer: true }, allow_nil: true
+  validates :near_limit_attempts_max_count, numericality: { greater_than: 0, only_integer: true }, allow_nil: true
   validates :max_single_request_amount,
             :max_daily_requested_amount,
             :max_outstanding_exposure_amount,
+            :pair_spike_min_daily_amount,
             numericality: { greater_than: 0 },
             allow_nil: true
+  validates :pair_spike_multiplier, numericality: { greater_than: 1 }, allow_nil: true
+  validates :near_limit_ratio, numericality: { greater_than: 0, less_than_or_equal_to: 1 }, allow_nil: true
 
   validate :scope_party_presence_by_scope_type
   validate :scope_party_kind_matches_scope
   validate :scope_party_tenant_match
   validate :effective_window_valid
+  validate :pair_spike_fields_consistency
+  validate :near_limit_fields_consistency
   validate :at_least_one_limit_present
 
   scope :active, -> { where(active: true) }
@@ -77,8 +86,31 @@ class AnticipationRiskRule < ApplicationRecord
     return if max_single_request_amount.present? ||
       max_daily_requested_amount.present? ||
       max_outstanding_exposure_amount.present? ||
-      max_open_requests_count.present?
+      max_open_requests_count.present? ||
+      max_requests_per_minute.present? ||
+      max_requests_per_hour.present? ||
+      pair_spike_multiplier.present? ||
+      near_limit_attempts_window_minutes.present?
 
     errors.add(:base, "at least one risk limit must be configured")
+  end
+
+  def pair_spike_fields_consistency
+    return if pair_spike_multiplier.blank? && pair_spike_min_daily_amount.blank?
+    return if pair_spike_multiplier.present? && pair_spike_min_daily_amount.present?
+
+    errors.add(:base, "pair spike multiplier and minimum daily amount must be set together")
+  end
+
+  def near_limit_fields_consistency
+    near_limit_fields = [ near_limit_attempts_window_minutes, near_limit_attempts_max_count ]
+    if near_limit_fields.compact.any? && near_limit_fields.any?(&:blank?)
+      errors.add(:base, "near-limit attempts window and max count must be set together")
+    end
+
+    return if near_limit_attempts_window_minutes.blank? || near_limit_attempts_max_count.blank?
+    return if max_single_request_amount.present?
+
+    errors.add(:base, "near-limit attempts control requires max_single_request_amount")
   end
 end

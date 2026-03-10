@@ -1,3 +1,6 @@
-<svg width="512" height="512" xmlns="http://www.w3.org/2000/svg">
-  <circle cx="256" cy="256" r="256" fill="red"/>
+<svg width="512" height="512" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-label="Averta">
+  <rect x="4" y="4" width="56" height="56" rx="18" fill="#0a1628"/>
+  <path d="M20 46L31 18" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M44 46L33 18" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M24 35H40" stroke="#38bdf8" stroke-width="6" stroke-linecap="round"/>
 </svg>

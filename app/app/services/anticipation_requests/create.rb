@@ -3,13 +3,15 @@ require "json"
 
 module AnticipationRequests
   class Create
-    ACTIVE_STATUSES = %w[REQUESTED APPROVED FUNDED SETTLED].freeze
+    ACTIVE_STATUSES = %w[REQUESTED PENDING_REVIEW APPROVED FUNDED SETTLED].freeze
     ELIGIBLE_RECEIVABLE_STATUSES = %w[PERFORMED ANTICIPATION_REQUESTED].freeze
     CURRENCY_SCALE = 2
     RATE_SCALE = 8
     PAYLOAD_HASH_METADATA_KEY = "_idempotency_payload_hash".freeze
     RISK_BLOCKED_PUBLIC_MESSAGE = "Anticipation request blocked by risk policy.".freeze
     RISK_REVIEW_PUBLIC_MESSAGE = "Anticipation request requires manual review.".freeze
+    REVIEW_PENDING_STATUS = "PENDING_REVIEW".freeze
+    REQUESTED_STATUS = "REQUESTED".freeze
 
     Intent = Struct.new(
       :receivable_id,
@@ -82,20 +84,32 @@ module AnticipationRequests
     def create_new_request(intent:, intent_hash:)
       receivable, allocation, requester_party = load_request_context!(intent)
       financials = calculate_financials(intent)
-      risk_decision = enforce_risk_policy!(
+      risk_decision = evaluate_risk_policy(
         receivable: receivable,
         allocation: allocation,
         requester_party: requester_party,
         requested_amount: intent.requested_amount,
         net_amount: financials.net_amount
       )
+      enforce_blocking_risk_policy!(
+        decision: risk_decision,
+        receivable: receivable,
+        allocation: allocation,
+        requester_party: requester_party,
+        requested_amount: intent.requested_amount,
+        net_amount: financials.net_amount
+      )
+
+      initial_status = initial_status_for_decision(risk_decision)
       anticipation_request = create_anticipation_request_record!(
         intent: intent,
         intent_hash: intent_hash,
         receivable: receivable,
         allocation: allocation,
         requester_party: requester_party,
-        financials: financials
+        financials: financials,
+        status: initial_status,
+        risk_decision: risk_decision
       )
       create_risk_decision_record!(
         decision: risk_decision,
@@ -112,14 +126,20 @@ module AnticipationRequests
         receivable: receivable,
         requester_party: requester_party,
         anticipation_request: anticipation_request,
-        occurred_at: financials.requested_at
+        occurred_at: financials.requested_at,
+        event_type: initial_status == REVIEW_PENDING_STATUS ? "ANTICIPATION_REVIEW_PENDING" : "ANTICIPATION_REQUESTED"
       )
       create_action_log!(
-        action_type: "ANTICIPATION_REQUEST_CREATED",
+        action_type: initial_status == REVIEW_PENDING_STATUS ? "ANTICIPATION_REQUEST_PENDING_REVIEW" : "ANTICIPATION_REQUEST_CREATED",
         success: true,
         requester_party_id: requester_party.id,
         target_id: anticipation_request.id,
-        metadata: { replayed: false, idempotency_key: @idempotency_key }
+        metadata: {
+          replayed: false,
+          idempotency_key: @idempotency_key,
+          decision_action: risk_decision.action,
+          decision_code: risk_decision.code
+        }
       )
 
       Result.new(anticipation_request: anticipation_request, replayed: false)
@@ -149,8 +169,8 @@ module AnticipationRequests
       [ receivable, allocation, requester_party ]
     end
 
-    def enforce_risk_policy!(receivable:, allocation:, requester_party:, requested_amount:, net_amount:)
-      decision = risk_evaluator.evaluate!(
+    def evaluate_risk_policy(receivable:, allocation:, requester_party:, requested_amount:, net_amount:)
+      risk_evaluator.evaluate!(
         receivable: receivable,
         receivable_allocation: allocation,
         requester_party: requester_party,
@@ -158,8 +178,11 @@ module AnticipationRequests
         net_amount: net_amount,
         stage: :create
       )
+    end
 
-      return decision if decision.allowed?
+    def enforce_blocking_risk_policy!(decision:, receivable:, allocation:, requester_party:, requested_amount:, net_amount:)
+      return if decision.allowed?
+      return if decision.action == "REVIEW"
 
       create_risk_decision_record!(
         decision: decision,
@@ -205,7 +228,11 @@ module AnticipationRequests
         request_id: @request_id,
         idempotency_key: @idempotency_key,
         evaluated_at: Time.current,
-        details: normalize_metadata(decision.details || {})
+        details: normalize_metadata(
+          (decision.details || {}).merge(
+            "rule_snapshot" => risk_rule_snapshot(decision.rule)
+          )
+        )
       )
     end
 
@@ -222,7 +249,7 @@ module AnticipationRequests
       )
     end
 
-    def create_anticipation_request_record!(intent:, intent_hash:, receivable:, allocation:, requester_party:, financials:)
+    def create_anticipation_request_record!(intent:, intent_hash:, receivable:, allocation:, requester_party:, financials:, status:, risk_decision:)
       AnticipationRequest.create!(
         tenant_id: @tenant_id,
         receivable: receivable,
@@ -233,11 +260,16 @@ module AnticipationRequests
         discount_rate: intent.discount_rate,
         discount_amount: financials.discount_amount,
         net_amount: financials.net_amount,
-        status: "REQUESTED",
+        status: status,
         channel: intent.channel,
         requested_at: financials.requested_at,
         settlement_target_date: BusinessCalendar.next_business_day(from: financials.requested_at),
-        metadata: intent.metadata.merge(PAYLOAD_HASH_METADATA_KEY => intent_hash)
+        metadata: intent.metadata.merge(
+          PAYLOAD_HASH_METADATA_KEY => intent_hash,
+          "risk_decision_action" => risk_decision.action,
+          "risk_decision_code" => risk_decision.code,
+          "pending_review_at" => (status == REVIEW_PENDING_STATUS ? financials.requested_at.utc.iso8601(6) : nil)
+        ).compact
       )
     end
 
@@ -414,12 +446,11 @@ module AnticipationRequests
       Result.new(anticipation_request: existing, replayed: true)
     end
 
-    def create_receivable_event!(receivable:, requester_party:, anticipation_request:, occurred_at:)
+    def create_receivable_event!(receivable:, requester_party:, anticipation_request:, occurred_at:, event_type:)
       previous = receivable.receivable_events.order(sequence: :desc).limit(1).pluck(:sequence, :event_hash).first
       sequence = previous ? previous[0] + 1 : 1
       prev_hash = previous&.[](1)
       payload = receivable_event_payload(anticipation_request)
-      event_type = "ANTICIPATION_REQUESTED"
 
       event_hash = Digest::SHA256.hexdigest(
         canonical_json(
@@ -523,10 +554,48 @@ module AnticipationRequests
       raise ValidationError.new(code:, message:)
     end
 
+    def initial_status_for_decision(decision)
+      return REVIEW_PENDING_STATUS if decision.action == "REVIEW"
+
+      REQUESTED_STATUS
+    end
+
     def risk_public_message(decision)
       return RISK_REVIEW_PUBLIC_MESSAGE if decision.action == "REVIEW"
 
       RISK_BLOCKED_PUBLIC_MESSAGE
+    end
+
+    def risk_rule_snapshot(rule)
+      return {} if rule.blank?
+
+      {
+        id: rule.id,
+        scope_type: rule.scope_type,
+        scope_party_id: rule.scope_party_id,
+        decision: rule.decision,
+        priority: rule.priority,
+        active: rule.active,
+        max_single_request_amount: decimal_or_nil(rule.max_single_request_amount),
+        max_daily_requested_amount: decimal_or_nil(rule.max_daily_requested_amount),
+        max_outstanding_exposure_amount: decimal_or_nil(rule.max_outstanding_exposure_amount),
+        max_open_requests_count: rule.max_open_requests_count,
+        max_requests_per_minute: rule.max_requests_per_minute,
+        max_requests_per_hour: rule.max_requests_per_hour,
+        pair_spike_multiplier: decimal_or_nil(rule.pair_spike_multiplier),
+        pair_spike_min_daily_amount: decimal_or_nil(rule.pair_spike_min_daily_amount),
+        near_limit_attempts_window_minutes: rule.near_limit_attempts_window_minutes,
+        near_limit_attempts_max_count: rule.near_limit_attempts_max_count,
+        near_limit_ratio: decimal_or_nil(rule.near_limit_ratio),
+        effective_from: rule.effective_from&.utc&.iso8601(6),
+        effective_until: rule.effective_until&.utc&.iso8601(6)
+      }.compact
+    end
+
+    def decimal_or_nil(value)
+      return nil if value.blank?
+
+      decimal_as_string(value)
     end
 
     def risk_evaluator

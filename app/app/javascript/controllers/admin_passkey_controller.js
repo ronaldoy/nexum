@@ -27,7 +27,7 @@ export default class extends Controller {
         throw new Error("credential_create_failed")
       }
 
-      const payload = { public_key_credential: createdCredential.toJSON() }
+      const payload = { public_key_credential: this.serializeRegistrationCredential(createdCredential) }
       const result = await this.fetchJson(this.registerUrlValue, {
         method: "POST",
         body: JSON.stringify(payload)
@@ -51,7 +51,7 @@ export default class extends Controller {
         throw new Error("credential_get_failed")
       }
 
-      const payload = { public_key_credential: assertion.toJSON() }
+      const payload = { public_key_credential: this.serializeAuthenticationCredential(assertion) }
       const result = await this.fetchJson(this.verifyUrlValue, {
         method: "POST",
         body: JSON.stringify(payload)
@@ -78,6 +78,56 @@ export default class extends Controller {
     }
 
     throw new Error("request_options_parse_not_supported")
+  }
+
+  serializeRegistrationCredential(credential) {
+    return {
+      id: credential.id,
+      type: credential.type,
+      rawId: this.base64urlEncode(credential.rawId),
+      authenticatorAttachment: credential.authenticatorAttachment || null,
+      clientExtensionResults: credential.getClientExtensionResults ? credential.getClientExtensionResults() : {},
+      response: {
+        attestationObject: this.base64urlEncode(credential.response?.attestationObject),
+        clientDataJSON: this.base64urlEncode(credential.response?.clientDataJSON),
+        transports: credential.response?.getTransports ? credential.response.getTransports() : [],
+        publicKeyAlgorithm: credential.response?.getPublicKeyAlgorithm ? credential.response.getPublicKeyAlgorithm() : null,
+        publicKey: credential.response?.getPublicKey ? this.base64urlEncode(credential.response.getPublicKey()) : null
+      }
+    }
+  }
+
+  serializeAuthenticationCredential(credential) {
+    return {
+      id: credential.id,
+      type: credential.type,
+      rawId: this.base64urlEncode(credential.rawId),
+      authenticatorAttachment: credential.authenticatorAttachment || null,
+      clientExtensionResults: credential.getClientExtensionResults ? credential.getClientExtensionResults() : {},
+      response: {
+        authenticatorData: this.base64urlEncode(credential.response?.authenticatorData),
+        clientDataJSON: this.base64urlEncode(credential.response?.clientDataJSON),
+        signature: this.base64urlEncode(credential.response?.signature),
+        userHandle: this.base64urlEncode(credential.response?.userHandle)
+      }
+    }
+  }
+
+  base64urlEncode(bufferLike) {
+    if (!bufferLike) return null
+
+    const bytes = bufferLike instanceof ArrayBuffer
+      ? new Uint8Array(bufferLike)
+      : new Uint8Array(bufferLike.buffer, bufferLike.byteOffset, bufferLike.byteLength)
+    let binary = ""
+    const chunkSize = 0x8000
+
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+      const chunk = bytes.subarray(index, index + chunkSize)
+      binary += String.fromCharCode(...chunk)
+    }
+
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "")
   }
 
   async fetchJson(url, options = {}) {

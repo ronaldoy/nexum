@@ -1,44 +1,49 @@
 module Admin
-  class DashboardController < ApplicationController
-    before_action :ensure_ops_admin!
-    before_action :require_passkey_step_up!
+  class DashboardController < BaseController
+    LOANS_PER_PAGE = 20
 
     helper_method :ops_admin?
 
     def show
-      snapshot = system_dashboard.call
+      snapshot = cockpit.call(
+        recent_limit: LOANS_PER_PAGE,
+        recent_page: current_page,
+        recent_structure: current_structure_filter
+      )
       @generated_at = snapshot.fetch(:generated_at)
-      @totals = snapshot.fetch(:totals)
-      @tenant_rows = snapshot.fetch(:tenant_rows)
-      @recent_reconciliation_exceptions = snapshot.fetch(:recent_reconciliation_exceptions)
+      @tenant = snapshot.fetch(:tenant)
+      @headline_cards = snapshot.fetch(:headline_cards)
+      @stage_cards = snapshot.fetch(:stage_cards)
+      @stage_volume_chart = snapshot.fetch(:stage_volume_chart)
+      @commercial_highlights = snapshot.fetch(:commercial_highlights)
+      @recent_loans = snapshot.fetch(:recent_loans)
+      @loan_pagination = snapshot.fetch(:recent_loans_pagination)
+      @loan_structure_filter = current_structure_filter
+      @counterparty_rows = snapshot.fetch(:counterparty_rows)
+      @profitability_entries = snapshot.fetch(:profitability_entries)
+      @risk_signals = snapshot.fetch(:risk_signals)
+      @reconciliation_exceptions = snapshot.fetch(:reconciliation_exceptions)
     end
 
     private
 
-    def system_dashboard
-      @system_dashboard ||= Admin::SystemDashboard.new(
-        actor_id: Current.actor_id,
-        role: Current.role
-      )
+    def cockpit
+      @cockpit ||= Admin::FdicCockpit.new(tenant: admin_current_tenant)
+    end
+
+    def current_page
+      [ params.fetch(:page, 1).to_i, 1 ].max
+    end
+
+    def current_structure_filter
+      candidate = params[:loan_structure].to_s
+      return nil unless Admin::FdicCockpit::LOAN_STRUCTURE_FILTER_KINDS.key?(candidate)
+
+      candidate
     end
 
     def ops_admin?
       Current.user&.role == "ops_admin"
-    end
-
-    def ensure_ops_admin!
-      deny_access! unless ops_admin?
-    end
-
-    def require_passkey_step_up!
-      return if Current.session&.admin_webauthn_verified_recently?
-
-      redirect_to new_admin_passkey_verification_path(return_to: request.fullpath),
-        alert: "Confirme a passkey para acessar o painel administrativo."
-    end
-
-    def deny_access!
-      redirect_to root_path, alert: "Acesso restrito ao perfil de operação."
     end
   end
 end

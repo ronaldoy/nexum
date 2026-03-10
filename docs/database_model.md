@@ -1,12 +1,12 @@
 # Database Model Documentation
 
-Generated at: 2026-02-20T10:54:37-03:00
+Generated at: 2026-03-06T10:18:53-03:00
 Source schema: `app/db/structure.sql`
 
 ## Summary
 
-- Total tables documented: 43
-- Tables with append-only mutation guard: 11
+- Total tables documented: 46
+- Tables with append-only mutation guard: 13
 - Business timezone: `America/Sao_Paulo`
 
 ## `action_ip_logs`
@@ -106,7 +106,7 @@ Source schema: `app/db/structure.sql`
 ### Indexes
 
 - `index_active_storage_blobs_on_key` (unique): `key`
-- `index_active_storage_blobs_on_tenant_direct_upload_idempotency` (unique): `app_active_storage_blob_tenant_id(metadata), ((app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_idempotency_key'::text))` WHERE ((app_active_storage_blob_tenant_id(metadata) IS NOT NULL) AND (COALESCE((app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_idempotency_key'::text), ''::text) <> ''::text))
+- `index_active_storage_blobs_on_tenant_direct_upload_idempotency` (unique): `app_active_storage_blob_tenant_id(metadata), ((app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_actor_key'::text)), ((app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_idempotency_key'::text))` WHERE ((app_active_storage_blob_tenant_id(metadata) IS NOT NULL) AND (COALESCE((app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_actor_key'::text), ''::text) <> ''::text) AND (COALESCE((app_active_storage_blob_metadata_json(metadata) ->> 'direct_upload_idempotency_key'::text), ''::text) <> ''::text))
 
 ## `active_storage_variant_records`
 
@@ -209,7 +209,7 @@ Source schema: `app/db/structure.sql`
 - `anticipation_requests_discount_rate_check`: `discount_rate >= 0::numeric`
 - `anticipation_requests_net_amount_positive_check`: `net_amount > 0::numeric`
 - `anticipation_requests_requested_amount_positive_check`: `requested_amount > 0::numeric`
-- `anticipation_requests_status_check`: `status::text = ANY (ARRAY['REQUESTED'::character varying::text, 'APPROVED'::character varying::text, 'FUNDED'::character varying::text, 'SETTLED'::character varying::text, 'CANCELLED'::character varying::text, 'REJECTED'::character varying::text])`
+- `anticipation_requests_status_check`: `status::text = ANY (ARRAY['REQUESTED'::character varying, 'PENDING_REVIEW'::character varying, 'APPROVED'::character varying, 'FUNDED'::character varying, 'SETTLED'::character varying, 'CANCELLED'::character varying, 'REJECTED'::character varying]::text[])`
 
 ### Indexes
 
@@ -219,6 +219,169 @@ Source schema: `app/db/structure.sql`
 - `index_anticipation_requests_on_tenant_id` (non-unique): `tenant_id`
 - `index_anticipation_requests_on_tenant_id_and_idempotency_key` (unique): `tenant_id, idempotency_key`
 - `index_anticipation_requests_on_tenant_receivable_status` (non-unique): `tenant_id, receivable_id, status`
+
+## `anticipation_risk_decisions`
+
+- Primary key: `id`
+- RLS enabled: `true`
+- RLS forced: `true`
+- Append-only guard: `true`
+
+- Policies:
+  - `anticipation_risk_decisions_tenant_policy`
+
+### Columns
+
+| Column | SQL Type | Null | Default | FK |
+| --- | --- | --- | --- | --- |
+| `id` | `uuid` | false | `` | - |
+| `tenant_id` | `uuid` | false | `` | `tenants.id` |
+| `anticipation_request_id` | `uuid` | true | `` | `anticipation_requests.id` |
+| `receivable_id` | `uuid` | false | `` | `receivables.id` |
+| `receivable_allocation_id` | `uuid` | true | `` | `receivable_allocations.id` |
+| `requester_party_id` | `uuid` | false | `` | `parties.id` |
+| `scope_party_id` | `uuid` | true | `` | `parties.id` |
+| `trigger_rule_id` | `uuid` | true | `` | `anticipation_risk_rules.id` |
+| `scope_type` | `character varying` | true | `` | - |
+| `stage` | `character varying` | false | `` | - |
+| `decision_action` | `character varying` | false | `` | - |
+| `decision_code` | `character varying` | false | `` | - |
+| `decision_metric` | `character varying` | true | `` | - |
+| `requested_amount` | `numeric(18,2)` | false | `` | - |
+| `net_amount` | `numeric(18,2)` | false | `` | - |
+| `request_id` | `character varying` | true | `` | - |
+| `idempotency_key` | `character varying` | true | `` | - |
+| `evaluated_at` | `timestamp(6) without time zone` | false | `` | - |
+| `details` | `jsonb` | false | `{}` | - |
+| `created_at` | `timestamp(6) without time zone` | false | `` | - |
+| `updated_at` | `timestamp(6) without time zone` | false | `` | - |
+
+### Check Constraints
+
+- `anticipation_risk_decisions_action_check`: `decision_action::text = ANY (ARRAY['ALLOW'::character varying, 'REVIEW'::character varying, 'BLOCK'::character varying]::text[])`
+- `anticipation_risk_decisions_net_amount_positive_check`: `net_amount > 0::numeric`
+- `anticipation_risk_decisions_requested_amount_positive_check`: `requested_amount > 0::numeric`
+- `anticipation_risk_decisions_stage_check`: `stage::text = ANY (ARRAY['CREATE'::character varying, 'CONFIRM'::character varying]::text[])`
+
+### Indexes
+
+- `index_anticipation_risk_decisions_on_anticipation_request_id` (non-unique): `anticipation_request_id`
+- `index_anticipation_risk_decisions_on_receivable_allocation_id` (non-unique): `receivable_allocation_id`
+- `index_anticipation_risk_decisions_on_receivable_id` (non-unique): `receivable_id`
+- `index_anticipation_risk_decisions_on_requester_party_id` (non-unique): `requester_party_id`
+- `index_anticipation_risk_decisions_on_scope_party_id` (non-unique): `scope_party_id`
+- `index_anticipation_risk_decisions_on_tenant_id` (non-unique): `tenant_id`
+- `index_anticipation_risk_decisions_on_trigger_rule_id` (non-unique): `trigger_rule_id`
+- `index_anticipation_risk_decisions_tenant_action` (non-unique): `tenant_id, decision_action, evaluated_at`
+- `index_anticipation_risk_decisions_tenant_evaluated_at` (non-unique): `tenant_id, evaluated_at`
+- `index_anticipation_risk_decisions_tenant_receivable` (non-unique): `tenant_id, receivable_id, evaluated_at`
+
+## `anticipation_risk_rule_events`
+
+- Primary key: `id`
+- RLS enabled: `true`
+- RLS forced: `true`
+- Append-only guard: `true`
+
+- Policies:
+  - `anticipation_risk_rule_events_tenant_policy`
+
+### Columns
+
+| Column | SQL Type | Null | Default | FK |
+| --- | --- | --- | --- | --- |
+| `id` | `uuid` | false | `` | - |
+| `tenant_id` | `uuid` | false | `` | `tenants.id` |
+| `anticipation_risk_rule_id` | `uuid` | false | `` | `anticipation_risk_rules.id` |
+| `sequence` | `integer` | false | `` | - |
+| `event_type` | `character varying` | false | `` | - |
+| `actor_party_id` | `uuid` | true | `` | `parties.id` |
+| `actor_role` | `character varying` | true | `` | - |
+| `request_id` | `character varying` | true | `` | - |
+| `occurred_at` | `timestamp(6) without time zone` | false | `` | - |
+| `prev_hash` | `character varying` | true | `` | - |
+| `event_hash` | `character varying` | false | `` | - |
+| `payload` | `jsonb` | false | `{}` | - |
+| `created_at` | `timestamp(6) without time zone` | false | `` | - |
+| `updated_at` | `timestamp(6) without time zone` | false | `` | - |
+
+### Check Constraints
+
+- `anticipation_risk_rule_events_event_type_check`: `event_type::text = ANY (ARRAY['RULE_CREATED'::character varying, 'RULE_UPDATED'::character varying, 'RULE_ACTIVATED'::character varying, 'RULE_DEACTIVATED'::character varying]::text[])`
+
+### Indexes
+
+- `idx_on_anticipation_risk_rule_id_52b95a2eda` (non-unique): `anticipation_risk_rule_id`
+- `index_anticipation_risk_rule_events_on_actor_party_id` (non-unique): `actor_party_id`
+- `index_anticipation_risk_rule_events_on_event_hash` (unique): `event_hash`
+- `index_anticipation_risk_rule_events_on_tenant_id` (non-unique): `tenant_id`
+- `index_anticipation_risk_rule_events_unique_sequence` (unique): `tenant_id, anticipation_risk_rule_id, sequence`
+
+## `anticipation_risk_rules`
+
+- Primary key: `id`
+- RLS enabled: `true`
+- RLS forced: `true`
+- Append-only guard: `false`
+
+- Policies:
+  - `anticipation_risk_rules_tenant_policy`
+
+### Columns
+
+| Column | SQL Type | Null | Default | FK |
+| --- | --- | --- | --- | --- |
+| `id` | `uuid` | false | `` | - |
+| `tenant_id` | `uuid` | false | `` | `tenants.id` |
+| `scope_party_id` | `uuid` | true | `` | `parties.id` |
+| `scope_type` | `character varying` | false | `` | - |
+| `decision` | `character varying` | false | `BLOCK` | - |
+| `active` | `boolean` | false | `true` | - |
+| `priority` | `integer` | false | `100` | - |
+| `max_single_request_amount` | `numeric(18,2)` | true | `` | - |
+| `max_daily_requested_amount` | `numeric(18,2)` | true | `` | - |
+| `max_outstanding_exposure_amount` | `numeric(18,2)` | true | `` | - |
+| `max_open_requests_count` | `integer` | true | `` | - |
+| `effective_from` | `timestamp(6) without time zone` | true | `` | - |
+| `effective_until` | `timestamp(6) without time zone` | true | `` | - |
+| `metadata` | `jsonb` | false | `{}` | - |
+| `created_at` | `timestamp(6) without time zone` | false | `` | - |
+| `updated_at` | `timestamp(6) without time zone` | false | `` | - |
+| `max_requests_per_minute` | `integer` | true | `` | - |
+| `max_requests_per_hour` | `integer` | true | `` | - |
+| `pair_spike_multiplier` | `numeric(12,4)` | true | `` | - |
+| `pair_spike_min_daily_amount` | `numeric(18,2)` | true | `` | - |
+| `near_limit_attempts_window_minutes` | `integer` | true | `` | - |
+| `near_limit_attempts_max_count` | `integer` | true | `` | - |
+| `near_limit_ratio` | `numeric(8,6)` | true | `` | - |
+
+### Check Constraints
+
+- `anticipation_risk_rules_daily_amount_positive_check`: `max_daily_requested_amount IS NULL OR max_daily_requested_amount > 0::numeric`
+- `anticipation_risk_rules_decision_check`: `decision::text = ANY (ARRAY['ALLOW'::character varying, 'REVIEW'::character varying, 'BLOCK'::character varying]::text[])`
+- `anticipation_risk_rules_effective_window_check`: `effective_until IS NULL OR effective_from IS NULL OR effective_until >= effective_from`
+- `anticipation_risk_rules_near_limit_count_positive_check`: `near_limit_attempts_max_count IS NULL OR near_limit_attempts_max_count > 0`
+- `anticipation_risk_rules_near_limit_ratio_check`: `near_limit_ratio IS NULL OR near_limit_ratio > 0::numeric AND near_limit_ratio <= 1::numeric`
+- `anticipation_risk_rules_near_limit_window_count_pair_check`: `near_limit_attempts_window_minutes IS NULL AND near_limit_attempts_max_count IS NULL OR near_limit_attempts_window_minutes IS NOT NULL AND near_limit_attempts_max_count IS NOT NULL`
+- `anticipation_risk_rules_near_limit_window_positive_check`: `near_limit_attempts_window_minutes IS NULL OR near_limit_attempts_window_minutes > 0`
+- `anticipation_risk_rules_open_count_positive_check`: `max_open_requests_count IS NULL OR max_open_requests_count > 0`
+- `anticipation_risk_rules_outstanding_amount_positive_check`: `max_outstanding_exposure_amount IS NULL OR max_outstanding_exposure_amount > 0::numeric`
+- `anticipation_risk_rules_pair_spike_min_daily_amount_check`: `pair_spike_min_daily_amount IS NULL OR pair_spike_min_daily_amount > 0::numeric`
+- `anticipation_risk_rules_pair_spike_multiplier_check`: `pair_spike_multiplier IS NULL OR pair_spike_multiplier > 1::numeric`
+- `anticipation_risk_rules_pair_spike_pair_check`: `pair_spike_multiplier IS NULL AND pair_spike_min_daily_amount IS NULL OR pair_spike_multiplier IS NOT NULL AND pair_spike_min_daily_amount IS NOT NULL`
+- `anticipation_risk_rules_requests_per_hour_positive_check`: `max_requests_per_hour IS NULL OR max_requests_per_hour > 0`
+- `anticipation_risk_rules_requests_per_minute_positive_check`: `max_requests_per_minute IS NULL OR max_requests_per_minute > 0`
+- `anticipation_risk_rules_requires_any_limit_check`: `max_single_request_amount IS NOT NULL OR max_daily_requested_amount IS NOT NULL OR max_outstanding_exposure_amount IS NOT NULL OR max_open_requests_count IS NOT NULL OR max_requests_per_minute IS NOT NULL OR max_requests_per_hour IS NOT NULL OR pair_spike_multiplier IS NOT NULL OR near_limit_attempts_window_minutes IS NOT NULL`
+- `anticipation_risk_rules_scope_party_check`: `scope_type::text = 'TENANT_DEFAULT'::text AND scope_party_id IS NULL OR scope_type::text <> 'TENANT_DEFAULT'::text AND scope_party_id IS NOT NULL`
+- `anticipation_risk_rules_scope_type_check`: `scope_type::text = ANY (ARRAY['TENANT_DEFAULT'::character varying, 'PHYSICIAN_PARTY'::character varying, 'CNPJ_PARTY'::character varying, 'HOSPITAL_PARTY'::character varying]::text[])`
+- `anticipation_risk_rules_single_amount_positive_check`: `max_single_request_amount IS NULL OR max_single_request_amount > 0::numeric`
+
+### Indexes
+
+- `index_anticipation_risk_rules_active_scope` (non-unique): `tenant_id, active, scope_type, scope_party_id`
+- `index_anticipation_risk_rules_on_scope_party_id` (non-unique): `scope_party_id`
+- `index_anticipation_risk_rules_on_tenant_id` (non-unique): `tenant_id`
+- `index_anticipation_risk_rules_priority` (non-unique): `tenant_id, priority, created_at`
 
 ## `anticipation_settlement_entries`
 
@@ -951,6 +1114,8 @@ Source schema: `app/db/structure.sql`
 
 ### Check Constraints
 
+- `outbox_events_idempotency_payload_hash_format_check`: `idempotency_key IS NULL OR created_at < '2026-02-22 00:00:00+00'::timestamp with time zone OR (payload ->> 'payload_hash'::text) ~ '^[0-9a-f]{64}$'::text`
+- `outbox_events_idempotency_payload_hash_present_check`: `idempotency_key IS NULL OR created_at < '2026-02-22 00:00:00+00'::timestamp with time zone OR NULLIF(btrim(payload ->> 'payload_hash'::text), ''::text) IS NOT NULL`
 - `outbox_events_status_check`: `status::text = ANY (ARRAY['PENDING'::character varying::text, 'SENT'::character varying::text, 'FAILED'::character varying::text, 'CANCELLED'::character varying::text])`
 
 ### Indexes
@@ -1027,6 +1192,7 @@ Source schema: `app/db/structure.sql`
 | `created_at` | `timestamp(6) without time zone` | false | `` | - |
 | `updated_at` | `timestamp(6) without time zone` | false | `` | - |
 | `created_by_user_uuid_id` | `uuid` | true | `` | `users.uuid_id` |
+| `actor_party_id` | `uuid` | true | `` | `parties.id` |
 
 ### Check Constraints
 
@@ -1037,6 +1203,7 @@ Source schema: `app/db/structure.sql`
 
 ### Indexes
 
+- `index_partner_applications_on_actor_party_id` (non-unique): `actor_party_id`
 - `index_partner_applications_on_client_id` (unique): `client_id`
 - `index_partner_applications_on_created_by_user_uuid_id` (non-unique): `created_by_user_uuid_id`
 - `index_partner_applications_on_tenant_id` (non-unique): `tenant_id`

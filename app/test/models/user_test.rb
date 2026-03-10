@@ -116,4 +116,21 @@ class UserTest < ActiveSupport::TestCase
     assert user.reload.mfa_last_otp_at.present?
     refute user.valid_mfa_code?("000000")
   end
+
+  test "regenerates webauthn_id using base64url when legacy value is invalid" do
+    user = User.create!(
+      tenant: @tenant,
+      role: "ops_admin",
+      email_address: "passkey-user@example.com",
+      password: "Password@2026",
+      password_confirmation: "Password@2026",
+      webauthn_id: "invalid+/base64=="
+    )
+
+    regenerated = user.ensure_webauthn_id!
+
+    assert_match(/\A[A-Za-z0-9_-]+\z/, regenerated)
+    refute_match(/[+=\/]/, regenerated)
+    assert_equal regenerated, user.reload.webauthn_id
+  end
 end

@@ -1,0 +1,149 @@
+<main class="dashboard-shell">
+  <%= render "admin/shared/cockpit_nav" %>
+
+  <section class="hero-panel hero-panel-brand">
+    <div>
+      <p class="hero-kicker">Cadastro operacional</p>
+      <h2>Contrapartes da carteira Averta</h2>
+      <p class="hero-subtitle">
+        Mantenha a base do FDIC pronta para operação: hospitais, fornecedores, entidades jurídicas e médicos PF com documento validado no cadastro.
+      </p>
+    </div>
+    <div class="hero-meta">
+      <p><strong>Regra documental:</strong> médicos com CPF, entidades com CNPJ.</p>
+      <p><strong>Tenant:</strong> <%= admin_current_tenant.slug %></p>
+    </div>
+  </section>
+
+  <section class="two-column">
+    <article class="panel">
+      <header class="panel-header">
+        <h3>Nova contraparte</h3>
+        <p>O cockpit usa validação real do modelo de parties e cria perfil médico quando o tipo for PF.</p>
+      </header>
+
+      <%= form_with url: admin_counterparties_path, scope: :counterparty, class: "compact-form", data: { controller: "counterparty-document" } do |form| %>
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <%= form.label :kind, "Tipo" %>
+            <%= form.select :kind, options_for_select([
+              ["Hospital", "HOSPITAL"],
+              ["Fornecedor", "SUPPLIER"],
+              ["Pessoa jurídica", "LEGAL_ENTITY_PJ"],
+              ["Médico PF", "PHYSICIAN_PF"],
+              ["FDIC", "FIDC"]
+            ]), {}, data: { action: "change->counterparty-document#sync", counterparty_document_target: "kind" } %>
+          </div>
+          <div class="field">
+            <%= form.label :document_number, "CNPJ", data: { counterparty_document_target: "documentLabel" } %>
+            <%= form.text_field :document_number, required: true, placeholder: "Somente números do CNPJ", inputmode: "numeric", data: { counterparty_document_target: "documentInput" } %>
+            <p class="field-note" data-counterparty-document-target="documentHint">
+              Hospitais, fornecedores, entidades jurídicas e FDIC devem informar um CNPJ válido.
+            </p>
+          </div>
+          <div class="field">
+            <%= form.label :legal_name, "Razão social ou nome completo" %>
+            <%= form.text_field :legal_name, required: true %>
+          </div>
+          <div class="field">
+            <%= form.label :display_name, "Nome de exibição" %>
+            <%= form.text_field :display_name %>
+          </div>
+          <div class="field">
+            <%= form.label :external_ref, "Referência externa" %>
+            <%= form.text_field :external_ref %>
+          </div>
+          <div class="field" data-counterparty-document-target="physicianField">
+            <%= form.label :email, "E-mail do médico" %>
+            <%= form.email_field :email, placeholder: "Somente para Médico PF" %>
+          </div>
+          <div class="field" data-counterparty-document-target="physicianField">
+            <%= form.label :phone, "Telefone do médico" %>
+            <%= form.telephone_field :phone, placeholder: "Somente para Médico PF" %>
+          </div>
+          <div class="field" data-counterparty-document-target="physicianField">
+            <%= form.label :crm_number, "CRM" %>
+            <%= form.text_field :crm_number, placeholder: "Opcional para Médico PF" %>
+          </div>
+          <div class="field" data-counterparty-document-target="physicianField">
+            <%= form.label :crm_state, "UF do CRM" %>
+            <%= form.select :crm_state, options_for_select(BrazilianStates::OPTIONS), include_blank: "UF - Nome" %>
+          </div>
+        </div>
+
+        <%= form.submit "Criar contraparte", class: "button button-primary" %>
+      <% end %>
+    </article>
+
+    <article class="panel">
+      <header class="panel-header">
+        <h3>Vincular hospital à organização</h3>
+        <p>Use quando a gestão do hospital ocorrer por uma entidade PJ já cadastrada.</p>
+      </header>
+
+      <%= form_with url: link_hospital_admin_counterparties_path, scope: :hospital_ownership, class: "compact-form" do |form| %>
+        <div class="field">
+          <%= form.label :organization_party_id, "Organização" %>
+          <%= form.select :organization_party_id, options_from_collection_for_select(@organization_rows, :id, :legal_name), include_blank: "Selecione" %>
+        </div>
+        <div class="field">
+          <%= form.label :hospital_party_id, "Hospital" %>
+          <%= form.select :hospital_party_id, options_from_collection_for_select(@hospital_rows, :id, :legal_name), include_blank: "Selecione" %>
+        </div>
+
+        <%= form.submit "Criar vínculo", class: "button button-soft" %>
+      <% end %>
+
+      <div class="mini-stack">
+        <h4>Vínculos recentes</h4>
+        <% if @ownership_rows.any? %>
+          <ul class="activity-list">
+            <% @ownership_rows.each do |ownership| %>
+              <li class="activity-item">
+                <p class="activity-title"><strong><%= ownership.organization_party&.legal_name %></strong></p>
+                <p class="activity-body"><%= ownership.hospital_party&.legal_name %></p>
+              </li>
+            <% end %>
+          </ul>
+        <% else %>
+          <p class="empty-state">Nenhum vínculo hospital-organização registrado.</p>
+        <% end %>
+      </div>
+    </article>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Base de contrapartes</h3>
+      <p>Últimos cadastros disponíveis para uso na originação e no acompanhamento da carteira.</p>
+    </header>
+
+    <div class="table-wrapper">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Nome</th>
+            <th>Tipo</th>
+            <th>Documento</th>
+            <th>Referência externa</th>
+            <th>Criado em</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @parties.each do |party| %>
+            <tr>
+              <td>
+                <strong><%= party.display_name.presence || party.legal_name %></strong><br>
+                <small><%= party.legal_name %></small>
+              </td>
+              <td><%= party_kind_label(party.kind) %></td>
+              <td><%= party.document_number %></td>
+              <td><%= party.external_ref.presence || "-" %></td>
+              <td><%= l(party.created_at, format: :short) %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>

@@ -1,5 +1,7 @@
 module Admin
   class ApiAccessTokensController < ApplicationController
+    include AdminPasskeyMode
+
     MAX_TOKENS = 200
     TOKEN_CREATE_PERMITTED_FIELDS = %i[
       tenant_id
@@ -51,10 +53,7 @@ module Admin
     end
 
     def require_passkey_step_up!
-      return if Current.session&.admin_webauthn_verified_recently?
-
-      redirect_to new_admin_passkey_verification_path(return_to: request.fullpath),
-        alert: "Confirme a passkey para gerenciar tokens de integração."
+      require_admin_passkey_step_up!(alert: "Confirme a passkey para gerenciar tokens de integração.")
     end
 
     def load_tenants!

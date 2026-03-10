@@ -37,10 +37,24 @@ Rails.application.routes.draw do
     end
 
     get :dashboard, to: "dashboard#show"
+    resources :counterparties, only: %i[index create] do
+      post :link_hospital, on: :collection
+    end
+    resources :loans, only: %i[index show create] do
+      patch :approve, on: :member
+      patch :fund, on: :member
+      post :settle, on: :member
+      post :record_document, on: :member
+      post :record_profitability, on: :member
+    end
     resources :api_access_tokens, only: %i[index create destroy]
     resources :anticipation_risk_rules, only: %i[index create update] do
       patch :activate, on: :member
       patch :deactivate, on: :member
+    end
+    resources :anticipation_reviews, only: %i[index] do
+      patch :approve, on: :member
+      patch :reject, on: :member
     end
     resources :partner_applications, only: %i[index create] do
       post :rotate_secret, on: :member

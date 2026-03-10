@@ -306,7 +306,7 @@ module Api
         end
       end
 
-      test "requires manual review when review decision rule is exceeded" do
+      test "creates request in pending review when review decision rule is exceeded" do
         shared_bundle = nil
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
           shared_bundle = create_shared_cnpj_physician_bundle!(tenant: @tenant, suffix: "risk-physician-review")
@@ -331,11 +331,14 @@ module Api
           params: payload,
           as: :json
 
-        assert_response :unprocessable_entity
-        assert_equal "risk_manual_review_required_physician", response.parsed_body.dig("error", "code")
-        assert_equal "Anticipation request requires manual review.", response.parsed_body.dig("error", "message")
+        assert_response :created
+        assert_equal "PENDING_REVIEW", response.parsed_body.dig("data", "status")
+        assert response.parsed_body.dig("data", "pending_review_at").present?
 
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          anticipation_request = AnticipationRequest.find(response.parsed_body.dig("data", "id"))
+          assert_equal "PENDING_REVIEW", anticipation_request.status
+
           risk_decision = AnticipationRiskDecision.find_by!(
             tenant_id: @tenant.id,
             idempotency_key: "idem-risk-physician-review-001",
@@ -343,6 +346,12 @@ module Api
           )
           assert_equal "REVIEW", risk_decision.decision_action
           assert_equal "risk_manual_review_required_physician", risk_decision.decision_code
+
+          assert_equal 1, ActionIpLog.where(
+            tenant_id: @tenant.id,
+            action_type: "ANTICIPATION_REQUEST_PENDING_REVIEW",
+            target_id: anticipation_request.id
+          ).count
         end
       end
 
@@ -890,6 +899,84 @@ module Api
             idempotency_key: "idem-confirm-risk-001"
           )
           assert_equal "BLOCK", risk_decision.decision_action
+        end
+      end
+
+      test "moves confirmation to pending review when review risk rule is exceeded" do
+        anticipation_request = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          anticipation_request = create_direct_anticipation_request!(
+            tenant_bundle: @tenant_bundle,
+            idempotency_key: "idem-internal-confirm-risk-review-001"
+          )
+          create_confirmation_challenges!(
+            anticipation_request: anticipation_request,
+            email_code: "121212",
+            whatsapp_code: "343434"
+          )
+          AnticipationRiskRule.create!(
+            tenant: @tenant,
+            scope_type: "TENANT_DEFAULT",
+            decision: "REVIEW",
+            max_outstanding_exposure_amount: "90.00"
+          )
+        end
+
+        post confirm_api_v1_anticipation_request_path(anticipation_request.id),
+          headers: authorization_headers(@confirm_token, idempotency_key: "idem-confirm-risk-review-001"),
+          params: {
+            confirmation: {
+              email_code: "121212",
+              whatsapp_code: "343434"
+            }
+          },
+          as: :json
+
+        assert_response :success
+        assert_equal "PENDING_REVIEW", response.parsed_body.dig("data", "status")
+        assert response.parsed_body.dig("data", "pending_review_at").present?
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          anticipation_request.reload
+          assert_equal "PENDING_REVIEW", anticipation_request.status
+          assert anticipation_request.metadata["review_pending_at"].present?
+
+          risk_decision = AnticipationRiskDecision.find_by!(
+            tenant_id: @tenant.id,
+            anticipation_request_id: anticipation_request.id,
+            stage: "CONFIRM",
+            idempotency_key: "idem-confirm-risk-review-001"
+          )
+          assert_equal "REVIEW", risk_decision.decision_action
+          assert_equal "risk_manual_review_required_tenant", risk_decision.decision_code
+
+          assert_equal 1, ReceivableEvent.where(
+            tenant_id: @tenant.id,
+            receivable_id: anticipation_request.receivable_id,
+            event_type: "ANTICIPATION_REVIEW_PENDING"
+          ).count
+
+          assert_equal 1, ActionIpLog.where(
+            tenant_id: @tenant.id,
+            action_type: "ANTICIPATION_REVIEW_PENDING",
+            target_id: anticipation_request.id
+          ).count
+
+          email_challenge = AuthChallenge.find_by!(
+            tenant_id: @tenant.id,
+            target_type: "AnticipationRequest",
+            target_id: anticipation_request.id,
+            delivery_channel: "EMAIL"
+          )
+          whatsapp_challenge = AuthChallenge.find_by!(
+            tenant_id: @tenant.id,
+            target_type: "AnticipationRequest",
+            target_id: anticipation_request.id,
+            delivery_channel: "WHATSAPP"
+          )
+          assert_equal "PENDING", email_challenge.status
+          assert_equal "PENDING", whatsapp_challenge.status
         end
       end
 

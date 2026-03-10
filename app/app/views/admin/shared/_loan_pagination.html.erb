@@ -1,0 +1,28 @@
+<% if pagination.fetch(:total_count).positive? %>
+  <% base_path = request.path_parameters.symbolize_keys %>
+  <% query_params = request.query_parameters.symbolize_keys.except(:page) %>
+  <div class="table-pagination">
+    <p class="table-pagination-summary">
+      Mostrando <strong><%= pagination.fetch(:from) %>-<%= pagination.fetch(:to) %></strong>
+      de <strong><%= pagination.fetch(:total_count) %></strong> emprestimos
+    </p>
+
+    <% if pagination.fetch(:total_pages) > 1 %>
+      <div class="table-pagination-actions">
+        <% if pagination[:prev_page].present? %>
+          <%= link_to "Anterior", url_for(base_path.merge(query_params).merge(page: pagination[:prev_page], only_path: true)), class: "button button-soft button-inline" %>
+        <% else %>
+          <span class="button button-soft button-inline button-disabled">Anterior</span>
+        <% end %>
+
+        <span class="table-pagination-page">Pagina <%= pagination.fetch(:page) %> de <%= pagination.fetch(:total_pages) %></span>
+
+        <% if pagination[:next_page].present? %>
+          <%= link_to "Proxima", url_for(base_path.merge(query_params).merge(page: pagination[:next_page], only_path: true)), class: "button button-soft button-inline" %>
+        <% else %>
+          <span class="button button-soft button-inline button-disabled">Proxima</span>
+        <% end %>
+      </div>
+    <% end %>
+  </div>
+<% end %>

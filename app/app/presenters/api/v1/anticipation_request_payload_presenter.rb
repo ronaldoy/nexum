@@ -24,6 +24,10 @@ module Api
           settlement_target_date: record.settlement_target_date&.iso8601,
           requested_at: record.requested_at&.iso8601,
           confirmed_at: record.metadata&.dig("confirmed_at"),
+          pending_review_at: record.metadata&.dig("pending_review_at") || record.metadata&.dig("review_pending_at"),
+          review_decision_at: record.metadata&.dig("review_decision_at"),
+          review_decision_by_party_id: record.metadata&.dig("review_decision_by_party_id"),
+          review_note: record.metadata&.dig("review_note"),
           confirmation_channels: Array(record.metadata&.dig("confirmation_channels")),
           receivable_provenance: @provenance_resolver.call(record.receivable),
           replayed: replayed

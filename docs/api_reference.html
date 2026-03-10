@@ -1,0 +1,3033 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nexum API</title>
+    <meta name="description" content="Baseline contract for API v1 endpoints">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        --bg: #f4f2ee;
+        --surface: rgba(255, 252, 245, 0.92);
+        --surface-strong: #ffffff;
+        --text: #172126;
+        --muted: #5a6974;
+        --line: rgba(17, 37, 46, 0.12);
+        --brand: #0b5d63;
+        --brand-soft: #d9edeb;
+        --accent: #c96d21;
+        --shadow: 0 18px 38px rgba(11, 34, 36, 0.10);
+        --radius-lg: 24px;
+        --radius-md: 18px;
+        --radius-sm: 12px;
+        --get: #176b5f;
+        --post: #0b5d63;
+        --put: #875e12;
+        --patch: #8f3c22;
+        --delete: #9d2f34;
+      }
+
+      * { box-sizing: border-box; }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top right, rgba(11, 93, 99, 0.12), transparent 28%),
+          radial-gradient(circle at left top, rgba(201, 109, 33, 0.10), transparent 24%),
+          linear-gradient(180deg, #f7f4ef 0%, #f2ede6 100%);
+        color: var(--text);
+        font-family: "Source Sans 3", "Helvetica Neue", sans-serif;
+      }
+
+      a { color: inherit; }
+
+      code, pre {
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+      }
+
+      .page {
+        width: min(1480px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 24px 0 56px;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 320px minmax(0, 1fr);
+        gap: 24px;
+      }
+
+      .panel {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(12px);
+      }
+
+      .sidebar {
+        position: sticky;
+        top: 24px;
+        align-self: start;
+        padding: 24px;
+      }
+
+      .kicker {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: rgba(11, 93, 99, 0.10);
+        color: var(--brand);
+        font-size: 0.84rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .sidebar h1,
+      .hero h2,
+      .section h2,
+      .endpoint-card h3,
+      .schema-card summary {
+        font-family: "Space Grotesk", "Avenir Next", sans-serif;
+        letter-spacing: -0.02em;
+      }
+
+      .sidebar h1 {
+        margin: 16px 0 8px;
+        font-size: 2rem;
+        line-height: 1;
+      }
+
+      .lede,
+      .sidebar p,
+      .meta-note {
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .meta-stack {
+        display: grid;
+        gap: 12px;
+        margin: 24px 0;
+      }
+
+      .meta-chip {
+        padding: 12px 14px;
+        border-radius: var(--radius-md);
+        background: rgba(255, 255, 255, 0.78);
+        border: 1px solid var(--line);
+      }
+
+      .meta-chip strong {
+        display: block;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--brand);
+        margin-bottom: 4px;
+      }
+
+      .sidebar-links,
+      .tag-nav {
+        display: grid;
+        gap: 10px;
+      }
+
+      .sidebar-links a,
+      .tag-nav a {
+        text-decoration: none;
+        padding: 10px 12px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.64);
+        transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+      }
+
+      .sidebar-links a:hover,
+      .tag-nav a:hover {
+        transform: translateY(-1px);
+        border-color: rgba(11, 93, 99, 0.30);
+        background: rgba(217, 237, 235, 0.62);
+      }
+
+      .content {
+        display: grid;
+        gap: 24px;
+      }
+
+      .hero,
+      .section {
+        padding: 28px;
+      }
+
+      .hero {
+        display: grid;
+        gap: 20px;
+      }
+
+      .hero h2 {
+        margin: 0;
+        font-size: clamp(2.2rem, 4vw, 3.7rem);
+        line-height: 0.95;
+        max-width: 12ch;
+      }
+
+      .hero-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .stat {
+        padding: 18px;
+        border-radius: var(--radius-md);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(241, 246, 245, 0.88));
+        border: 1px solid var(--line);
+      }
+
+      .stat strong {
+        display: block;
+        font-size: 2rem;
+        font-family: "Space Grotesk", "Avenir Next", sans-serif;
+      }
+
+      .stat span {
+        color: var(--muted);
+      }
+
+      .section-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: end;
+        gap: 12px;
+        margin-bottom: 18px;
+      }
+
+      .section h2 {
+        margin: 0;
+        font-size: 1.7rem;
+      }
+
+      .search {
+        width: min(360px, 100%);
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.88);
+        padding: 12px 16px;
+        font: inherit;
+      }
+
+      .auth-grid,
+      .tag-section {
+        display: grid;
+        gap: 16px;
+      }
+
+      .auth-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .callout {
+        padding: 18px;
+        border-radius: var(--radius-md);
+        background: rgba(255, 255, 255, 0.82);
+        border: 1px solid var(--line);
+      }
+
+      .callout strong {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--brand);
+      }
+
+      .tag-section + .tag-section {
+        margin-top: 26px;
+        padding-top: 26px;
+        border-top: 1px solid var(--line);
+      }
+
+      .tag-title {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .tag-count {
+        padding: 5px 10px;
+        border-radius: 999px;
+        background: var(--brand-soft);
+        color: var(--brand);
+        font-size: 0.84rem;
+        font-weight: 700;
+      }
+
+      .endpoint-card {
+        padding: 22px;
+        border-radius: var(--radius-md);
+        background: rgba(255, 255, 255, 0.88);
+        border: 1px solid var(--line);
+        display: grid;
+        gap: 16px;
+      }
+
+      .endpoint-top {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+      }
+
+      .method {
+        padding: 7px 12px;
+        border-radius: 999px;
+        color: white;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        font-size: 0.78rem;
+      }
+
+      .method-get { background: var(--get); }
+      .method-post { background: var(--post); }
+      .method-put { background: var(--put); }
+      .method-patch { background: var(--patch); }
+      .method-delete { background: var(--delete); }
+
+      .path {
+        font-size: 1.02rem;
+        color: var(--text);
+        overflow-wrap: anywhere;
+      }
+
+      .endpoint-card h3 {
+        margin: 0;
+        font-size: 1.25rem;
+      }
+
+      .meta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .meta-pill {
+        padding: 8px 10px;
+        border-radius: 999px;
+        background: rgba(217, 237, 235, 0.62);
+        border: 1px solid rgba(11, 93, 99, 0.12);
+        font-size: 0.88rem;
+        color: var(--brand);
+      }
+
+      .meta-pill code {
+        font-size: 0.82rem;
+      }
+
+      .detail-grid {
+        display: grid;
+        gap: 14px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        border-spacing: 0;
+        overflow: hidden;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--line);
+      }
+
+      th,
+      td {
+        text-align: left;
+        vertical-align: top;
+        padding: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      th {
+        background: rgba(11, 93, 99, 0.08);
+        color: var(--brand);
+        font-size: 0.82rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      tr:last-child td {
+        border-bottom: none;
+      }
+
+      .example-block,
+      .schema-card pre {
+        margin: 0;
+        padding: 16px;
+        border-radius: var(--radius-sm);
+        background: #101a1f;
+        color: #eff6f7;
+        overflow: auto;
+        font-size: 0.86rem;
+        line-height: 1.55;
+      }
+
+      .schema-list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .schema-card {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background: rgba(255, 255, 255, 0.88);
+        overflow: hidden;
+      }
+
+      .schema-card summary {
+        cursor: pointer;
+        list-style: none;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        padding: 16px 18px;
+      }
+
+      .schema-card summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .schema-type {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      .footer-note {
+        margin-top: 18px;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      @media (max-width: 1120px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        .sidebar {
+          position: static;
+        }
+
+        .hero-grid,
+        .auth-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 720px) {
+        .page {
+          width: min(100%, calc(100% - 20px));
+          padding-top: 12px;
+        }
+
+        .hero,
+        .section,
+        .sidebar {
+          padding: 20px;
+        }
+
+        .hero-grid,
+        .auth-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .section-header {
+          align-items: stretch;
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="layout">
+        <aside class="panel sidebar">
+          <span class="kicker">Nexum API v1.0.0</span>
+          <h1>Nexum API</h1>
+          <p class="lede">Baseline contract for API v1 endpoints</p>
+          <div class="meta-stack">
+            <div class="meta-chip">
+              <strong>Generated</strong>
+              2026-03-06T10:18:53-03:00
+            </div>
+            <div class="meta-chip">
+              <strong>Source Contract</strong>
+              <code>docs/openapi/v1.yaml</code>
+            </div>
+          </div>
+          <div class="sidebar-links">
+            <a href="openapi/v1.yaml">Download OpenAPI YAML</a>
+            <a href="api_reference.md">Open Markdown Reference</a>
+            <a href="#schemas">Browse Schemas</a>
+          </div>
+          <h2 style="margin: 24px 0 10px; font-size: 1rem; color: var(--brand);">Tags</h2>
+          <nav class="tag-nav">
+            <a href="#anticipation">Anticipation <span class="meta-note">(3)</span></a>
+<a href="#authentication">Authentication <span class="meta-note">(1)</span></a>
+<a href="#health">Health <span class="meta-note">(2)</span></a>
+<a href="#kyc">KYC <span class="meta-note">(3)</span></a>
+<a href="#organizations">Organizations <span class="meta-note">(1)</span></a>
+<a href="#physicians">Physicians <span class="meta-note">(2)</span></a>
+<a href="#receivables">Receivables <span class="meta-note">(6)</span></a>
+          </nav>
+        </aside>
+
+        <main class="content">
+          <section class="panel hero">
+            <span class="kicker">Prospect-facing reference</span>
+            <h2>Integration teams can review the surface area in one place.</h2>
+            <p class="lede">Contract-first baseline for `/api/v1` endpoints.<br>Monetary and rate fields are represented as strings.<br>Error responses are deterministic and machine-readable.<br></p>
+            <div class="hero-grid">
+              <div class="stat">
+                <strong>18</strong>
+                <span>Total endpoints</span>
+              </div>
+              <div class="stat">
+                <strong>10</strong>
+                <span>Mutating operations</span>
+              </div>
+              <div class="stat">
+                <strong>7</strong>
+                <span>Functional domains</span>
+              </div>
+              <div class="stat">
+                <strong>16</strong>
+                <span>Named schemas</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel section" id="authentication">
+            <div class="section-header">
+              <div>
+                <h2>Authentication</h2>
+                <p class="meta-note">The contract separates health probes from token-backed business operations.</p>
+              </div>
+            </div>
+            <div class="auth-grid">
+              <div class="callout">
+                <strong>Bearer token</strong>
+                Partner business endpoints under <code>/api/v1</code> expect a Bearer token unless the operation is the OAuth token issue flow.
+              </div>
+              <div class="callout">
+                <strong>Client credentials</strong>
+                <code>/api/v1/oauth/token/{tenant_slug}</code> issues access tokens and supports client credentials exchange.
+              </div>
+              <div class="callout">
+                <strong>Idempotency required</strong>
+                Every mutating operation includes the <code>Idempotency-Key</code> header in the OpenAPI contract.
+              </div>
+            </div>
+          </section>
+
+          <section class="panel section" id="endpoints">
+            <div class="section-header">
+              <div>
+                <h2>Endpoints</h2>
+                <p class="meta-note">Filter by path, tag, method, or operation id.</p>
+              </div>
+              <input class="search" id="endpoint-search" type="search" placeholder="Search endpoints">
+            </div>
+            <section class="tag-section" id="anticipation" data-tag-section>
+  <div class="tag-title">
+    <h3 style="margin: 0; font-size: 1.4rem;">Anticipation</h3>
+    <span class="tag-count">3 endpoints</span>
+  </div>
+  <article class="endpoint-card" id="anticipation-post-api-v1-anticipation-requests" data-endpoint-search="anticipation post /api/v1/anticipation_requests createanticipationrequest create anticipation request ">
+  <div class="endpoint-top">
+    <span class="method method-post">POST</span>
+    <code class="path">/api/v1/anticipation_requests</code>
+  </div>
+  <div>
+    <h3>Create anticipation request</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: Bearer token</span>
+    <span class="meta-pill">Idempotency: Required</span>
+    <span class="meta-pill">Operation ID: <code>createAnticipationRequest</code></span>
+  </div>
+  <div class="detail-grid">
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Parameters</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>In</th>
+        <th>Required</th>
+        <th>Schema</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>Idempotency-Key</code></td>
+  <td>header</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td>Required for all mutating endpoints.</td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Request body</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Content-Type</th>
+        <th>Required</th>
+        <th>Schema</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>application/json</code></td>
+  <td>Yes</td>
+  <td><code>object</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>201</code></td>
+  <td>Anticipation request created.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>400</code></td>
+  <td>Request syntax or payload shape is invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>401</code></td>
+  <td>Authentication is required or invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>403</code></td>
+  <td>Authenticated actor is not allowed.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>409</code></td>
+  <td>Idempotency or state conflict.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>422</code></td>
+  <td>Business validation error.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+<article class="endpoint-card" id="anticipation-post-api-v1-anticipation-requests-id-confirm" data-endpoint-search="anticipation post /api/v1/anticipation_requests/{id}/confirm confirmanticipation confirm anticipation by challenge codes ">
+  <div class="endpoint-top">
+    <span class="method method-post">POST</span>
+    <code class="path">/api/v1/anticipation_requests/{id}/confirm</code>
+  </div>
+  <div>
+    <h3>Confirm anticipation by challenge codes</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: Bearer token</span>
+    <span class="meta-pill">Idempotency: Required</span>
+    <span class="meta-pill">Operation ID: <code>confirmAnticipation</code></span>
+  </div>
+  <div class="detail-grid">
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Parameters</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>In</th>
+        <th>Required</th>
+        <th>Schema</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>id</code></td>
+  <td>path</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td></td>
+</tr>
+<tr>
+  <td><code>Idempotency-Key</code></td>
+  <td>header</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td>Required for all mutating endpoints.</td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Request body</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Content-Type</th>
+        <th>Required</th>
+        <th>Schema</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>application/json</code></td>
+  <td>Yes</td>
+  <td><code>object</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>200</code></td>
+  <td>Anticipation confirmed.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>400</code></td>
+  <td>Request syntax or payload shape is invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>401</code></td>
+  <td>Authentication is required or invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>403</code></td>
+  <td>Authenticated actor is not allowed.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>404</code></td>
+  <td>Resource does not exist in the current tenant scope.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>409</code></td>
+  <td>Idempotency or state conflict.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>422</code></td>
+  <td>Business validation error.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+<article class="endpoint-card" id="anticipation-post-api-v1-anticipation-requests-id-issue-challenges" data-endpoint-search="anticipation post /api/v1/anticipation_requests/{id}/issue_challenges issueanticipationchallenges issue email and whatsapp confirmation challenges ">
+  <div class="endpoint-top">
+    <span class="method method-post">POST</span>
+    <code class="path">/api/v1/anticipation_requests/{id}/issue_challenges</code>
+  </div>
+  <div>
+    <h3>Issue email and WhatsApp confirmation challenges</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: Bearer token</span>
+    <span class="meta-pill">Idempotency: Required</span>
+    <span class="meta-pill">Operation ID: <code>issueAnticipationChallenges</code></span>
+  </div>
+  <div class="detail-grid">
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Parameters</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>In</th>
+        <th>Required</th>
+        <th>Schema</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>id</code></td>
+  <td>path</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td></td>
+</tr>
+<tr>
+  <td><code>Idempotency-Key</code></td>
+  <td>header</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td>Required for all mutating endpoints.</td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Request body</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Content-Type</th>
+        <th>Required</th>
+        <th>Schema</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>application/json</code></td>
+  <td>Yes</td>
+  <td><code>object</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>200</code></td>
+  <td>Challenges issued.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>400</code></td>
+  <td>Request syntax or payload shape is invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>401</code></td>
+  <td>Authentication is required or invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>403</code></td>
+  <td>Authenticated actor is not allowed.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>404</code></td>
+  <td>Resource does not exist in the current tenant scope.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>409</code></td>
+  <td>Idempotency or state conflict.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>422</code></td>
+  <td>Business validation error.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+</section>
+
+<section class="tag-section" id="authentication" data-tag-section>
+  <div class="tag-title">
+    <h3 style="margin: 0; font-size: 1.4rem;">Authentication</h3>
+    <span class="tag-count">1 endpoints</span>
+  </div>
+  <article class="endpoint-card" id="authentication-post-api-v1-oauth-token-tenant-slug" data-endpoint-search="authentication post /api/v1/oauth/token/{tenant_slug} issueoauthtoken issue oauth access token with client credentials ">
+  <div class="endpoint-top">
+    <span class="method method-post">POST</span>
+    <code class="path">/api/v1/oauth/token/{tenant_slug}</code>
+  </div>
+  <div>
+    <h3>Issue OAuth access token with client credentials</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: Client credentials</span>
+    <span class="meta-pill">Idempotency: Required</span>
+    <span class="meta-pill">Operation ID: <code>issueOAuthToken</code></span>
+  </div>
+  <div class="detail-grid">
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Parameters</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>In</th>
+        <th>Required</th>
+        <th>Schema</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>tenant_slug</code></td>
+  <td>path</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td>Tenant slug used for OAuth token issuance.</td>
+</tr>
+<tr>
+  <td><code>Idempotency-Key</code></td>
+  <td>header</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td>Required for all mutating endpoints.</td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Request body</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Content-Type</th>
+        <th>Required</th>
+        <th>Schema</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>application/json</code></td>
+  <td>Yes</td>
+  <td><code>OAuthTokenRequest</code></td>
+</tr>
+<tr>
+  <td><code>application/x-www-form-urlencoded</code></td>
+  <td>Yes</td>
+  <td><code>OAuthTokenRequest</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Example request (application/json)</strong>
+  <pre class="example-block"><code>{
+  &quot;grant_type&quot;: &quot;client_credentials&quot;,
+  &quot;client_id&quot;: &quot;string&quot;,
+  &quot;client_secret&quot;: &quot;string&quot;,
+  &quot;scope&quot;: &quot;string&quot;
+}</code></pre>
+</div>
+
+<div>
+  <strong style="display: block; margin-bottom: 8px;">Example request (application/x-www-form-urlencoded)</strong>
+  <pre class="example-block"><code>{
+  &quot;grant_type&quot;: &quot;client_credentials&quot;,
+  &quot;client_id&quot;: &quot;string&quot;,
+  &quot;client_secret&quot;: &quot;string&quot;,
+  &quot;scope&quot;: &quot;string&quot;
+}</code></pre>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>200</code></td>
+  <td>OAuth access token issued.</td>
+  <td>application/json <code>OAuthTokenResponse</code></td>
+</tr>
+<tr>
+  <td><code>400</code></td>
+  <td>OAuth request validation error.</td>
+  <td>application/json <code>OAuthErrorResponse</code></td>
+</tr>
+<tr>
+  <td><code>401</code></td>
+  <td>OAuth client authentication failed.</td>
+  <td>application/json <code>OAuthErrorResponse</code></td>
+</tr>
+<tr>
+  <td><code>422</code></td>
+  <td>OAuth payload could not be processed.</td>
+  <td>application/json <code>OAuthErrorResponse</code></td>
+</tr>
+<tr>
+  <td><code>503</code></td>
+  <td>OAuth context unavailable.</td>
+  <td>application/json <code>OAuthErrorResponse</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+</section>
+
+<section class="tag-section" id="health" data-tag-section>
+  <div class="tag-title">
+    <h3 style="margin: 0; font-size: 1.4rem;">Health</h3>
+    <span class="tag-count">2 endpoints</span>
+  </div>
+  <article class="endpoint-card" id="health-get-health" data-endpoint-search="health get /health gethealth liveness check ">
+  <div class="endpoint-top">
+    <span class="method method-get">GET</span>
+    <code class="path">/health</code>
+  </div>
+  <div>
+    <h3>Liveness check</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: None</span>
+    <span class="meta-pill">Idempotency: Not required</span>
+    <span class="meta-pill">Operation ID: <code>getHealth</code></span>
+  </div>
+  <div class="detail-grid">
+    
+    
+    
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>200</code></td>
+  <td>Service is alive.</td>
+  <td>application/json <code>HealthResponse</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+<article class="endpoint-card" id="health-get-ready" data-endpoint-search="health get /ready getready readiness check ">
+  <div class="endpoint-top">
+    <span class="method method-get">GET</span>
+    <code class="path">/ready</code>
+  </div>
+  <div>
+    <h3>Readiness check</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: None</span>
+    <span class="meta-pill">Idempotency: Not required</span>
+    <span class="meta-pill">Operation ID: <code>getReady</code></span>
+  </div>
+  <div class="detail-grid">
+    
+    
+    
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>200</code></td>
+  <td>Service and dependencies are ready.</td>
+  <td>application/json <code>ReadyResponse</code></td>
+</tr>
+<tr>
+  <td><code>503</code></td>
+  <td>Service is not ready.</td>
+  <td>application/json <code>ReadyResponse</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+</section>
+
+<section class="tag-section" id="kyc" data-tag-section>
+  <div class="tag-title">
+    <h3 style="margin: 0; font-size: 1.4rem;">KYC</h3>
+    <span class="tag-count">3 endpoints</span>
+  </div>
+  <article class="endpoint-card" id="kyc-post-api-v1-kyc-profiles" data-endpoint-search="kyc post /api/v1/kyc_profiles createkycprofile create kyc profile ">
+  <div class="endpoint-top">
+    <span class="method method-post">POST</span>
+    <code class="path">/api/v1/kyc_profiles</code>
+  </div>
+  <div>
+    <h3>Create KYC profile</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: Bearer token</span>
+    <span class="meta-pill">Idempotency: Required</span>
+    <span class="meta-pill">Operation ID: <code>createKycProfile</code></span>
+  </div>
+  <div class="detail-grid">
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Parameters</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>In</th>
+        <th>Required</th>
+        <th>Schema</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>Idempotency-Key</code></td>
+  <td>header</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td>Required for all mutating endpoints.</td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Request body</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Content-Type</th>
+        <th>Required</th>
+        <th>Schema</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>application/json</code></td>
+  <td>Yes</td>
+  <td><code>object</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>201</code></td>
+  <td>KYC profile created.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>400</code></td>
+  <td>Request syntax or payload shape is invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>401</code></td>
+  <td>Authentication is required or invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>403</code></td>
+  <td>Authenticated actor is not allowed.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>409</code></td>
+  <td>Idempotency or state conflict.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>422</code></td>
+  <td>Business validation error.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+<article class="endpoint-card" id="kyc-get-api-v1-kyc-profiles-id" data-endpoint-search="kyc get /api/v1/kyc_profiles/{id} getkycprofile fetch kyc profile ">
+  <div class="endpoint-top">
+    <span class="method method-get">GET</span>
+    <code class="path">/api/v1/kyc_profiles/{id}</code>
+  </div>
+  <div>
+    <h3>Fetch KYC profile</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: Bearer token</span>
+    <span class="meta-pill">Idempotency: Not required</span>
+    <span class="meta-pill">Operation ID: <code>getKycProfile</code></span>
+  </div>
+  <div class="detail-grid">
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Parameters</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>In</th>
+        <th>Required</th>
+        <th>Schema</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>id</code></td>
+  <td>path</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    
+    
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>200</code></td>
+  <td>KYC profile.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>401</code></td>
+  <td>Authentication is required or invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>403</code></td>
+  <td>Authenticated actor is not allowed.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>404</code></td>
+  <td>Resource does not exist in the current tenant scope.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+<article class="endpoint-card" id="kyc-post-api-v1-kyc-profiles-id-submit-document" data-endpoint-search="kyc post /api/v1/kyc_profiles/{id}/submit_document submitkycdocument submit kyc document metadata ">
+  <div class="endpoint-top">
+    <span class="method method-post">POST</span>
+    <code class="path">/api/v1/kyc_profiles/{id}/submit_document</code>
+  </div>
+  <div>
+    <h3>Submit KYC document metadata</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: Bearer token</span>
+    <span class="meta-pill">Idempotency: Required</span>
+    <span class="meta-pill">Operation ID: <code>submitKycDocument</code></span>
+  </div>
+  <div class="detail-grid">
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Parameters</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>In</th>
+        <th>Required</th>
+        <th>Schema</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>id</code></td>
+  <td>path</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td></td>
+</tr>
+<tr>
+  <td><code>Idempotency-Key</code></td>
+  <td>header</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td>Required for all mutating endpoints.</td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Request body</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Content-Type</th>
+        <th>Required</th>
+        <th>Schema</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>application/json</code></td>
+  <td>Yes</td>
+  <td><code>object</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>200</code></td>
+  <td>KYC document accepted.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>400</code></td>
+  <td>Request syntax or payload shape is invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>401</code></td>
+  <td>Authentication is required or invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>403</code></td>
+  <td>Authenticated actor is not allowed.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>404</code></td>
+  <td>Resource does not exist in the current tenant scope.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>409</code></td>
+  <td>Idempotency or state conflict.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>422</code></td>
+  <td>Business validation error.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+</section>
+
+<section class="tag-section" id="organizations" data-tag-section>
+  <div class="tag-title">
+    <h3 style="margin: 0; font-size: 1.4rem;">Organizations</h3>
+    <span class="tag-count">1 endpoints</span>
+  </div>
+  <article class="endpoint-card" id="organizations-get-api-v1-hospital-organizations" data-endpoint-search="organizations get /api/v1/hospital_organizations listhospitalorganizations list hospital organizations and managed hospitals ">
+  <div class="endpoint-top">
+    <span class="method method-get">GET</span>
+    <code class="path">/api/v1/hospital_organizations</code>
+  </div>
+  <div>
+    <h3>List hospital organizations and managed hospitals</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: Bearer token</span>
+    <span class="meta-pill">Idempotency: Not required</span>
+    <span class="meta-pill">Operation ID: <code>listHospitalOrganizations</code></span>
+  </div>
+  <div class="detail-grid">
+    
+    
+    
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>200</code></td>
+  <td>Hospital organization links visible to current actor.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>401</code></td>
+  <td>Authentication is required or invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>403</code></td>
+  <td>Authenticated actor is not allowed.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+</section>
+
+<section class="tag-section" id="physicians" data-tag-section>
+  <div class="tag-title">
+    <h3 style="margin: 0; font-size: 1.4rem;">Physicians</h3>
+    <span class="tag-count">2 endpoints</span>
+  </div>
+  <article class="endpoint-card" id="physicians-post-api-v1-physicians" data-endpoint-search="physicians post /api/v1/physicians createphysician create physician profile ">
+  <div class="endpoint-top">
+    <span class="method method-post">POST</span>
+    <code class="path">/api/v1/physicians</code>
+  </div>
+  <div>
+    <h3>Create physician profile</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: Bearer token</span>
+    <span class="meta-pill">Idempotency: Required</span>
+    <span class="meta-pill">Operation ID: <code>createPhysician</code></span>
+  </div>
+  <div class="detail-grid">
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Parameters</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>In</th>
+        <th>Required</th>
+        <th>Schema</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>Idempotency-Key</code></td>
+  <td>header</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td>Required for all mutating endpoints.</td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Request body</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Content-Type</th>
+        <th>Required</th>
+        <th>Schema</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>application/json</code></td>
+  <td>Yes</td>
+  <td><code>CreatePhysicianRequest</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Example request (application/json)</strong>
+  <pre class="example-block"><code>{
+  &quot;full_name&quot;: &quot;string&quot;,
+  &quot;display_name&quot;: &quot;string&quot;,
+  &quot;email&quot;: &quot;string&quot;,
+  &quot;phone&quot;: &quot;string&quot;,
+  &quot;document_number&quot;: &quot;string&quot;,
+  &quot;external_ref&quot;: &quot;string&quot;,
+  &quot;crm_number&quot;: &quot;string&quot;,
+  &quot;crm_state&quot;: &quot;string&quot;
+}</code></pre>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>200</code></td>
+  <td>Replay of previously created physician.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>201</code></td>
+  <td>Physician created.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>400</code></td>
+  <td>Request syntax or payload shape is invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>401</code></td>
+  <td>Authentication is required or invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>403</code></td>
+  <td>Authenticated actor is not allowed.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>409</code></td>
+  <td>Idempotency or state conflict.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>422</code></td>
+  <td>Business validation error.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+<article class="endpoint-card" id="physicians-get-api-v1-physicians-id" data-endpoint-search="physicians get /api/v1/physicians/{id} getphysician fetch physician by id ">
+  <div class="endpoint-top">
+    <span class="method method-get">GET</span>
+    <code class="path">/api/v1/physicians/{id}</code>
+  </div>
+  <div>
+    <h3>Fetch physician by id</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: Bearer token</span>
+    <span class="meta-pill">Idempotency: Not required</span>
+    <span class="meta-pill">Operation ID: <code>getPhysician</code></span>
+  </div>
+  <div class="detail-grid">
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Parameters</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>In</th>
+        <th>Required</th>
+        <th>Schema</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>id</code></td>
+  <td>path</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    
+    
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>200</code></td>
+  <td>Physician profile.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>401</code></td>
+  <td>Authentication is required or invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>403</code></td>
+  <td>Authenticated actor is not allowed.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>404</code></td>
+  <td>Resource does not exist in the current tenant scope.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+</section>
+
+<section class="tag-section" id="receivables" data-tag-section>
+  <div class="tag-title">
+    <h3 style="margin: 0; font-size: 1.4rem;">Receivables</h3>
+    <span class="tag-count">6 endpoints</span>
+  </div>
+  <article class="endpoint-card" id="receivables-get-api-v1-receivables" data-endpoint-search="receivables get /api/v1/receivables listreceivables list receivables ">
+  <div class="endpoint-top">
+    <span class="method method-get">GET</span>
+    <code class="path">/api/v1/receivables</code>
+  </div>
+  <div>
+    <h3>List receivables</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: Bearer token</span>
+    <span class="meta-pill">Idempotency: Not required</span>
+    <span class="meta-pill">Operation ID: <code>listReceivables</code></span>
+  </div>
+  <div class="detail-grid">
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Parameters</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>In</th>
+        <th>Required</th>
+        <th>Schema</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>limit</code></td>
+  <td>query</td>
+  <td>No</td>
+  <td><code>integer</code></td>
+  <td>Maximum number of receivables returned. Defaults to 50.</td>
+</tr>
+<tr>
+  <td><code>hospital_party_id</code></td>
+  <td>query</td>
+  <td>No</td>
+  <td><code>string</code></td>
+  <td>Optional debtor hospital filter for multi-hospital organization views.</td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    
+    
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>200</code></td>
+  <td>Receivable collection.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>401</code></td>
+  <td>Authentication is required or invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>403</code></td>
+  <td>Authenticated actor is not allowed.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+<article class="endpoint-card" id="receivables-post-api-v1-receivables" data-endpoint-search="receivables post /api/v1/receivables createreceivable create receivable ">
+  <div class="endpoint-top">
+    <span class="method method-post">POST</span>
+    <code class="path">/api/v1/receivables</code>
+  </div>
+  <div>
+    <h3>Create receivable</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: Bearer token</span>
+    <span class="meta-pill">Idempotency: Required</span>
+    <span class="meta-pill">Operation ID: <code>createReceivable</code></span>
+  </div>
+  <div class="detail-grid">
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Parameters</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>In</th>
+        <th>Required</th>
+        <th>Schema</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>Idempotency-Key</code></td>
+  <td>header</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td>Required for all mutating endpoints.</td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Request body</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Content-Type</th>
+        <th>Required</th>
+        <th>Schema</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>application/json</code></td>
+  <td>Yes</td>
+  <td><code>CreateReceivableRequest</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Example request (application/json)</strong>
+  <pre class="example-block"><code>{
+  &quot;external_reference&quot;: &quot;string&quot;,
+  &quot;receivable_kind_code&quot;: &quot;string&quot;,
+  &quot;debtor_party_id&quot;: &quot;string&quot;,
+  &quot;creditor_party_id&quot;: &quot;string&quot;,
+  &quot;beneficiary_party_id&quot;: &quot;string&quot;,
+  &quot;gross_amount&quot;: &quot;100.00&quot;,
+  &quot;currency&quot;: &quot;BRL&quot;,
+  &quot;performed_at&quot;: &quot;2026-03-06T10:12:02-03:00&quot;,
+  &quot;due_at&quot;: &quot;2026-03-06T10:12:02-03:00&quot;,
+  &quot;cutoff_at&quot;: &quot;2026-03-06T10:12:02-03:00&quot;,
+  &quot;allocation&quot;: {
+    &quot;allocated_party_id&quot;: &quot;string&quot;,
+    &quot;physician_party_id&quot;: &quot;string&quot;,
+    &quot;gross_amount&quot;: &quot;100.00&quot;,
+    &quot;tax_reserve_amount&quot;: &quot;100.00&quot;,
+    &quot;eligible_for_anticipation&quot;: true
+  }
+}</code></pre>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>200</code></td>
+  <td>Replay of previously created receivable.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>201</code></td>
+  <td>Receivable created.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>400</code></td>
+  <td>Request syntax or payload shape is invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>401</code></td>
+  <td>Authentication is required or invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>403</code></td>
+  <td>Authenticated actor is not allowed.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>404</code></td>
+  <td>Resource does not exist in the current tenant scope.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>409</code></td>
+  <td>Idempotency or state conflict.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>422</code></td>
+  <td>Business validation error.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+<article class="endpoint-card" id="receivables-get-api-v1-receivables-id" data-endpoint-search="receivables get /api/v1/receivables/{id} getreceivable fetch receivable by id ">
+  <div class="endpoint-top">
+    <span class="method method-get">GET</span>
+    <code class="path">/api/v1/receivables/{id}</code>
+  </div>
+  <div>
+    <h3>Fetch receivable by id</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: Bearer token</span>
+    <span class="meta-pill">Idempotency: Not required</span>
+    <span class="meta-pill">Operation ID: <code>getReceivable</code></span>
+  </div>
+  <div class="detail-grid">
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Parameters</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>In</th>
+        <th>Required</th>
+        <th>Schema</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>id</code></td>
+  <td>path</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    
+    
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>200</code></td>
+  <td>Receivable.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>401</code></td>
+  <td>Authentication is required or invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>403</code></td>
+  <td>Authenticated actor is not allowed.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>404</code></td>
+  <td>Resource does not exist in the current tenant scope.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+<article class="endpoint-card" id="receivables-post-api-v1-receivables-id-attach-document" data-endpoint-search="receivables post /api/v1/receivables/{id}/attach_document attachreceivabledocument attach signed document metadata to receivable ">
+  <div class="endpoint-top">
+    <span class="method method-post">POST</span>
+    <code class="path">/api/v1/receivables/{id}/attach_document</code>
+  </div>
+  <div>
+    <h3>Attach signed document metadata to receivable</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: Bearer token</span>
+    <span class="meta-pill">Idempotency: Required</span>
+    <span class="meta-pill">Operation ID: <code>attachReceivableDocument</code></span>
+  </div>
+  <div class="detail-grid">
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Parameters</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>In</th>
+        <th>Required</th>
+        <th>Schema</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>id</code></td>
+  <td>path</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td></td>
+</tr>
+<tr>
+  <td><code>Idempotency-Key</code></td>
+  <td>header</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td>Required for all mutating endpoints.</td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Request body</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Content-Type</th>
+        <th>Required</th>
+        <th>Schema</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>application/json</code></td>
+  <td>Yes</td>
+  <td><code>AttachDocumentRequest</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Example request (application/json)</strong>
+  <pre class="example-block"><code>{
+  &quot;actor_party_id&quot;: &quot;string&quot;,
+  &quot;document_type&quot;: &quot;string&quot;,
+  &quot;signature_method&quot;: &quot;OWN_PLATFORM_CONFIRMATION&quot;,
+  &quot;sha256&quot;: &quot;string&quot;,
+  &quot;storage_key&quot;: &quot;string&quot;,
+  &quot;blob_signed_id&quot;: &quot;string&quot;,
+  &quot;signed_at&quot;: &quot;2026-03-06T10:12:02-03:00&quot;,
+  &quot;provider_envelope_id&quot;: &quot;string&quot;,
+  &quot;email_challenge_id&quot;: &quot;string&quot;,
+  &quot;whatsapp_challenge_id&quot;: &quot;string&quot;
+}</code></pre>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>200</code></td>
+  <td>Replay of previously attached document.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>201</code></td>
+  <td>Signed document metadata attached.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>400</code></td>
+  <td>Request syntax or payload shape is invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>401</code></td>
+  <td>Authentication is required or invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>403</code></td>
+  <td>Authenticated actor is not allowed.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>404</code></td>
+  <td>Resource does not exist in the current tenant scope.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>409</code></td>
+  <td>Idempotency or state conflict.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>422</code></td>
+  <td>Business validation error.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+<article class="endpoint-card" id="receivables-get-api-v1-receivables-id-history" data-endpoint-search="receivables get /api/v1/receivables/{id}/history getreceivablehistory fetch receivable timeline ">
+  <div class="endpoint-top">
+    <span class="method method-get">GET</span>
+    <code class="path">/api/v1/receivables/{id}/history</code>
+  </div>
+  <div>
+    <h3>Fetch receivable timeline</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: Bearer token</span>
+    <span class="meta-pill">Idempotency: Not required</span>
+    <span class="meta-pill">Operation ID: <code>getReceivableHistory</code></span>
+  </div>
+  <div class="detail-grid">
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Parameters</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>In</th>
+        <th>Required</th>
+        <th>Schema</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>id</code></td>
+  <td>path</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    
+    
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>200</code></td>
+  <td>Unified event timeline.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>401</code></td>
+  <td>Authentication is required or invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>403</code></td>
+  <td>Authenticated actor is not allowed.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>404</code></td>
+  <td>Resource does not exist in the current tenant scope.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+<article class="endpoint-card" id="receivables-post-api-v1-receivables-id-settle-payment" data-endpoint-search="receivables post /api/v1/receivables/{id}/settle_payment settlereceivablepayment settle receivable payment ">
+  <div class="endpoint-top">
+    <span class="method method-post">POST</span>
+    <code class="path">/api/v1/receivables/{id}/settle_payment</code>
+  </div>
+  <div>
+    <h3>Settle receivable payment</h3>
+    
+  </div>
+  <div class="meta-row">
+    <span class="meta-pill">Auth: Bearer token</span>
+    <span class="meta-pill">Idempotency: Required</span>
+    <span class="meta-pill">Operation ID: <code>settleReceivablePayment</code></span>
+  </div>
+  <div class="detail-grid">
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Parameters</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>In</th>
+        <th>Required</th>
+        <th>Schema</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>id</code></td>
+  <td>path</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td></td>
+</tr>
+<tr>
+  <td><code>Idempotency-Key</code></td>
+  <td>header</td>
+  <td>Yes</td>
+  <td><code>string</code></td>
+  <td>Required for all mutating endpoints.</td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Request body</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Content-Type</th>
+        <th>Required</th>
+        <th>Schema</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>application/json</code></td>
+  <td>Yes</td>
+  <td><code>SettlePaymentRequest</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Example request (application/json)</strong>
+  <pre class="example-block"><code>{
+  &quot;paid_amount&quot;: &quot;100.00&quot;,
+  &quot;paid_at&quot;: &quot;2026-03-06T10:12:02-03:00&quot;,
+  &quot;payment_reference&quot;: &quot;string&quot;,
+  &quot;receivable_allocation_id&quot;: &quot;string&quot;
+}</code></pre>
+</div>
+
+    <div>
+  <strong style="display: block; margin-bottom: 8px;">Responses</strong>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Description</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+  <td><code>200</code></td>
+  <td>Payment settled.</td>
+  <td>application/json <code>object</code></td>
+</tr>
+<tr>
+  <td><code>400</code></td>
+  <td>Request syntax or payload shape is invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>401</code></td>
+  <td>Authentication is required or invalid.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>403</code></td>
+  <td>Authenticated actor is not allowed.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>404</code></td>
+  <td>Resource does not exist in the current tenant scope.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>409</code></td>
+  <td>Idempotency or state conflict.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+<tr>
+  <td><code>422</code></td>
+  <td>Business validation error.</td>
+  <td>application/json <code>ErrorEnvelope</code></td>
+</tr>
+    </tbody>
+  </table>
+</div>
+
+  </div>
+</article>
+
+</section>
+
+          </section>
+
+          <section class="panel section" id="schemas">
+            <div class="section-header">
+              <div>
+                <h2>Schemas</h2>
+                <p class="meta-note">Named component schemas from the contract, rendered as expandable JSON.</p>
+              </div>
+            </div>
+            <div class="schema-list">
+              <details class="schema-card">
+  <summary>
+    <span>AttachDocumentRequest</span>
+    <span class="schema-type">object</span>
+  </summary>
+  <pre><code>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;actor_party_id&quot;,
+    &quot;document_type&quot;,
+    &quot;sha256&quot;,
+    &quot;signed_at&quot;,
+    &quot;provider_envelope_id&quot;,
+    &quot;email_challenge_id&quot;,
+    &quot;whatsapp_challenge_id&quot;
+  ],
+  &quot;oneOf&quot;: [
+    {
+      &quot;required&quot;: [
+        &quot;storage_key&quot;
+      ]
+    },
+    {
+      &quot;required&quot;: [
+        &quot;blob_signed_id&quot;
+      ]
+    }
+  ],
+  &quot;properties&quot;: {
+    &quot;actor_party_id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;uuid&quot;
+    },
+    &quot;document_type&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;minLength&quot;: 1
+    },
+    &quot;signature_method&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;enum&quot;: [
+        &quot;OWN_PLATFORM_CONFIRMATION&quot;
+      ],
+      &quot;default&quot;: &quot;OWN_PLATFORM_CONFIRMATION&quot;
+    },
+    &quot;sha256&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;minLength&quot;: 1
+    },
+    &quot;storage_key&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;minLength&quot;: 1
+    },
+    &quot;blob_signed_id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;description&quot;: &quot;ActiveStorage direct-upload signed blob id. When present, storage_key may be omitted and will use blob key.&quot;
+    },
+    &quot;signed_at&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;date-time&quot;
+    },
+    &quot;provider_envelope_id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;minLength&quot;: 1
+    },
+    &quot;email_challenge_id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;minLength&quot;: 1
+    },
+    &quot;whatsapp_challenge_id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;minLength&quot;: 1
+    },
+    &quot;metadata&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;additionalProperties&quot;: true
+    }
+  }
+}</code></pre>
+</details>
+
+<details class="schema-card">
+  <summary>
+    <span>CreatePhysicianRequest</span>
+    <span class="schema-type">object</span>
+  </summary>
+  <pre><code>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;full_name&quot;,
+    &quot;email&quot;,
+    &quot;document_number&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;full_name&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;display_name&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;email&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;email&quot;
+    },
+    &quot;phone&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;document_number&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;description&quot;: &quot;CPF digits only or masked input.&quot;
+    },
+    &quot;external_ref&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;crm_number&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;crm_state&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;minLength&quot;: 2,
+      &quot;maxLength&quot;: 2
+    },
+    &quot;metadata&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;additionalProperties&quot;: true
+    },
+    &quot;party_metadata&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;additionalProperties&quot;: true
+    }
+  }
+}</code></pre>
+</details>
+
+<details class="schema-card">
+  <summary>
+    <span>CreateReceivableRequest</span>
+    <span class="schema-type">object</span>
+  </summary>
+  <pre><code>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;external_reference&quot;,
+    &quot;receivable_kind_code&quot;,
+    &quot;debtor_party_id&quot;,
+    &quot;creditor_party_id&quot;,
+    &quot;beneficiary_party_id&quot;,
+    &quot;gross_amount&quot;,
+    &quot;due_at&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;external_reference&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;receivable_kind_code&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;debtor_party_id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;uuid&quot;
+    },
+    &quot;creditor_party_id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;uuid&quot;
+    },
+    &quot;beneficiary_party_id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;uuid&quot;
+    },
+    &quot;gross_amount&quot;: {
+      &quot;$ref&quot;: &quot;#/components/schemas/MoneyString&quot;
+    },
+    &quot;currency&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;enum&quot;: [
+        &quot;BRL&quot;
+      ]
+    },
+    &quot;performed_at&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;date-time&quot;
+    },
+    &quot;due_at&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;date-time&quot;
+    },
+    &quot;cutoff_at&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;date-time&quot;
+    },
+    &quot;metadata&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;additionalProperties&quot;: true
+    },
+    &quot;allocation&quot;: {
+      &quot;$ref&quot;: &quot;#/components/schemas/ReceivableAllocationInput&quot;
+    }
+  }
+}</code></pre>
+</details>
+
+<details class="schema-card">
+  <summary>
+    <span>ErrorEnvelope</span>
+    <span class="schema-type">object</span>
+  </summary>
+  <pre><code>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;error&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;error&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;required&quot;: [
+        &quot;code&quot;,
+        &quot;message&quot;
+      ],
+      &quot;properties&quot;: {
+        &quot;code&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;description&quot;: &quot;Stable machine-readable error code in English.&quot;,
+          &quot;example&quot;: &quot;invalid_idempotency_key&quot;
+        },
+        &quot;message&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;description&quot;: &quot;Human-readable technical message.&quot;
+        },
+        &quot;request_id&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;description&quot;: &quot;Request correlation id.&quot;
+        },
+        &quot;details&quot;: {
+          &quot;type&quot;: &quot;object&quot;,
+          &quot;additionalProperties&quot;: true
+        }
+      }
+    }
+  }
+}</code></pre>
+</details>
+
+<details class="schema-card">
+  <summary>
+    <span>HealthResponse</span>
+    <span class="schema-type">object</span>
+  </summary>
+  <pre><code>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;status&quot;,
+    &quot;checks&quot;,
+    &quot;timestamp&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;status&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;enum&quot;: [
+        &quot;ok&quot;
+      ]
+    },
+    &quot;checks&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;additionalProperties&quot;: false
+    },
+    &quot;timestamp&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;date-time&quot;
+    }
+  }
+}</code></pre>
+</details>
+
+<details class="schema-card">
+  <summary>
+    <span>HistoryItem</span>
+    <span class="schema-type">object</span>
+  </summary>
+  <pre><code>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;event_type&quot;,
+    &quot;occurred_at&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;event_type&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;occurred_at&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;date-time&quot;
+    },
+    &quot;payload&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;additionalProperties&quot;: true
+    }
+  }
+}</code></pre>
+</details>
+
+<details class="schema-card">
+  <summary>
+    <span>MoneyString</span>
+    <span class="schema-type">string</span>
+  </summary>
+  <pre><code>{
+  &quot;type&quot;: &quot;string&quot;,
+  &quot;pattern&quot;: &quot;^\\d+\\.\\d{2}$&quot;,
+  &quot;examples&quot;: [
+    &quot;100.00&quot;,
+    &quot;0.01&quot;
+  ]
+}</code></pre>
+</details>
+
+<details class="schema-card">
+  <summary>
+    <span>OAuthErrorResponse</span>
+    <span class="schema-type">object</span>
+  </summary>
+  <pre><code>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;error&quot;,
+    &quot;error_description&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;error&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;error_description&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;request_id&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    }
+  }
+}</code></pre>
+</details>
+
+<details class="schema-card">
+  <summary>
+    <span>OAuthTokenRequest</span>
+    <span class="schema-type">object</span>
+  </summary>
+  <pre><code>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;grant_type&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;grant_type&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;enum&quot;: [
+        &quot;client_credentials&quot;
+      ]
+    },
+    &quot;client_id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;description&quot;: &quot;Optional when using HTTP Basic credentials.&quot;
+    },
+    &quot;client_secret&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;description&quot;: &quot;Optional when using HTTP Basic credentials.&quot;
+    },
+    &quot;scope&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;description&quot;: &quot;Space-separated subset of allowed scopes.&quot;
+    }
+  }
+}</code></pre>
+</details>
+
+<details class="schema-card">
+  <summary>
+    <span>OAuthTokenResponse</span>
+    <span class="schema-type">object</span>
+  </summary>
+  <pre><code>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;access_token&quot;,
+    &quot;token_type&quot;,
+    &quot;expires_in&quot;,
+    &quot;scope&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;access_token&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;token_type&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;enum&quot;: [
+        &quot;Bearer&quot;
+      ]
+    },
+    &quot;expires_in&quot;: {
+      &quot;type&quot;: &quot;integer&quot;,
+      &quot;minimum&quot;: 1
+    },
+    &quot;scope&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    }
+  }
+}</code></pre>
+</details>
+
+<details class="schema-card">
+  <summary>
+    <span>PartyReference</span>
+    <span class="schema-type">object</span>
+  </summary>
+  <pre><code>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;id&quot;,
+    &quot;kind&quot;,
+    &quot;legal_name&quot;,
+    &quot;document_type&quot;,
+    &quot;document_number&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;uuid&quot;
+    },
+    &quot;kind&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;enum&quot;: [
+        &quot;HOSPITAL&quot;,
+        &quot;SUPPLIER&quot;,
+        &quot;PHYSICIAN_PF&quot;,
+        &quot;LEGAL_ENTITY_PJ&quot;,
+        &quot;FIDC&quot;,
+        &quot;PLATFORM&quot;
+      ]
+    },
+    &quot;legal_name&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;document_type&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;enum&quot;: [
+        &quot;CPF&quot;,
+        &quot;CNPJ&quot;
+      ]
+    },
+    &quot;document_number&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    },
+    &quot;external_reference&quot;: {
+      &quot;type&quot;: &quot;string&quot;
+    }
+  }
+}</code></pre>
+</details>
+
+<details class="schema-card">
+  <summary>
+    <span>ReadyResponse</span>
+    <span class="schema-type">object</span>
+  </summary>
+  <pre><code>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;status&quot;,
+    &quot;checks&quot;,
+    &quot;timestamp&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;status&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;enum&quot;: [
+        &quot;ok&quot;,
+        &quot;error&quot;
+      ]
+    },
+    &quot;checks&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;required&quot;: [
+        &quot;database&quot;
+      ],
+      &quot;properties&quot;: {
+        &quot;database&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;enum&quot;: [
+            &quot;ok&quot;,
+            &quot;error&quot;
+          ]
+        }
+      }
+    },
+    &quot;timestamp&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;date-time&quot;
+    }
+  }
+}</code></pre>
+</details>
+
+<details class="schema-card">
+  <summary>
+    <span>Receivable</span>
+    <span class="schema-type">object</span>
+  </summary>
+  <pre><code>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;id&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;uuid&quot;
+    },
+    &quot;gross_amount&quot;: {
+      &quot;$ref&quot;: &quot;#/components/schemas/MoneyString&quot;
+    },
+    &quot;currency&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;enum&quot;: [
+        &quot;BRL&quot;
+      ]
+    },
+    &quot;provenance&quot;: {
+      &quot;$ref&quot;: &quot;#/components/schemas/ReceivableProvenance&quot;
+    }
+  }
+}</code></pre>
+</details>
+
+<details class="schema-card">
+  <summary>
+    <span>ReceivableAllocationInput</span>
+    <span class="schema-type">object</span>
+  </summary>
+  <pre><code>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;allocated_party_id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;uuid&quot;
+    },
+    &quot;physician_party_id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;uuid&quot;
+    },
+    &quot;gross_amount&quot;: {
+      &quot;$ref&quot;: &quot;#/components/schemas/MoneyString&quot;
+    },
+    &quot;tax_reserve_amount&quot;: {
+      &quot;$ref&quot;: &quot;#/components/schemas/MoneyString&quot;
+    },
+    &quot;eligible_for_anticipation&quot;: {
+      &quot;type&quot;: &quot;boolean&quot;
+    },
+    &quot;metadata&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;additionalProperties&quot;: true
+    }
+  }
+}</code></pre>
+</details>
+
+<details class="schema-card">
+  <summary>
+    <span>ReceivableProvenance</span>
+    <span class="schema-type">object</span>
+  </summary>
+  <pre><code>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;hospital&quot;: {
+      &quot;$ref&quot;: &quot;#/components/schemas/PartyReference&quot;
+    },
+    &quot;owning_organization&quot;: {
+      &quot;$ref&quot;: &quot;#/components/schemas/PartyReference&quot;
+    }
+  }
+}</code></pre>
+</details>
+
+<details class="schema-card">
+  <summary>
+    <span>SettlePaymentRequest</span>
+    <span class="schema-type">object</span>
+  </summary>
+  <pre><code>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;required&quot;: [
+    &quot;paid_amount&quot;,
+    &quot;paid_at&quot;,
+    &quot;payment_reference&quot;
+  ],
+  &quot;properties&quot;: {
+    &quot;paid_amount&quot;: {
+      &quot;$ref&quot;: &quot;#/components/schemas/MoneyString&quot;
+    },
+    &quot;paid_at&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;date-time&quot;
+    },
+    &quot;payment_reference&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;minLength&quot;: 1
+    },
+    &quot;receivable_allocation_id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;format&quot;: &quot;uuid&quot;
+    }
+  }
+}</code></pre>
+</details>
+
+            </div>
+            <p class="footer-note">Generated from <code>docs/openapi/v1.yaml</code>. Re-run <code>cd app && rv ruby run -- script/generate_documentation.rb</code> whenever the contract changes.</p>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <script>
+      (function() {
+        const searchInput = document.getElementById("endpoint-search");
+        const cards = Array.from(document.querySelectorAll("[data-endpoint-search]"));
+        const sections = Array.from(document.querySelectorAll("[data-tag-section]"));
+
+        function applyFilter() {
+          const query = searchInput.value.trim().toLowerCase();
+
+          cards.forEach(function(card) {
+            const haystack = card.getAttribute("data-endpoint-search");
+            const visible = query === "" || haystack.indexOf(query) !== -1;
+            card.hidden = !visible;
+          });
+
+          sections.forEach(function(section) {
+            const visibleCards = section.querySelectorAll(".endpoint-card:not([hidden])");
+            section.hidden = visibleCards.length === 0;
+          });
+        }
+
+        searchInput.addEventListener("input", applyFilter);
+      })();
+    </script>
+  </body>
+</html>

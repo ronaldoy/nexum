@@ -6,7 +6,7 @@ class DashboardController < ApplicationController
     { key: :requested, label: "Antecipação solicitada" },
     { key: :challenge_issued, label: "Confirmação enviada" },
     { key: :signed, label: "Documento assinado" },
-    { key: :funded, label: "Antecipação aprovada/fundada" },
+    { key: :funded, label: "Aprovado / Funded" },
     { key: :settled, label: "Pagamento liquidado" }
   ].freeze
 
@@ -16,13 +16,15 @@ class DashboardController < ApplicationController
     "ANTICIPATION_REQUESTED" => "Antecipação solicitada",
     "ANTICIPATION_CONFIRMATION_CHALLENGES_ISSUED" => "Códigos de confirmação enviados",
     "ANTICIPATION_CONFIRMED" => "Antecipação confirmada",
-    "ANTICIPATION_FUNDED" => "Antecipação fundada",
+    "ANTICIPATION_FUNDED" => "Funded",
     "RECEIVABLE_PAYMENT_SETTLED" => "Pagamento liquidado"
   }.freeze
 
   helper_method :fdic_persona?, :stage_definitions, :persona_title
 
   def show
+    return redirect_to admin_dashboard_path if Current.user&.role == "ops_admin"
+
     @persona = resolve_persona
     load_dashboard_collections
     load_receivable_relationship_indexes

@@ -148,7 +148,8 @@ BEGIN
     END IF;
 
     IF NOT (
-      (OLD.status = 'REQUESTED' AND NEW.status IN ('APPROVED', 'CANCELLED', 'REJECTED')) OR
+      (OLD.status = 'REQUESTED' AND NEW.status IN ('PENDING_REVIEW', 'APPROVED', 'CANCELLED', 'REJECTED')) OR
+      (OLD.status = 'PENDING_REVIEW' AND NEW.status IN ('REQUESTED', 'CANCELLED', 'REJECTED')) OR
       (OLD.status = 'APPROVED' AND NEW.status IN ('FUNDED', 'SETTLED', 'CANCELLED')) OR
       (OLD.status = 'FUNDED' AND NEW.status IN ('SETTLED', 'CANCELLED'))
     ) THEN
@@ -494,7 +495,7 @@ CREATE TABLE public.anticipation_requests (
     CONSTRAINT anticipation_requests_discount_rate_check CHECK ((discount_rate >= (0)::numeric)),
     CONSTRAINT anticipation_requests_net_amount_positive_check CHECK ((net_amount > (0)::numeric)),
     CONSTRAINT anticipation_requests_requested_amount_positive_check CHECK ((requested_amount > (0)::numeric)),
-    CONSTRAINT anticipation_requests_status_check CHECK (((status)::text = ANY (ARRAY[('REQUESTED'::character varying)::text, ('APPROVED'::character varying)::text, ('FUNDED'::character varying)::text, ('SETTLED'::character varying)::text, ('CANCELLED'::character varying)::text, ('REJECTED'::character varying)::text])))
+    CONSTRAINT anticipation_requests_status_check CHECK (((status)::text = ANY ((ARRAY['REQUESTED'::character varying, 'PENDING_REVIEW'::character varying, 'APPROVED'::character varying, 'FUNDED'::character varying, 'SETTLED'::character varying, 'CANCELLED'::character varying, 'REJECTED'::character varying])::text[])))
 );
 
 ALTER TABLE ONLY public.anticipation_requests FORCE ROW LEVEL SECURITY;
@@ -581,12 +582,28 @@ CREATE TABLE public.anticipation_risk_rules (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
+    max_requests_per_minute integer,
+    max_requests_per_hour integer,
+    pair_spike_multiplier numeric(12,4),
+    pair_spike_min_daily_amount numeric(18,2),
+    near_limit_attempts_window_minutes integer,
+    near_limit_attempts_max_count integer,
+    near_limit_ratio numeric(8,6),
     CONSTRAINT anticipation_risk_rules_daily_amount_positive_check CHECK (((max_daily_requested_amount IS NULL) OR (max_daily_requested_amount > (0)::numeric))),
     CONSTRAINT anticipation_risk_rules_decision_check CHECK (((decision)::text = ANY ((ARRAY['ALLOW'::character varying, 'REVIEW'::character varying, 'BLOCK'::character varying])::text[]))),
     CONSTRAINT anticipation_risk_rules_effective_window_check CHECK (((effective_until IS NULL) OR (effective_from IS NULL) OR (effective_until >= effective_from))),
+    CONSTRAINT anticipation_risk_rules_near_limit_count_positive_check CHECK (((near_limit_attempts_max_count IS NULL) OR (near_limit_attempts_max_count > 0))),
+    CONSTRAINT anticipation_risk_rules_near_limit_ratio_check CHECK (((near_limit_ratio IS NULL) OR ((near_limit_ratio > (0)::numeric) AND (near_limit_ratio <= (1)::numeric)))),
+    CONSTRAINT anticipation_risk_rules_near_limit_window_count_pair_check CHECK ((((near_limit_attempts_window_minutes IS NULL) AND (near_limit_attempts_max_count IS NULL)) OR ((near_limit_attempts_window_minutes IS NOT NULL) AND (near_limit_attempts_max_count IS NOT NULL)))),
+    CONSTRAINT anticipation_risk_rules_near_limit_window_positive_check CHECK (((near_limit_attempts_window_minutes IS NULL) OR (near_limit_attempts_window_minutes > 0))),
     CONSTRAINT anticipation_risk_rules_open_count_positive_check CHECK (((max_open_requests_count IS NULL) OR (max_open_requests_count > 0))),
     CONSTRAINT anticipation_risk_rules_outstanding_amount_positive_check CHECK (((max_outstanding_exposure_amount IS NULL) OR (max_outstanding_exposure_amount > (0)::numeric))),
-    CONSTRAINT anticipation_risk_rules_requires_any_limit_check CHECK (((max_single_request_amount IS NOT NULL) OR (max_daily_requested_amount IS NOT NULL) OR (max_outstanding_exposure_amount IS NOT NULL) OR (max_open_requests_count IS NOT NULL))),
+    CONSTRAINT anticipation_risk_rules_pair_spike_min_daily_amount_check CHECK (((pair_spike_min_daily_amount IS NULL) OR (pair_spike_min_daily_amount > (0)::numeric))),
+    CONSTRAINT anticipation_risk_rules_pair_spike_multiplier_check CHECK (((pair_spike_multiplier IS NULL) OR (pair_spike_multiplier > (1)::numeric))),
+    CONSTRAINT anticipation_risk_rules_pair_spike_pair_check CHECK ((((pair_spike_multiplier IS NULL) AND (pair_spike_min_daily_amount IS NULL)) OR ((pair_spike_multiplier IS NOT NULL) AND (pair_spike_min_daily_amount IS NOT NULL)))),
+    CONSTRAINT anticipation_risk_rules_requests_per_hour_positive_check CHECK (((max_requests_per_hour IS NULL) OR (max_requests_per_hour > 0))),
+    CONSTRAINT anticipation_risk_rules_requests_per_minute_positive_check CHECK (((max_requests_per_minute IS NULL) OR (max_requests_per_minute > 0))),
+    CONSTRAINT anticipation_risk_rules_requires_any_limit_check CHECK (((max_single_request_amount IS NOT NULL) OR (max_daily_requested_amount IS NOT NULL) OR (max_outstanding_exposure_amount IS NOT NULL) OR (max_open_requests_count IS NOT NULL) OR (max_requests_per_minute IS NOT NULL) OR (max_requests_per_hour IS NOT NULL) OR (pair_spike_multiplier IS NOT NULL) OR (near_limit_attempts_window_minutes IS NOT NULL))),
     CONSTRAINT anticipation_risk_rules_scope_party_check CHECK (((((scope_type)::text = 'TENANT_DEFAULT'::text) AND (scope_party_id IS NULL)) OR (((scope_type)::text <> 'TENANT_DEFAULT'::text) AND (scope_party_id IS NOT NULL)))),
     CONSTRAINT anticipation_risk_rules_scope_type_check CHECK (((scope_type)::text = ANY ((ARRAY['TENANT_DEFAULT'::character varying, 'PHYSICIAN_PARTY'::character varying, 'CNPJ_PARTY'::character varying, 'HOSPITAL_PARTY'::character varying])::text[]))),
     CONSTRAINT anticipation_risk_rules_single_amount_positive_check CHECK (((max_single_request_amount IS NULL) OR (max_single_request_amount > (0)::numeric)))
@@ -5250,6 +5267,8 @@ CREATE POLICY webauthn_credentials_tenant_policy ON public.webauthn_credentials 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260227151000'),
+('20260227150000'),
 ('20260227120000'),
 ('20260227111500'),
 ('20260227103000'),

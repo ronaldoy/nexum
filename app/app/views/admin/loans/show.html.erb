@@ -1,0 +1,245 @@
+<main class="dashboard-shell">
+  <%= render "admin/shared/cockpit_nav" %>
+
+  <section class="hero-panel hero-panel-brand">
+    <div>
+      <p class="hero-kicker">Operação <%= @loan.receivable.external_reference || @loan.id.first(8) %></p>
+      <h2><%= @loan.requester_party&.legal_name %> · <%= @loan.receivable.debtor_party&.legal_name %></h2>
+      <p class="hero-subtitle">
+        Recebível performado de <strong><%= format_brl(@loan.receivable.gross_amount) %></strong>, solicitado em <strong><%= l(@loan.requested_at, format: :short) %></strong> e com vencimento em <strong><%= l(@loan.receivable.due_at, format: :short) %></strong>.
+      </p>
+    </div>
+    <div class="hero-meta">
+      <p><strong>Estrutura:</strong> <%= loan_structure_label(@loan, allocation: @loan.receivable_allocation) %></p>
+      <p><strong>Status:</strong> <%= status_label(@loan.status) %></p>
+      <p><strong>Exposição aberta:</strong> <%= format_brl(@loan_row[:open_exposure]) %></p>
+      <p><strong>Lucro registrado:</strong> <%= format_brl(@loan_row[:recorded_profitability]) %></p>
+    </div>
+  </section>
+
+  <section class="metric-grid">
+    <article class="metric-card">
+      <p class="metric-label">Valor bruto</p>
+      <p class="metric-value"><%= format_brl(@loan_row[:gross_amount]) %></p>
+      <p class="metric-footnote">Recebível de origem</p>
+    </article>
+    <article class="metric-card">
+      <p class="metric-label">Valor solicitado</p>
+      <p class="metric-value"><%= format_brl(@loan_row[:requested_amount]) %></p>
+      <p class="metric-footnote">Pedido de antecipação</p>
+    </article>
+    <article class="metric-card">
+      <p class="metric-label">Desconto contratual</p>
+      <p class="metric-value"><%= format_brl(@loan_row[:discount_amount]) %></p>
+      <p class="metric-footnote"><%= format_percentage(@loan_row[:yield_rate]) %> da operação</p>
+    </article>
+    <article class="metric-card">
+      <p class="metric-label">Rentabilidade líquida</p>
+      <p class="metric-value"><%= format_brl(@loan_row[:recorded_profitability]) %></p>
+      <p class="metric-footnote">Desconto + entradas auditadas</p>
+    </article>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Estrutura da operação</h3>
+      <p>Quem solicitou, quem recebe e qual medico esta vinculado ao recebivel.</p>
+    </header>
+
+    <div class="detail-grid">
+      <article class="detail-card">
+        <p class="detail-label">Solicitante</p>
+        <h4><%= party_display_name(@loan.requester_party) %></h4>
+        <p class="detail-meta"><%= party_kind_label(@loan.requester_party&.kind) %></p>
+      </article>
+
+      <article class="detail-card">
+        <p class="detail-label">Modelo</p>
+        <h4><%= loan_structure_label(@loan, allocation: @loan.receivable_allocation) %></h4>
+        <p class="detail-meta"><%= loan_structure_note(@loan, allocation: @loan.receivable_allocation) %></p>
+      </article>
+
+      <article class="detail-card">
+        <p class="detail-label">Medico vinculado</p>
+        <h4><%= party_display_name(@loan.receivable_allocation&.physician_party) %></h4>
+        <p class="detail-meta">
+          <% if @loan.receivable_allocation&.physician_party.present? %>
+            Beneficiario clinico da alocacao
+          <% else %>
+            Operacao sem medico alocado
+          <% end %>
+        </p>
+      </article>
+
+      <article class="detail-card">
+        <p class="detail-label">PJ / beneficiario</p>
+        <h4><%= party_display_name(@loan.receivable_allocation&.allocated_party || @loan.receivable.beneficiary_party) %></h4>
+        <p class="detail-meta"><%= party_kind_label((@loan.receivable_allocation&.allocated_party || @loan.receivable.beneficiary_party)&.kind) %></p>
+      </article>
+
+      <article class="detail-card">
+        <p class="detail-label">Hospital devedor</p>
+        <h4><%= party_display_name(@loan.receivable.debtor_party) %></h4>
+        <p class="detail-meta">Recebivel originado contra a contraparte hospitalar</p>
+      </article>
+
+      <article class="detail-card">
+        <p class="detail-label">Tipo de recebivel</p>
+        <h4><%= @loan.receivable.receivable_kind&.name || "-" %></h4>
+        <p class="detail-meta"><%= @loan.receivable.external_reference || @loan.receivable.id.first(8) %></p>
+      </article>
+    </div>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Trilha de estágio</h3>
+      <p>Acompanhamento do fluxo completo do empréstimo.</p>
+    </header>
+
+    <div class="loan-stage-track">
+      <% @stage_definitions.each do |stage| %>
+        <% active = @loan_row[:stages].fetch(stage[:key]) %>
+        <div class="loan-stage-node <%= active ? "loan-stage-node-active" : "" %>">
+          <span class="loan-stage-dot"></span>
+          <strong><%= stage[:label] %></strong>
+        </div>
+      <% end %>
+    </div>
+  </section>
+
+  <section class="two-column">
+    <article class="panel">
+      <header class="panel-header">
+        <h3>Ações do gestor</h3>
+        <p>Movimente a operação conforme o estágio atual.</p>
+      </header>
+
+      <div class="mini-stack">
+        <% if @loan.status == "REQUESTED" %>
+          <%= button_to "Aprovar operação", approve_admin_loan_path(@loan), method: :patch, class: "button button-primary" %>
+        <% end %>
+        <% if @loan.status == "APPROVED" %>
+          <%= button_to "Registrar funding", fund_admin_loan_path(@loan), method: :patch, class: "button button-primary" %>
+        <% end %>
+      </div>
+
+      <div class="mini-stack">
+        <h4>Registrar documento assinado</h4>
+        <%= form_with url: record_document_admin_loan_path(@loan), scope: :document, class: "compact-form" do |form| %>
+          <div class="field">
+            <%= form.label :document_type, "Tipo do documento" %>
+            <%= form.text_field :document_type, value: "ASSIGNMENT_CONTRACT" %>
+          </div>
+          <div class="field">
+            <%= form.label :sha256, "SHA256" %>
+            <%= form.text_field :sha256, required: true %>
+          </div>
+          <div class="field">
+            <%= form.label :storage_key, "Storage key" %>
+            <%= form.text_field :storage_key, required: true %>
+          </div>
+          <div class="field">
+            <%= form.label :provider_envelope_id, "Envelope do provedor" %>
+            <%= form.text_field :provider_envelope_id %>
+          </div>
+          <div class="field">
+            <%= form.label :signed_at, "Assinado em" %>
+            <%= form.datetime_local_field :signed_at, value: Time.current.strftime("%Y-%m-%dT%H:%M"), required: true %>
+          </div>
+          <%= form.submit "Registrar contrato", class: "button button-soft" %>
+        <% end %>
+      </div>
+
+      <div class="mini-stack">
+        <h4>Registrar liquidação</h4>
+        <%= form_with url: settle_admin_loan_path(@loan), scope: :settlement, class: "compact-form" do |form| %>
+          <div class="field">
+            <%= form.label :paid_amount, "Valor pago" %>
+            <%= form.text_field :paid_amount, value: @loan.receivable.gross_amount.to_d.to_s("F"), required: true %>
+          </div>
+          <div class="field">
+            <%= form.label :payment_reference, "Referência do pagamento" %>
+            <%= form.text_field :payment_reference %>
+          </div>
+          <div class="field">
+            <%= form.label :paid_at, "Pago em" %>
+            <%= form.datetime_local_field :paid_at, value: Time.current.strftime("%Y-%m-%dT%H:%M"), required: true %>
+          </div>
+          <%= form.submit "Liquidar operação", class: "button button-soft" %>
+        <% end %>
+      </div>
+    </article>
+
+    <article class="panel">
+      <header class="panel-header">
+        <h3>Rentabilidade manual</h3>
+        <p>Entradas auditadas de receita e despesa por operação.</p>
+      </header>
+
+      <%= form_with url: record_profitability_admin_loan_path(@loan), scope: :profitability, class: "compact-form" do |form| %>
+        <div class="field">
+          <%= form.label :entry_kind, "Tipo" %>
+          <%= form.select :entry_kind, options_for_select([["Receita", "INCOME"], ["Despesa", "EXPENSE"]]) %>
+        </div>
+        <div class="field">
+          <%= form.label :category, "Categoria" %>
+          <%= form.text_field :category, required: true, placeholder: "Taxa operacional, custo bancário..." %>
+        </div>
+        <div class="field">
+          <%= form.label :amount, "Valor" %>
+          <%= form.text_field :amount, required: true, placeholder: "15.90" %>
+        </div>
+        <div class="field">
+          <%= form.label :occurred_on, "Data" %>
+          <%= form.date_field :occurred_on, value: Date.current, required: true %>
+        </div>
+        <div class="field">
+          <%= form.label :note, "Observação" %>
+          <%= form.text_area :note, rows: 3 %>
+        </div>
+        <%= form.submit "Registrar rentabilidade", class: "button button-primary" %>
+      <% end %>
+
+      <% if @loan_row[:profitability_entries].any? %>
+        <ul class="activity-list">
+          <% @loan_row[:profitability_entries].each do |entry| %>
+            <li class="activity-item">
+              <p class="activity-title">
+                <strong><%= entry[:category] %></strong>
+                <span class="status-pill"><%= entry[:entry_kind] == "INCOME" ? "Receita" : "Despesa" %></span>
+              </p>
+              <p class="activity-body"><%= format_brl(entry[:amount]) %></p>
+              <% if entry[:note].present? %>
+                <p class="activity-body"><%= entry[:note] %></p>
+              <% end %>
+              <p class="activity-meta"><%= l(entry[:occurred_at], format: :short) %></p>
+            </li>
+          <% end %>
+        </ul>
+      <% else %>
+        <p class="empty-state">Sem ajustes manuais registrados.</p>
+      <% end %>
+    </article>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Linha do tempo</h3>
+      <p>Todos os eventos relevantes da operação, em ordem reversa.</p>
+    </header>
+
+    <ol class="timeline">
+      <% @timeline_entries.each do |entry| %>
+        <li class="timeline-item">
+          <p class="timeline-meta">
+            <span><%= l(entry[:happened_at], format: :short) if entry[:happened_at].present? %></span>
+            <span><%= entry[:category] %></span>
+          </p>
+          <h5><%= entry[:title] %></h5>
+          <p><%= entry[:details] %></p>
+        </li>
+      <% end %>
+    </ol>
+  </section>
+</main>

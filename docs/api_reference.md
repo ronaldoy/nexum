@@ -1,6 +1,6 @@
 # API Reference
 
-Generated at: 2026-02-20T10:54:36-03:00
+Generated at: 2026-03-06T10:18:53-03:00
 Source contract: `docs/openapi/v1.yaml`
 
 ## Authentication

@@ -1,181 +1,263 @@
+<% content_for :head do %>
+  <%= javascript_include_tag "/chart.umd.min.js", defer: true, "data-turbo-track": "reload" %>
+<% end %>
+
+<% chart_series = @stage_volume_chart.map do |stage| %>
+  <% {
+    label: stage[:label],
+    volume: stage[:volume].to_f,
+    count: stage[:count],
+    average_ticket: stage[:average_ticket].to_f,
+    ratio: stage[:ratio].to_f,
+    tone: stage[:tone],
+    tone_soft: stage[:tone_soft]
+  } %>
+<% end %>
+
 <main class="dashboard-shell">
-  <section class="hero-panel">
+  <%= render "admin/shared/cockpit_nav" %>
+
+  <section class="hero-panel hero-panel-brand">
     <div>
-      <p class="hero-kicker">Visão global multi-tenant</p>
-      <h2>Painel administrativo do sistema</h2>
+      <p class="hero-kicker">Averta FDIC Manager Cockpit</p>
+      <h2>Gestão diária da carteira performada</h2>
       <p class="hero-subtitle">
-        Consolidação operacional de todos os tenants, com métricas de recebíveis, antecipações, liquidações, fila de integração e exceções de reconciliação.
+        Cadastre contrapartes, origine operações, acompanhe o estágio de cada empréstimo e registre rentabilidade adicional sem sair do cockpit.
       </p>
       <p class="hero-subtitle">
-        Atualizado em <strong><%= l(@generated_at, format: :short) %></strong>.
+        Tenant operacional: <strong><%= @tenant.slug %></strong> · atualizado em <strong><%= l(@generated_at, format: :short) %></strong>.
       </p>
     </div>
     <div class="hero-meta">
       <p><strong>Perfil:</strong> <%= role_label(Current.user&.role) %></p>
       <p><strong>Usuário:</strong> <%= Current.user&.email_address %></p>
-      <p><strong>Tenants ativos:</strong> <%= @totals[:active_tenants_count] %>/<%= @totals[:tenants_count] %></p>
-      <%= link_to "Gerenciar tokens API", admin_api_access_tokens_path, class: "button button-primary" %>
-      <%= link_to "Regras de risco", admin_anticipation_risk_rules_path, class: "button button-primary" %>
-      <%= link_to "Aplicações parceiras", admin_partner_applications_path, class: "button button-primary" %>
-      <%= link_to "Voltar ao portal", root_path, class: "button button-outline" %>
+      <p><strong>Escopo:</strong> carteira FDIC do tenant atual</p>
+      <div class="hero-actions">
+        <%= link_to "Nova contraparte", admin_counterparties_path, class: "button button-primary" %>
+        <%= link_to "Originar empréstimo", admin_loans_path(anchor: "loan-origination"), class: "button button-primary" %>
+        <%= link_to "Risco", admin_anticipation_risk_rules_path, class: "button button-soft" %>
+        <%= link_to "Revisões", admin_anticipation_reviews_path, class: "button button-soft" %>
+      </div>
     </div>
   </section>
 
   <section class="metric-grid">
-    <article class="metric-card">
-      <p class="metric-label">Tenants</p>
-      <p class="metric-value"><%= number_with_delimiter(@totals[:tenants_count], delimiter: ".") %></p>
-      <p class="metric-footnote"><%= @totals[:active_tenants_count] %> ativos</p>
-    </article>
-    <article class="metric-card">
-      <p class="metric-label">Usuários cadastrados</p>
-      <p class="metric-value"><%= number_with_delimiter(@totals[:users_count], delimiter: ".") %></p>
-      <p class="metric-footnote">Base total autenticável</p>
-    </article>
-    <article class="metric-card">
-      <p class="metric-label">Hospitais e organizações</p>
-      <p class="metric-value">
-        <%= number_with_delimiter(@totals[:hospitals_count], delimiter: ".") %> / <%= number_with_delimiter(@totals[:hospital_organizations_count], delimiter: ".") %>
-      </p>
-      <p class="metric-footnote">Hospitais / organizações com vínculo</p>
-    </article>
-    <article class="metric-card">
-      <p class="metric-label">Recebíveis performados</p>
-      <p class="metric-value"><%= number_with_delimiter(@totals[:receivables_count], delimiter: ".") %></p>
-      <p class="metric-footnote"><%= format_brl(@totals[:receivables_gross_amount]) %> bruto</p>
-    </article>
-    <article class="metric-card">
-      <p class="metric-label">Antecipações</p>
-      <p class="metric-value"><%= number_with_delimiter(@totals[:anticipations_count], delimiter: ".") %></p>
-      <p class="metric-footnote"><%= format_brl(@totals[:anticipations_requested_amount]) %> solicitado</p>
-    </article>
-    <article class="metric-card">
-      <p class="metric-label">Liquidações</p>
-      <p class="metric-value"><%= number_with_delimiter(@totals[:settlements_count], delimiter: ".") %></p>
-      <p class="metric-footnote"><%= format_brl(@totals[:settlements_paid_amount]) %> pago</p>
-    </article>
-    <article class="metric-card">
-      <p class="metric-label">Outbox pendente</p>
-      <p class="metric-value"><%= number_with_delimiter(@totals[:outbox_pending_count], delimiter: ".") %></p>
-      <p class="metric-footnote"><%= @totals[:outbox_dead_letter_count] %> em dead-letter</p>
-    </article>
-    <article class="metric-card">
-      <p class="metric-label">Exceções de reconciliação</p>
-      <p class="metric-value"><%= number_with_delimiter(@totals[:reconciliation_open_count], delimiter: ".") %></p>
-      <p class="metric-footnote"><%= @totals[:reconciliation_total_count] %> registradas</p>
-    </article>
-    <article class="metric-card">
-      <p class="metric-label">Uploads diretos</p>
-      <p class="metric-value"><%= number_with_delimiter(@totals[:direct_upload_count], delimiter: ".") %></p>
-      <p class="metric-footnote">Blobs com contexto de tenant</p>
-    </article>
+    <% @headline_cards.each do |card| %>
+      <article class="metric-card">
+        <p class="metric-label"><%= card[:label] %></p>
+        <p class="metric-value">
+          <% if card[:kind] == :money %>
+            <%= format_brl(card[:value]) %>
+          <% else %>
+            <%= number_with_delimiter(card[:value], delimiter: ".") %>
+          <% end %>
+        </p>
+        <p class="metric-footnote"><%= card[:footnote] %></p>
+      </article>
+    <% end %>
+  </section>
+
+  <section class="panel panel-spotlight panel-spotlight-chart">
+    <header class="panel-header">
+      <h3>Volume financeiro por estágio</h3>
+    </header>
+
+    <div
+      class="cockpit-chart-shell"
+      role="img"
+      aria-label="Volume financeiro por estágio da carteira"
+      data-controller="cockpit-chart"
+      data-cockpit-chart-series-value="<%= json_escape(chart_series.to_json) %>"
+    >
+      <canvas class="cockpit-chart-canvas" data-cockpit-chart-target="canvas"></canvas>
+    </div>
   </section>
 
   <section class="panel">
     <header class="panel-header">
-      <h3>Resumo por tenant</h3>
-      <p>Visão consolidada por organização/tenant com atividade operacional e confiabilidade de integração.</p>
+      <h3>Radar de estágio da carteira</h3>
+      <p>Leitura rápida das operações que já passaram por cada marco do fluxo.</p>
     </header>
+
+    <div class="stage-progress-grid">
+      <% @stage_cards.each do |stage| %>
+        <article class="stage-progress-card">
+          <p class="stage-name"><%= stage[:label] %></p>
+          <p class="stage-ratio"><%= stage[:completed] %>/<%= stage[:total] %> operações da carteira</p>
+          <progress class="stage-progress-meter" value="<%= stage[:completed] %>" max="<%= [stage[:total], 1].max %>"></progress>
+        </article>
+      <% end %>
+    </div>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Pipeline atual</h3>
+      <p>Visão consolidada da carteira com exposição aberta, lucro estimado e lucro realizado.</p>
+    </header>
+
+    <%= render "admin/shared/loan_structure_filters", selected_structure: @loan_structure_filter %>
 
     <div class="table-wrapper">
       <table class="data-table">
         <thead>
           <tr>
-            <th>Tenant</th>
+            <th>Empréstimo</th>
+            <th>Hospital</th>
+            <th>Solicitante</th>
             <th>Status</th>
-            <th>Usuários</th>
-            <th>Hospitais</th>
-            <th>Orgs c/ vínculo</th>
-            <th>Vínculos hospital-org</th>
-            <th>Recebíveis</th>
             <th>Bruto</th>
-            <th>Antecipações</th>
-            <th>Fundadas</th>
-            <th>Liquidações</th>
-            <th>Pago</th>
-            <th>Outbox pendente</th>
-            <th>Dead-letter</th>
-            <th>Recon. abertas</th>
-            <th>Recon. total</th>
-            <th>Uploads</th>
-            <th>Última atividade</th>
+            <th>Solicitado</th>
+            <th>Exposição</th>
+            <th>Lucro estimado</th>
+            <th>Lucro realizado</th>
+            <th>Prazo</th>
+            <th>Ação</th>
           </tr>
         </thead>
         <tbody>
-          <% @tenant_rows.each do |row| %>
-            <tr>
+          <% @recent_loans.each do |row| %>
+            <tr
+              data-controller="clickable-row"
+              data-clickable-row-url-value="<%= admin_loan_path(row[:anticipation]) %>"
+              data-action="click->clickable-row#open keydown->clickable-row#open"
+              tabindex="0"
+              role="link"
+              aria-label="Abrir detalhes da operacao <%= row[:receivable].external_reference || row[:anticipation].id.first(8) %>">
               <td>
-                <strong><%= row[:tenant_slug] %></strong><br>
-                <small><%= row[:tenant_name] %></small>
+                <strong><%= row[:receivable].external_reference || row[:anticipation].id.first(8) %></strong><br>
+                <small><%= row[:current_stage] %></small>
               </td>
+              <td><%= party_display_name(row[:debtor]) %></td>
               <td>
-                <span class="status-pill"><%= row[:tenant_active] ? "Ativo" : "Inativo" %></span>
+                <strong><%= party_display_name(row[:requester]) %></strong><br>
+                <small>
+                  <%= loan_structure_label(row[:anticipation], allocation: row[:allocation]) %>
+                  <% if row[:physician_party].present? %>
+                    · medico vinculado: <%= party_display_name(row[:physician_party]) %>
+                  <% end %>
+                </small>
               </td>
-              <td><%= number_with_delimiter(row[:users_count], delimiter: ".") %></td>
-              <td><%= number_with_delimiter(row[:hospital_count], delimiter: ".") %></td>
-              <td><%= number_with_delimiter(row[:hospital_organization_count], delimiter: ".") %></td>
-              <td><%= number_with_delimiter(row[:hospital_ownership_count], delimiter: ".") %></td>
-              <td><%= number_with_delimiter(row[:receivable_count], delimiter: ".") %></td>
-              <td><%= format_brl(row[:receivable_gross_amount]) %></td>
-              <td><%= number_with_delimiter(row[:anticipation_count], delimiter: ".") %></td>
-              <td><%= number_with_delimiter(row[:funded_anticipation_count], delimiter: ".") %></td>
-              <td><%= number_with_delimiter(row[:settlement_count], delimiter: ".") %></td>
-              <td><%= format_brl(row[:settlement_paid_amount]) %></td>
-              <td><%= number_with_delimiter(row[:outbox_pending_count], delimiter: ".") %></td>
-              <td><%= number_with_delimiter(row[:outbox_dead_letter_count], delimiter: ".") %></td>
-              <td><%= number_with_delimiter(row[:reconciliation_open_count], delimiter: ".") %></td>
-              <td><%= number_with_delimiter(row[:reconciliation_total_count], delimiter: ".") %></td>
-              <td><%= number_with_delimiter(row[:direct_upload_count], delimiter: ".") %></td>
-              <td><%= l(row[:last_activity_at], format: :short) if row[:last_activity_at].present? %></td>
+              <td><span class="status-pill"><%= status_label(row[:anticipation].status) %></span></td>
+              <td><%= format_brl(row[:gross_amount]) %></td>
+              <td><%= format_brl(row[:requested_amount]) %></td>
+              <td><%= format_brl(row[:open_exposure]) %></td>
+              <td><%= format_brl(row[:estimated_profit]) %></td>
+              <td><%= format_brl(row[:realized_profit]) %></td>
+              <td><%= row[:term_days] %> dias</td>
+              <td><%= link_to "Abrir", admin_loan_path(row[:anticipation]), class: "button button-soft button-inline" %></td>
             </tr>
           <% end %>
         </tbody>
       </table>
     </div>
+
+    <%= render "admin/shared/loan_pagination", pagination: @loan_pagination %>
   </section>
 
-  <section class="panel">
-    <header class="panel-header">
-      <h3>Exceções de reconciliação recentes</h3>
-      <p>Eventos com mismatch ou falha de integração para acompanhamento operacional.</p>
-    </header>
+  <section class="two-column">
+    <article class="panel">
+      <header class="panel-header">
+        <h3>Contrapartes recentes</h3>
+        <p>Cadastro ativo para hospitais, fornecedores, médicos e entidades jurídicas.</p>
+      </header>
 
-    <% if @recent_reconciliation_exceptions.any? %>
       <div class="table-wrapper">
         <table class="data-table">
           <thead>
             <tr>
-              <th>Tenant</th>
-              <th>Origem</th>
-              <th>Provider</th>
-              <th>Evento externo</th>
-              <th>Código</th>
-              <th>Ocorrências</th>
-              <th>Última ocorrência</th>
-              <th>Mensagem</th>
+              <th>Nome</th>
+              <th>Tipo</th>
+              <th>Empréstimos ativos</th>
+              <th>Liquidados</th>
             </tr>
           </thead>
           <tbody>
-            <% @recent_reconciliation_exceptions.each do |exception| %>
+            <% @counterparty_rows.each do |row| %>
               <tr>
                 <td>
-                  <strong><%= exception[:tenant_slug] %></strong><br>
-                  <small><%= exception[:tenant_name] %></small>
+                  <strong><%= row[:party].display_name.presence || row[:party].legal_name %></strong><br>
+                  <small><%= row[:party].document_number %></small>
                 </td>
-                <td><%= exception[:source] %></td>
-                <td><%= exception[:provider] %></td>
-                <td><code><%= exception[:external_event_id] %></code></td>
-                <td><code><%= exception[:code] %></code></td>
-                <td><%= number_with_delimiter(exception[:occurrences_count], delimiter: ".") %></td>
-                <td><%= l(exception[:last_seen_at], format: :short) if exception[:last_seen_at].present? %></td>
-                <td><%= exception[:message] %></td>
+                <td><%= party_kind_label(row[:party].kind) %></td>
+                <td><%= number_with_delimiter(row[:active_loans_count], delimiter: ".") %></td>
+                <td><%= number_with_delimiter(row[:settled_loans_count], delimiter: ".") %></td>
               </tr>
             <% end %>
           </tbody>
         </table>
       </div>
-    <% else %>
-      <p class="empty-state">Nenhuma exceção de reconciliação aberta no momento.</p>
-    <% end %>
+    </article>
+
+    <article class="panel">
+      <header class="panel-header">
+        <h3>Rentabilidade registrada</h3>
+        <p>Entradas manuais auditadas que complementam o desconto contratual.</p>
+      </header>
+
+      <% if @profitability_entries.any? %>
+        <ul class="activity-list">
+          <% @profitability_entries.each do |entry| %>
+            <li class="activity-item">
+              <p class="activity-title">
+                <strong><%= entry[:category] %></strong>
+                <span class="status-pill"><%= entry[:entry_kind] == "INCOME" ? "Receita" : "Despesa" %></span>
+              </p>
+              <p class="activity-body"><%= format_brl(entry[:amount]) %> · operação <code><%= entry[:anticipation_request_id].to_s.first(8) %></code></p>
+              <p class="activity-meta"><%= l(entry[:occurred_at], format: :short) %></p>
+            </li>
+          <% end %>
+        </ul>
+      <% else %>
+        <p class="empty-state">Nenhuma entrada manual de rentabilidade registrada.</p>
+      <% end %>
+    </article>
+  </section>
+
+  <section class="two-column">
+    <article class="panel">
+      <header class="panel-header">
+        <h3>Sinais de risco</h3>
+        <p>Itens REVIEW e BLOCK para atuação operacional imediata.</p>
+      </header>
+
+      <% if @risk_signals.any? %>
+        <ul class="activity-list">
+          <% @risk_signals.each do |signal| %>
+            <li class="activity-item">
+              <p class="activity-title">
+                <strong><%= signal.decision_code %></strong>
+                <span class="status-pill"><%= signal.decision_action %></span>
+              </p>
+              <p class="activity-body"><%= signal.requester_party&.legal_name || "-" %> · <%= signal.stage %></p>
+              <p class="activity-meta"><%= l(signal.evaluated_at, format: :short) %></p>
+            </li>
+          <% end %>
+        </ul>
+      <% else %>
+        <p class="empty-state">Sem alertas de risco abertos no momento.</p>
+      <% end %>
+    </article>
+
+    <article class="panel">
+      <header class="panel-header">
+        <h3>Reconciliação</h3>
+        <p>Exceções abertas de integração e matching financeiro.</p>
+      </header>
+
+      <% if @reconciliation_exceptions.any? %>
+        <ul class="activity-list">
+          <% @reconciliation_exceptions.each do |exception| %>
+            <li class="activity-item">
+              <p class="activity-title"><strong><%= exception.code %></strong></p>
+              <p class="activity-body"><%= exception.source %> · <%= exception.provider %></p>
+              <p class="activity-meta"><%= l(exception.last_seen_at, format: :short) %></p>
+            </li>
+          <% end %>
+        </ul>
+      <% else %>
+        <p class="empty-state">Sem exceções de reconciliação abertas.</p>
+      <% end %>
+    </article>
   </section>
 </main>

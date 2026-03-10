@@ -1,0 +1,120 @@
+<main class="dashboard-shell">
+  <section class="hero-panel">
+    <div>
+      <p class="hero-kicker">Revisão operacional</p>
+      <h2>Fila de revisão manual de antecipações</h2>
+      <p class="hero-subtitle">
+        Solicitações com decisão de risco <code>REVIEW</code> ficam em <code>PENDING_REVIEW</code> até aprovação ou rejeição manual.
+      </p>
+      <p class="hero-subtitle">
+        Toda decisão aqui registra trilha de auditoria e evidências de IP/usuário.
+      </p>
+    </div>
+    <div class="hero-meta">
+      <p><strong>Perfil:</strong> <%= role_label(Current.user&.role) %></p>
+      <p><strong>Usuário:</strong> <%= Current.user&.email_address %></p>
+      <p><strong>Tenant selecionado:</strong> <%= @selected_tenant.slug %></p>
+      <%= link_to "Voltar ao painel admin", admin_dashboard_path, class: "button button-primary" %>
+      <%= link_to "Regras de risco", admin_anticipation_risk_rules_path(tenant_id: @selected_tenant.id), class: "button button-primary" %>
+    </div>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Selecionar tenant</h3>
+      <p>Use esta seleção para navegar entre filas de revisão dos tenants ativos.</p>
+    </header>
+
+    <%= form_with url: admin_anticipation_reviews_path, method: :get, local: true, class: "receivable-selector" do |form| %>
+      <div class="field">
+        <%= form.label :tenant_id, "Tenant" %>
+        <%= form.select :tenant_id,
+          options_from_collection_for_select(@tenants, :id, ->(tenant) { "#{tenant.slug} - #{tenant.name}" }, @selected_tenant.id),
+          {},
+          required: true %>
+      </div>
+      <div>
+        <%= form.submit "Atualizar fila", class: "button button-primary" %>
+      </div>
+    <% end %>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Solicitações pendentes</h3>
+      <p><%= @pending_reviews.size %> solicitações carregadas para o tenant selecionado.</p>
+    </header>
+
+    <% if @pending_reviews.any? %>
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Solicitação</th>
+              <th>Recebível</th>
+              <th>Solicitante</th>
+              <th>Valor</th>
+              <th>Sinal de risco</th>
+              <th>Decisão manual</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% @pending_reviews.each do |anticipation_request| %>
+              <% risk_decision = @latest_risk_decisions_by_request_id[anticipation_request.id] %>
+              <tr>
+                <td>
+                  <code><%= anticipation_request.id %></code><br>
+                  <small>Status: <%= status_label(anticipation_request.status) %></small><br>
+                  <small>Solicitado em: <%= l(anticipation_request.requested_at, format: :short) if anticipation_request.requested_at.present? %></small>
+                </td>
+                <td>
+                  <code><%= anticipation_request.receivable_id %></code><br>
+                  <small>Ref.: <%= anticipation_request.receivable&.external_reference.presence || "-" %></small>
+                </td>
+                <td>
+                  <%= anticipation_request.requester_party&.legal_name.presence || "-" %><br>
+                  <small><code><%= anticipation_request.requester_party_id %></code></small>
+                </td>
+                <td>
+                  <strong><%= format_brl(anticipation_request.requested_amount) %></strong><br>
+                  <small>Líquido: <%= format_brl(anticipation_request.net_amount) %></small>
+                </td>
+                <td>
+                  <% if risk_decision.present? %>
+                    <span class="status-pill"><%= risk_decision.decision_action %></span><br>
+                    <code><%= risk_decision.decision_code %></code><br>
+                    <small>Stage: <%= risk_decision.stage %></small><br>
+                    <small>Em: <%= l(risk_decision.evaluated_at, format: :short) if risk_decision.evaluated_at.present? %></small>
+                  <% else %>
+                    <small>Sem decisão registrada.</small>
+                  <% end %>
+                </td>
+                <td>
+                  <%= form_with url: approve_admin_anticipation_review_path(anticipation_request.id), method: :patch, local: true, class: "receivable-selector" do |form| %>
+                    <%= hidden_field_tag :tenant_id, @selected_tenant.id %>
+                    <div class="field">
+                      <%= form.label :review_note, "Nota (opcional para aprovação)" %>
+                      <%= form.text_area :review_note, rows: 2, maxlength: 1000 %>
+                    </div>
+                    <%= form.submit "Aprovar", class: "button button-primary", data: { turbo_confirm: "Confirmar aprovação desta solicitação para retorno ao fluxo de confirmação?" } %>
+                  <% end %>
+
+                  <%= form_with url: reject_admin_anticipation_review_path(anticipation_request.id), method: :patch, local: true, class: "receivable-selector" do |form| %>
+                    <%= hidden_field_tag :tenant_id, @selected_tenant.id %>
+                    <div class="field">
+                      <%= form.label :review_note, "Motivo da rejeição (obrigatório)" %>
+                      <%= form.text_area :review_note, rows: 2, maxlength: 1000, required: true %>
+                    </div>
+                    <%= form.submit "Rejeitar", class: "button button-outline", data: { turbo_confirm: "Confirmar rejeição desta solicitação?" } %>
+                  <% end %>
+                </td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% else %>
+      <p class="empty-state">Nenhuma solicitação pendente de revisão para este tenant.</p>
+    <% end %>
+  </section>
+</main>

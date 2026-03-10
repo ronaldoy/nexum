@@ -75,6 +75,58 @@ class AnticipationRiskRuleTest < ActiveSupport::TestCase
     end
   end
 
+  test "accepts behavioral risk limits when fields are consistent" do
+    with_tenant_db_context(tenant_id: @tenant.id) do
+      rule = AnticipationRiskRule.new(
+        tenant: @tenant,
+        scope_type: "TENANT_DEFAULT",
+        decision: "REVIEW",
+        max_single_request_amount: "500.00",
+        max_requests_per_minute: 3,
+        max_requests_per_hour: 30,
+        pair_spike_multiplier: "2.5000",
+        pair_spike_min_daily_amount: "10000.00",
+        near_limit_attempts_window_minutes: 20,
+        near_limit_attempts_max_count: 4,
+        near_limit_ratio: "0.950000"
+      )
+
+      assert rule.valid?
+    end
+  end
+
+  test "rejects pair spike configuration when one field is missing" do
+    with_tenant_db_context(tenant_id: @tenant.id) do
+      rule = AnticipationRiskRule.new(
+        tenant: @tenant,
+        scope_type: "TENANT_DEFAULT",
+        decision: "BLOCK",
+        max_single_request_amount: "500.00",
+        pair_spike_multiplier: "2.0000"
+      )
+
+      assert_not rule.valid?
+      assert_includes rule.errors[:base], "pair spike multiplier and minimum daily amount must be set together"
+    end
+  end
+
+  test "rejects near-limit configuration without single request limit" do
+    with_tenant_db_context(tenant_id: @tenant.id) do
+      rule = AnticipationRiskRule.new(
+        tenant: @tenant,
+        scope_type: "TENANT_DEFAULT",
+        decision: "BLOCK",
+        max_daily_requested_amount: "1000.00",
+        near_limit_attempts_window_minutes: 20,
+        near_limit_attempts_max_count: 4,
+        near_limit_ratio: "0.900000"
+      )
+
+      assert_not rule.valid?
+      assert_includes rule.errors[:base], "near-limit attempts control requires max_single_request_amount"
+    end
+  end
+
   test "enables and forces RLS with tenant policy on anticipation risk rules" do
     connection = ActiveRecord::Base.connection
 

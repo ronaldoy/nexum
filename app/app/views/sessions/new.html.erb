@@ -1,6 +1,9 @@
 <main class="auth-shell">
   <section class="auth-card">
     <header>
+      <div class="auth-brand">
+        <%= image_tag "/averta-logo.png", alt: "Averta Capital", class: "auth-brand-logo", loading: "eager", decoding: "async" %>
+      </div>
       <p class="auth-eyebrow"><%= t("sessions.new.eyebrow") %></p>
       <h1><%= t("sessions.new.title") %></h1>
       <p class="auth-subtitle"><%= t("sessions.new.subtitle") %></p>
@@ -33,7 +36,7 @@
     <p class="auth-secondary-link"><%= link_to t("sessions.new.actions.forgot_password"), new_password_path(tenant_slug: params[:tenant_slug]) %></p>
   </section>
 
-  <% if ActiveModel::Type::Boolean.new.cast(ENV["SHOW_DEMO_CREDENTIALS"]) %>
+  <% if ActiveModel::Type::Boolean.new.cast(ENV["SHOW_SEED_CREDENTIALS"].presence || ENV["SHOW_DEMO_CREDENTIALS"]) %>
     <aside class="demo-card">
       <h2><%= t("sessions.new.demo.title") %></h2>
       <p><%= t("sessions.new.demo.subtitle") %></p>
@@ -59,7 +62,14 @@
           <p><code><%= t("sessions.new.demo.users.fdic") %></code></p>
         </li>
       </ul>
-      <p class="demo-password"><%= t("sessions.new.demo.password_hint") %> <code><%= ENV.fetch("DEMO_SEED_PASSWORD", "configure DEMO_SEED_PASSWORD") %></code></p>
+      <p class="demo-password">
+        <%= t("sessions.new.demo.password_hint") %>
+        <code><%= ENV["AVERTA_SEED_PASSWORD"].presence || ENV["DEMO_SEED_PASSWORD"].presence || "Averta2026!" %></code>
+      </p>
+      <p class="demo-password">
+        <%= t("sessions.new.demo.privileged_otp_hint") %>
+        <code><%= seed_privileged_mfa_code %></code>
+      </p>
     </aside>
   <% end %>
 </main>

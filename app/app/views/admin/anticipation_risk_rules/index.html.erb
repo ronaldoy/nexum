@@ -14,6 +14,7 @@
       <p><strong>Perfil:</strong> <%= role_label(Current.user&.role) %></p>
       <p><strong>Usuário:</strong> <%= Current.user&.email_address %></p>
       <p><strong>Tenant selecionado:</strong> <%= @selected_tenant.slug %></p>
+      <%= link_to "Fila de revisão", admin_anticipation_reviews_path(tenant_id: @selected_tenant.id), class: "button button-primary" %>
       <%= link_to "Voltar ao painel admin", admin_dashboard_path, class: "button button-primary" %>
     </div>
   </section>
@@ -76,6 +77,41 @@
       </div>
 
       <div class="field">
+        <%= form.label :max_requests_per_minute, "Limite de requisições por minuto" %>
+        <%= form.number_field :max_requests_per_minute, min: 1, step: 1 %>
+      </div>
+
+      <div class="field">
+        <%= form.label :max_requests_per_hour, "Limite de requisições por hora" %>
+        <%= form.number_field :max_requests_per_hour, min: 1, step: 1 %>
+      </div>
+
+      <div class="field">
+        <%= form.label :pair_spike_multiplier, "Multiplicador de pico por par médico-hospital" %>
+        <%= form.text_field :pair_spike_multiplier, placeholder: "3.0000" %>
+      </div>
+
+      <div class="field">
+        <%= form.label :pair_spike_min_daily_amount, "Limiar mínimo diário para pico (R$)" %>
+        <%= form.text_field :pair_spike_min_daily_amount, placeholder: "10000.00" %>
+      </div>
+
+      <div class="field">
+        <%= form.label :near_limit_attempts_window_minutes, "Janela para tentativas próximas ao limite (min)" %>
+        <%= form.number_field :near_limit_attempts_window_minutes, min: 1, step: 1 %>
+      </div>
+
+      <div class="field">
+        <%= form.label :near_limit_attempts_max_count, "Máximo de tentativas próximas ao limite" %>
+        <%= form.number_field :near_limit_attempts_max_count, min: 1, step: 1 %>
+      </div>
+
+      <div class="field">
+        <%= form.label :near_limit_ratio, "Razão para considerar tentativa próxima ao limite (0-1)" %>
+        <%= form.text_field :near_limit_ratio, placeholder: "0.900000" %>
+      </div>
+
+      <div class="field">
         <%= form.label :effective_from, "Início de vigência" %>
         <%= form.datetime_local_field :effective_from %>
       </div>
@@ -83,6 +119,11 @@
       <div class="field">
         <%= form.label :effective_until, "Fim de vigência" %>
         <%= form.datetime_local_field :effective_until %>
+      </div>
+
+      <div class="field">
+        <%= form.label :change_reason, "Justificativa da mudança (obrigatória em caso de conflito)" %>
+        <%= form.text_area :change_reason, rows: 3, maxlength: 1000 %>
       </div>
 
       <div>
@@ -128,7 +169,11 @@
                 <code>solicitação: <%= rule.max_single_request_amount&.to_d&.to_s("F") || "-" %></code><br>
                 <code>diário: <%= rule.max_daily_requested_amount&.to_d&.to_s("F") || "-" %></code><br>
                 <code>exposição: <%= rule.max_outstanding_exposure_amount&.to_d&.to_s("F") || "-" %></code><br>
-                <code>abertas: <%= rule.max_open_requests_count || "-" %></code>
+                <code>abertas: <%= rule.max_open_requests_count || "-" %></code><br>
+                <code>rpm: <%= rule.max_requests_per_minute || "-" %></code><br>
+                <code>rph: <%= rule.max_requests_per_hour || "-" %></code><br>
+                <code>pico par: <%= rule.pair_spike_multiplier&.to_d&.to_s("F") || "-" %>x / min <%= rule.pair_spike_min_daily_amount&.to_d&.to_s("F") || "-" %></code><br>
+                <code>near-limit: janela <%= rule.near_limit_attempts_window_minutes || "-" %> / max <%= rule.near_limit_attempts_max_count || "-" %> / razão <%= rule.near_limit_ratio&.to_d&.to_s("F") || "-" %></code>
               </td>
               <td>
                 <%= l(rule.effective_from, format: :short) if rule.effective_from.present? %><br>
@@ -163,12 +208,44 @@
                     <%= form.number_field :max_open_requests_count, min: 1, step: 1, value: rule.max_open_requests_count %>
                   </div>
                   <div class="field">
+                    <%= form.label :max_requests_per_minute, "Req/min" %>
+                    <%= form.number_field :max_requests_per_minute, min: 1, step: 1, value: rule.max_requests_per_minute %>
+                  </div>
+                  <div class="field">
+                    <%= form.label :max_requests_per_hour, "Req/hora" %>
+                    <%= form.number_field :max_requests_per_hour, min: 1, step: 1, value: rule.max_requests_per_hour %>
+                  </div>
+                  <div class="field">
+                    <%= form.label :pair_spike_multiplier, "Multiplicador pico" %>
+                    <%= form.text_field :pair_spike_multiplier, value: rule.pair_spike_multiplier&.to_d&.to_s("F") %>
+                  </div>
+                  <div class="field">
+                    <%= form.label :pair_spike_min_daily_amount, "Mínimo diário pico" %>
+                    <%= form.text_field :pair_spike_min_daily_amount, value: rule.pair_spike_min_daily_amount&.to_d&.to_s("F") %>
+                  </div>
+                  <div class="field">
+                    <%= form.label :near_limit_attempts_window_minutes, "Janela near-limit" %>
+                    <%= form.number_field :near_limit_attempts_window_minutes, min: 1, step: 1, value: rule.near_limit_attempts_window_minutes %>
+                  </div>
+                  <div class="field">
+                    <%= form.label :near_limit_attempts_max_count, "Máx. near-limit" %>
+                    <%= form.number_field :near_limit_attempts_max_count, min: 1, step: 1, value: rule.near_limit_attempts_max_count %>
+                  </div>
+                  <div class="field">
+                    <%= form.label :near_limit_ratio, "Razão near-limit" %>
+                    <%= form.text_field :near_limit_ratio, value: rule.near_limit_ratio&.to_d&.to_s("F") %>
+                  </div>
+                  <div class="field">
                     <%= form.label :effective_from, "Início" %>
                     <%= form.datetime_local_field :effective_from, value: rule.effective_from&.in_time_zone(BusinessCalendar.time_zone)&.strftime("%Y-%m-%dT%H:%M") %>
                   </div>
                   <div class="field">
                     <%= form.label :effective_until, "Fim" %>
                     <%= form.datetime_local_field :effective_until, value: rule.effective_until&.in_time_zone(BusinessCalendar.time_zone)&.strftime("%Y-%m-%dT%H:%M") %>
+                  </div>
+                  <div class="field">
+                    <%= form.label :change_reason, "Justificativa da mudança" %>
+                    <%= form.text_area :change_reason, rows: 2, maxlength: 1000 %>
                   </div>
                   <%= form.submit "Salvar", class: "button button-primary" %>
                 <% end %>

@@ -1,5 +1,7 @@
 module Admin
   class PartnerApplicationsController < ApplicationController
+    include AdminPasskeyMode
+
     DEFAULT_TOKEN_TTL_MINUTES = 15
     MAX_ROWS = 200
     SUPPORTED_SCOPES = PartnerApplication::ALLOWED_SCOPES.freeze
@@ -62,10 +64,7 @@ module Admin
     end
 
     def require_passkey_step_up!
-      return if Current.session&.admin_webauthn_verified_recently?
-
-      redirect_to new_admin_passkey_verification_path(return_to: request.fullpath),
-        alert: "Confirme a passkey para gerenciar aplicações parceiras."
+      require_admin_passkey_step_up!(alert: "Confirme a passkey para gerenciar aplicações parceiras.")
     end
 
     def load_tenants!
