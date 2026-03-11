@@ -173,14 +173,33 @@ module Admin
       end
     end
 
-    test "demo mode redirects away from passkey screen" do
+    test "explicit skip flag redirects away from passkey screen" do
+      sign_in_as(@ops_user)
+
+      with_environment("SKIP_ADMIN_PASSKEY" => "true") do
+        get new_admin_passkey_verification_path(return_to: admin_dashboard_path)
+      end
+
+      assert_redirected_to admin_dashboard_path
+    end
+
+    test "show demo credentials flag does not bypass passkey screen" do
       sign_in_as(@ops_user)
 
       with_environment("SHOW_SEED_CREDENTIALS" => "true") do
         get new_admin_passkey_verification_path(return_to: admin_dashboard_path)
       end
 
-      assert_redirected_to admin_dashboard_path
+      assert_response :success
+      assert_includes response.body, "Validar acesso ao painel administrativo"
+    end
+
+    def with_environment(overrides)
+      previous = overrides.keys.to_h { |key| [ key, ENV[key] ] }
+      overrides.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+      yield
+    ensure
+      previous.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
     end
 
     private

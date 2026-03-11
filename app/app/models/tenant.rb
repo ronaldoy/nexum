@@ -1,4 +1,6 @@
 class Tenant < ApplicationRecord
+  SLUG_FORMAT = /\A[a-z0-9]+(?:-[a-z0-9]+)*\z/.freeze
+
   has_many :parties, dependent: :restrict_with_exception
   has_many :physicians, dependent: :restrict_with_exception
   has_many :kyc_profiles, dependent: :restrict_with_exception
@@ -19,13 +21,13 @@ class Tenant < ApplicationRecord
   has_many :hospital_ownerships, dependent: :restrict_with_exception
   has_many :escrow_accounts, dependent: :restrict_with_exception
   has_many :escrow_payouts, dependent: :restrict_with_exception
-  has_many :fdic_operations, dependent: :restrict_with_exception
+  has_many :fidc_operations, dependent: :restrict_with_exception
   has_many :anticipation_risk_rules, dependent: :restrict_with_exception
   has_many :anticipation_risk_rule_events, dependent: :restrict_with_exception
   has_many :anticipation_risk_decisions, dependent: :restrict_with_exception
   has_many :hospital_parties, -> { where(kind: "HOSPITAL") }, class_name: "Party"
   has_many :organization_parties, -> { where(kind: "LEGAL_ENTITY_PJ") }, class_name: "Party"
 
-  validates :slug, presence: true, uniqueness: true
+  validates :slug, presence: true, uniqueness: true, format: { with: SLUG_FORMAT }
   validates :name, presence: true
 end

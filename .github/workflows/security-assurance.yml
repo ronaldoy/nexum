@@ -1,0 +1,87 @@
+name: Security Assurance
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * *"
+
+permissions:
+  contents: read
+
+env:
+  BUNDLE_GEMFILE: app/Gemfile
+  POSTGRES_APP_USER: nexum_runtime
+  POSTGRES_APP_PASSWORD: nexum_runtime_ci_password
+  POSTGRES_RUNTIME_USER: nexum_runtime
+  POSTGRES_RUNTIME_PASSWORD: nexum_runtime_ci_password
+  POSTGRES_MIGRATE_USER: nexum_migrate
+  POSTGRES_MIGRATE_PASSWORD: nexum_migrate_ci_password
+  POSTGRES_READONLY_USER: nexum_readonly
+  POSTGRES_READONLY_PASSWORD: nexum_readonly_ci_password
+  POSTGRES_SUPERUSER: postgres
+  POSTGRES_SUPERUSER_PASSWORD: postgres
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: postgres
+  DB_HOST: 127.0.0.1
+  DB_PORT: 5432
+  POSTGRES_TEST_DB: nexum_test
+  RAILS_ENV: test
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18.1
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Scan repository for leaked secrets
+        run: ../bin/secret-scan --no-banner
+
+      - name: Install PostgreSQL client headers
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libpq-dev
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+
+      - name: Bootstrap PostgreSQL roles
+        run: ../bin/db-bootstrap
+
+      - name: Scan for Rails security issues
+        run: bin/brakeman --quiet --no-pager --exit-on-warn --exit-on-error
+
+      - name: Scan gems for known vulnerabilities
+        run: bin/bundler-audit
+
+      - name: Scan importmap dependencies
+        run: bin/importmap audit
+
+      - name: Prepare test database
+        env:
+          POSTGRES_APP_USER: ${{ env.POSTGRES_MIGRATE_USER }}
+          POSTGRES_APP_PASSWORD: ${{ env.POSTGRES_MIGRATE_PASSWORD }}
+        run: bin/rails db:prepare
+
+      - name: Audit database runtime role
+        run: bin/security-role-audit
+
+      - name: Audit database security schema
+        run: bin/security-schema-audit

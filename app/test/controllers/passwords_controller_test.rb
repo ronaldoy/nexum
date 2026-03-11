@@ -50,6 +50,9 @@ class PasswordsControllerTest < ActionDispatch::IntegrationTest
     post passwords_path, params: { tenant_slug: "nonexistent", email_address: @user.email_address }
     assert_response :redirect
     assert_enqueued_emails 0
+    assert_redirected_to new_session_path(tenant_slug: "nonexistent")
+    follow_redirect!
+    assert_notice "instruções para redefinição de senha"
   end
 
   test "edit" do
@@ -62,11 +65,14 @@ class PasswordsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to new_password_path(tenant_slug: @user.tenant.slug)
 
     with_tenant_db_context(tenant_id: @user.tenant_id, actor_id: @user.id, role: @user.role) do
-      assert_equal 1, ActionIpLog.where(
+      log = ActionIpLog.where(
         tenant_id: @user.tenant_id,
         action_type: "PASSWORD_RESET_TOKEN_INVALID",
         success: false
-      ).count
+      ).order(occurred_at: :desc).first
+      assert log.present?
+      assert_equal "/passwords/[FILTERED]", log.endpoint_path
+      refute_includes log.endpoint_path, "invalid token"
     end
 
     follow_redirect!
@@ -79,12 +85,24 @@ class PasswordsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "update" do
+    issued_token = nil
+    with_tenant_db_context(tenant_id: @user.tenant_id, actor_id: @user.id, role: @user.role) do
+      issued_token, = ApiAccessToken.issue!(
+        tenant: @user.tenant,
+        user: @user,
+        name: "Password Reset Test Token",
+        scopes: %w[receivables:read]
+      )
+    end
+
     assert_changes -> { @user.reload.password_digest } do
       put password_path(@user.password_reset_token), params: { tenant_slug: @user.tenant.slug, password: "new", password_confirmation: "new" }
       assert_redirected_to new_session_path(tenant_slug: @user.tenant.slug)
     end
 
     with_tenant_db_context(tenant_id: @user.tenant_id, actor_id: @user.id, role: @user.role) do
+      assert ApiAccessToken.find(issued_token.id).revoked_at.present?
+
       log = ActionIpLog.where(
         tenant_id: @user.tenant_id,
         action_type: "PASSWORD_RESET_COMPLETED",
@@ -92,6 +110,7 @@ class PasswordsControllerTest < ActionDispatch::IntegrationTest
       ).order(occurred_at: :desc).first
       assert log.present?
       assert_equal @user.id, log.metadata["user_id"]
+      assert_equal "/passwords/[FILTERED]", log.endpoint_path
     end
 
     follow_redirect!
@@ -113,6 +132,8 @@ class PasswordsControllerTest < ActionDispatch::IntegrationTest
       ).order(occurred_at: :desc).first
       assert log.present?
       assert_equal @user.id, log.metadata["user_id"]
+      assert_equal "/passwords/[FILTERED]", log.endpoint_path
+      refute_includes log.endpoint_path, token
     end
 
     follow_redirect!

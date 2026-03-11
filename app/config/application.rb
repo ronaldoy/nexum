@@ -15,6 +15,15 @@ module Nexum
     config.action_controller.forgery_protection_verification_strategy = :header_only
     config.action_controller.default_protect_from_forgery_with = :exception
     config.middleware.use Rack::Attack
+    config.action_dispatch.default_headers.merge!(
+      "Cross-Origin-Opener-Policy" => "same-origin",
+      "Cross-Origin-Resource-Policy" => "same-origin",
+      "Origin-Agent-Cluster" => "?1",
+      "Referrer-Policy" => "same-origin",
+      "X-Content-Type-Options" => "nosniff",
+      "X-Frame-Options" => "DENY",
+      "X-Permitted-Cross-Domain-Policies" => "none"
+    )
 
     # Please, add to the `ignore` list any other `lib` subdirectories that do
     # not contain `.rb` files, or that should not be reloaded or eager loaded.

@@ -26,6 +26,41 @@ class PartnerApplicationTest < ActiveSupport::TestCase
     end
   end
 
+  test "normalizes and matches allowed browser origins" do
+    with_tenant_db_context(tenant_id: @tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
+      application, _secret = PartnerApplication.issue!(
+        tenant: @tenant,
+        created_by_user: @ops_user,
+        actor_party: @ops_user.party,
+        name: "Origin Normalize App",
+        scopes: %w[receivables:read],
+        allowed_origins: [ " https://Frontend.Example.com/ ", "https://frontend.example.com" ]
+      )
+
+      assert_equal [ "https://frontend.example.com" ], application.allowed_origins
+      assert application.browser_origin_allowed?("https://frontend.example.com")
+      refute application.browser_origin_allowed?("https://other.example.com")
+    end
+  end
+
+  test "rejects invalid allowed browser origins" do
+    with_tenant_db_context(tenant_id: @tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
+      application = PartnerApplication.new(
+        tenant: @tenant,
+        created_by_user: @ops_user,
+        actor_party: @ops_user.party,
+        name: "Invalid Origin App",
+        client_id: SecureRandom.uuid,
+        client_secret_digest: PartnerApplication.digest("secret"),
+        scopes: [ "receivables:read" ],
+        allowed_origins: [ "https://frontend.example.com/path", "http://frontend.example.com" ]
+      )
+
+      assert_equal false, application.valid?
+      assert_includes application.errors[:allowed_origins].join(" "), "invalid HTTPS origins"
+    end
+  end
+
   test "issues scoped access token and tracks token name" do
     with_tenant_db_context(tenant_id: @tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
       application, _secret = PartnerApplication.issue!(
@@ -64,6 +99,36 @@ class PartnerApplicationTest < ActiveSupport::TestCase
 
       assert token.reload.revoked_at.present?
       assert application.reload.rotated_at.present?
+    end
+  end
+
+  test "does not misattribute token issuance to the application creator" do
+    with_tenant_db_context(tenant_id: @tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
+      application, _secret = PartnerApplication.issue!(
+        tenant: @tenant,
+        created_by_user: @ops_user,
+        actor_party: @ops_user.party,
+        name: "Audit Attribution App",
+        scopes: %w[receivables:read]
+      )
+
+      application.issue_access_token!(
+        audit_context: {
+          actor_party_id: nil,
+          channel: "API",
+          request_id: "partner-token-issue-request-id"
+        }
+      )
+
+      action_log = ActionIpLog.find_by!(
+        tenant_id: @tenant.id,
+        action_type: "PARTNER_APPLICATION_TOKEN_ISSUED",
+        target_type: "PartnerApplication",
+        target_id: application.id,
+        request_id: "partner-token-issue-request-id"
+      )
+
+      assert_nil action_log.actor_party_id
     end
   end
 end

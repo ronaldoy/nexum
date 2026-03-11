@@ -18,10 +18,8 @@ module AdminPasskeyMode
   end
 
   def demo_admin_passkey_bypass_enabled?
-    ActiveModel::Type::Boolean.new.cast(
-      ENV["SKIP_ADMIN_PASSKEY"].presence ||
-      ENV["SHOW_SEED_CREDENTIALS"].presence ||
-      ENV["SHOW_DEMO_CREDENTIALS"].presence
-    )
+    return false if Rails.env.production?
+
+    ActiveModel::Type::Boolean.new.cast(ENV["SKIP_ADMIN_PASSKEY"])
   end
 end

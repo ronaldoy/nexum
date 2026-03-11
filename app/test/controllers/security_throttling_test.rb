@@ -116,4 +116,58 @@ class SecurityThrottlingTest < ActionDispatch::IntegrationTest
 
     assert_response :too_many_requests
   end
+
+  test "throttles repeated webhook payload replays across distinct ips" do
+    with_environment(qitech_secret_env(@user.tenant.slug) => "secret-key") do
+      payload = {
+        "event_id" => "evt-throttle-webhook",
+        "request_control_key" => "missing-payout",
+        "status" => "SENT"
+      }
+      body = JSON.generate(payload)
+
+      10.times do |index|
+        post webhooks_escrow_path(provider: "QITECH", tenant_slug: @user.tenant.slug),
+          params: body,
+          headers: webhook_headers(signature: hmac_signature(body: body, secret: "secret-key")),
+          env: { "REMOTE_ADDR" => "198.51.100.#{index + 170}" }
+
+        assert_includes [ 202, 200, 422 ], response.status
+      end
+
+      post webhooks_escrow_path(provider: "QITECH", tenant_slug: @user.tenant.slug),
+        params: body,
+        headers: webhook_headers(signature: hmac_signature(body: body, secret: "secret-key")),
+        env: { "REMOTE_ADDR" => "203.0.113.170" }
+
+      assert_response :too_many_requests
+    end
+  end
+
+  private
+
+  def with_environment(overrides)
+    previous = overrides.keys.to_h { |key| [ key, ENV[key] ] }
+    overrides.each_key { |key| ENV.delete(key) }
+    overrides.each { |key, value| ENV[key] = value }
+    yield
+  ensure
+    previous.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+  end
+
+  def qitech_secret_env(tenant_slug)
+    normalized = tenant_slug.to_s.upcase.gsub(/[^A-Z0-9]+/, "_")
+    "QITECH_WEBHOOK_SECRET__#{normalized}"
+  end
+
+  def webhook_headers(signature:)
+    {
+      "CONTENT_TYPE" => "application/json",
+      "X-QITECH-Signature" => signature
+    }
+  end
+
+  def hmac_signature(body:, secret:)
+    OpenSSL::HMAC.hexdigest("SHA256", secret, body)
+  end
 end

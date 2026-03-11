@@ -213,6 +213,88 @@ module Api
         assert_equal receivable_b.id, response.parsed_body.dig("data", 0, "id")
       end
 
+      test "hospital_admin token is scoped to managed hospitals rather than the full tenant" do
+        hospital_admin_token = nil
+        receivable_owned = nil
+        receivable_unowned = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          organization = Party.create!(
+            tenant: @tenant,
+            kind: "LEGAL_ENTITY_PJ",
+            legal_name: "Grupo Hospitalar Scope",
+            document_number: valid_cnpj_from_seed("hospital-admin-org-scope")
+          )
+          owned_hospital = Party.create!(
+            tenant: @tenant,
+            kind: "HOSPITAL",
+            legal_name: "Hospital Gerenciado",
+            document_number: valid_cnpj_from_seed("hospital-admin-owned-hospital")
+          )
+          unowned_hospital = Party.create!(
+            tenant: @tenant,
+            kind: "HOSPITAL",
+            legal_name: "Hospital Nao Gerenciado",
+            document_number: valid_cnpj_from_seed("hospital-admin-unowned-hospital")
+          )
+          creditor = Party.create!(
+            tenant: @tenant,
+            kind: "SUPPLIER",
+            legal_name: "Credor Hospital Scope",
+            document_number: valid_cnpj_from_seed("hospital-admin-creditor-scope")
+          )
+          beneficiary = Party.create!(
+            tenant: @tenant,
+            kind: "SUPPLIER",
+            legal_name: "Beneficiario Hospital Scope",
+            document_number: valid_cnpj_from_seed("hospital-admin-beneficiary-scope")
+          )
+
+          HospitalOwnership.create!(
+            tenant: @tenant,
+            organization_party: organization,
+            hospital_party: owned_hospital
+          )
+
+          hospital_admin_user = User.create!(
+            tenant: @tenant,
+            party: organization,
+            email_address: "hospital-admin-scope@example.com",
+            password: "password",
+            password_confirmation: "password",
+            role: "hospital_admin"
+          )
+          _, hospital_admin_token = ApiAccessToken.issue!(
+            tenant: @tenant,
+            user: hospital_admin_user,
+            name: "Hospital Admin Scoped Reader",
+            scopes: %w[receivables:read]
+          )
+
+          receivable_owned = create_receivable_for_hospital!(
+            tenant: @tenant,
+            suffix: "hospital-admin-owned",
+            hospital: owned_hospital,
+            creditor: creditor,
+            beneficiary: beneficiary
+          )
+          receivable_unowned = create_receivable_for_hospital!(
+            tenant: @tenant,
+            suffix: "hospital-admin-unowned",
+            hospital: unowned_hospital,
+            creditor: creditor,
+            beneficiary: beneficiary
+          )
+        end
+
+        get api_v1_receivables_path, headers: authorization_headers(hospital_admin_token), as: :json
+
+        assert_response :success
+        returned_ids = response.parsed_body.fetch("data").map { |entry| entry.fetch("id") }
+        assert_includes returned_ids, receivable_owned.id
+        refute_includes returned_ids, receivable_unowned.id
+      end
+
       test "creates receivable and primary allocation with idempotency replay" do
         payload = nil
 
@@ -350,6 +432,78 @@ module Api
         assert_response :created
         assert_equal false, response.parsed_body.dig("data", "replayed")
         assert_equal "external-partner-create-001", response.parsed_body.dig("data", "external_reference")
+      end
+
+      test "rejects partner application token from a disallowed browser origin" do
+        partner_application = nil
+        client_secret = nil
+        payload = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          hospital = Party.create!(
+            tenant: @tenant,
+            kind: "HOSPITAL",
+            legal_name: "Hospital Partner Origin Reject",
+            document_number: valid_cnpj_from_seed("api-partner-origin-reject-hospital")
+          )
+          supplier = Party.create!(
+            tenant: @tenant,
+            kind: "SUPPLIER",
+            legal_name: "Supplier Partner Origin Reject",
+            document_number: valid_cnpj_from_seed("api-partner-origin-reject-supplier")
+          )
+          kind = ReceivableKind.create!(
+            tenant: @tenant,
+            code: "supplier_invoice_partner_origin_reject",
+            name: "Supplier Partner Origin Reject",
+            source_family: "SUPPLIER"
+          )
+
+          partner_application, client_secret = PartnerApplication.issue!(
+            tenant: @tenant,
+            created_by_user: @user,
+            actor_party: supplier,
+            name: "Partner Receivables Origin Reject",
+            scopes: %w[receivables:write],
+            allowed_origins: [ "https://frontend.parceiro.com.br" ]
+          )
+
+          payload = {
+            receivable: {
+              external_reference: "external-partner-origin-reject-001",
+              receivable_kind_code: kind.code,
+              debtor_party_id: hospital.id,
+              creditor_party_id: supplier.id,
+              beneficiary_party_id: supplier.id,
+              gross_amount: "81.00",
+              currency: "BRL",
+              due_at: 5.days.from_now.iso8601
+            }
+          }
+        end
+
+        post api_v1_oauth_token_path(tenant_slug: @tenant.slug),
+          headers: { "Idempotency-Key" => "idem-oauth-partner-origin-reject-001" },
+          params: {
+            grant_type: "client_credentials",
+            client_id: partner_application.client_id,
+            client_secret: client_secret,
+            scope: "receivables:write"
+          }
+        assert_response :success
+        partner_bearer_token = response.parsed_body.fetch("access_token")
+
+        post api_v1_receivables_path,
+          headers: authorization_headers(
+            partner_bearer_token,
+            idempotency_key: "idem-partner-origin-reject-001",
+            extra: { "Origin" => "https://evil.parceiro.com.br" }
+          ),
+          params: payload,
+          as: :json
+
+        assert_response :forbidden
+        assert_equal "origin_not_allowed", response.parsed_body.dig("error", "code")
       end
 
       test "returns conflict when receivable payload differs for existing external reference" do
@@ -516,7 +670,7 @@ module Api
         assert_equal "ASSIGNMENT_CONTRACT", body.dig("data", "document_type")
         assert_equal "SIGNED", body.dig("data", "status")
         assert_equal Digest::SHA256.hexdigest(blob_content), body.dig("data", "sha256")
-        assert_equal "env-doc-001", body.dig("data", "metadata", "provider_envelope_id")
+        refute body.dig("data", "metadata").key?("provider_envelope_id")
         assert_equal 1, body.dig("data", "events").size
 
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
@@ -575,7 +729,7 @@ module Api
         metadata = response.parsed_body.dig("data", "metadata")
         assert_equal "signature_provider", metadata["source"]
         assert_equal "erp-contract-001", metadata["source_reference"]
-        assert_equal "env-doc-meta-001", metadata["provider_envelope_id"]
+        refute metadata.key?("provider_envelope_id")
         refute metadata.key?("cpf")
         refute metadata.key?("contact_email")
         refute metadata.key?("freeform")
@@ -597,13 +751,15 @@ module Api
           actor_party: @receivable.creditor_party,
           suffix: "reuse-001"
         )
+        blob_content = "signed contract reuse 001"
+        blob = create_active_storage_blob(filename: "assignment-contract-reuse-001.pdf", content: blob_content)
 
         payload = {
           document: {
             actor_party_id: @receivable.creditor_party_id,
             document_type: "assignment_contract",
-            sha256: "sha-doc-reuse-001",
-            storage_key: "docs/assignment-contract-reuse-001.pdf",
+            sha256: Digest::SHA256.hexdigest(blob_content),
+            blob_signed_id: blob.signed_id,
             signed_at: signed_at.iso8601,
             provider_envelope_id: "env-doc-reuse-001",
             email_challenge_id: challenges[:email].id,
@@ -632,12 +788,14 @@ module Api
           actor_party: @receivable.creditor_party,
           suffix: "replay-001"
         )
+        blob_content = "signed contract replay 001"
+        blob = create_active_storage_blob(filename: "assignment-contract-replay-001.pdf", content: blob_content)
         payload = {
           document: {
             actor_party_id: @receivable.creditor_party_id,
             document_type: "assignment_contract",
-            sha256: "sha-doc-replay-001",
-            storage_key: "docs/assignment-contract-replay-001.pdf",
+            sha256: Digest::SHA256.hexdigest(blob_content),
+            blob_signed_id: blob.signed_id,
             signed_at: Time.current.iso8601,
             provider_envelope_id: "env-doc-replay-001",
             email_challenge_id: challenges[:email].id,
@@ -674,14 +832,16 @@ module Api
           actor_party: @receivable.creditor_party,
           suffix: "conflict-001"
         )
+        first_content = "signed contract conflict 001"
+        first_blob = create_active_storage_blob(filename: "assignment-contract-conflict-001.pdf", content: first_content)
         post attach_document_api_v1_receivable_path(@receivable.id),
           headers: authorization_headers(@document_token, idempotency_key: "idem-document-conflict-001"),
           params: {
             document: {
               actor_party_id: @receivable.creditor_party_id,
               document_type: "assignment_contract",
-              sha256: "sha-doc-conflict-001",
-              storage_key: "docs/assignment-contract-conflict-001.pdf",
+              sha256: Digest::SHA256.hexdigest(first_content),
+              blob_signed_id: first_blob.signed_id,
               signed_at: Time.current.iso8601,
               provider_envelope_id: "env-doc-conflict-001",
               email_challenge_id: challenges[:email].id,
@@ -691,14 +851,16 @@ module Api
           as: :json
         assert_response :created
 
+        second_content = "signed contract conflict 002"
+        second_blob = create_active_storage_blob(filename: "assignment-contract-conflict-002.pdf", content: second_content)
         post attach_document_api_v1_receivable_path(@receivable.id),
           headers: authorization_headers(@document_token, idempotency_key: "idem-document-conflict-001"),
           params: {
             document: {
               actor_party_id: @receivable.creditor_party_id,
               document_type: "assignment_contract",
-              sha256: "sha-doc-conflict-002",
-              storage_key: "docs/assignment-contract-conflict-002.pdf",
+              sha256: Digest::SHA256.hexdigest(second_content),
+              blob_signed_id: second_blob.signed_id,
               signed_at: Time.current.iso8601,
               provider_envelope_id: "env-doc-conflict-001",
               email_challenge_id: challenges[:email].id,
@@ -724,10 +886,14 @@ module Api
             document_type: "ASSIGNMENT_CONTRACT",
             signature_method: "OWN_PLATFORM_CONFIRMATION",
             status: "SIGNED",
-            sha256: "sha-controller-missing-hash",
+            sha256: Digest::SHA256.hexdigest("controller-missing-hash"),
             storage_key: "docs/controller-missing-hash.pdf",
             signed_at: signed_at,
-            metadata: {}
+            metadata: {
+              "provider_envelope_id" => "env-controller-missing-hash",
+              "email_challenge_id" => SecureRandom.uuid,
+              "whatsapp_challenge_id" => SecureRandom.uuid
+            }
           )
           insert_legacy_outbox_without_payload_hash!(
             tenant_id: @tenant.id,
@@ -742,14 +908,16 @@ module Api
           )
         end
 
+        blob_content = "signed contract missing hash"
+        blob = create_active_storage_blob(filename: "assignment-contract-missing-hash.pdf", content: blob_content)
         post attach_document_api_v1_receivable_path(@receivable.id),
           headers: authorization_headers(@document_token, idempotency_key: idempotency_key),
           params: {
             document: {
               actor_party_id: @receivable.creditor_party_id,
               document_type: "assignment_contract",
-              sha256: "sha-controller-input-missing-hash",
-              storage_key: "docs/controller-input-missing-hash.pdf",
+              sha256: Digest::SHA256.hexdigest(blob_content),
+              blob_signed_id: blob.signed_id,
               signed_at: signed_at.iso8601,
               provider_envelope_id: "env-controller-missing-hash",
               email_challenge_id: SecureRandom.uuid,
@@ -767,14 +935,16 @@ module Api
       end
 
       test "returns unprocessable entity for invalid attach document payload and logs failure" do
+        blob_content = "signed contract invalid payload"
+        blob = create_active_storage_blob(filename: "assignment-contract-invalid-001.pdf", content: blob_content)
         post attach_document_api_v1_receivable_path(@receivable.id),
           headers: authorization_headers(@document_token, idempotency_key: "idem-document-invalid-001"),
           params: {
             document: {
               actor_party_id: @receivable.creditor_party_id,
               document_type: "assignment_contract",
-              sha256: "sha-doc-invalid-001",
-              storage_key: "docs/assignment-contract-invalid-001.pdf",
+              sha256: Digest::SHA256.hexdigest(blob_content),
+              blob_signed_id: blob.signed_id,
               provider_envelope_id: "env-doc-invalid-001",
               email_challenge_id: "challenge-email-invalid-001",
               whatsapp_challenge_id: "challenge-whatsapp-invalid-001"
@@ -794,7 +964,7 @@ module Api
         end
       end
 
-      test "settles shared cnpj receivable payment and returns cnpj, fdic and physician split" do
+      test "settles shared cnpj receivable payment and returns cnpj, fidc and physician split" do
         bundle = nil
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
           bundle = create_shared_cnpj_physician_bundle_for_tenant!(@tenant, suffix: "settlement-cnpj")
@@ -828,7 +998,7 @@ module Api
         body = response.parsed_body
         assert_equal false, body.dig("data", "replayed")
         assert_equal "30.0", body.dig("data", "cnpj_amount")
-        assert_equal "66.0", body.dig("data", "fdic_amount")
+        assert_equal "66.0", body.dig("data", "fidc_amount")
         assert_equal "4.0", body.dig("data", "physician_amount")
         assert_equal 1, body.dig("data", "settlement_entries").size
       end
@@ -947,14 +1117,16 @@ module Api
       end
 
       test "enforces tenant isolation for attach document endpoint" do
+        blob_content = "signed contract tenant isolation"
+        blob = create_active_storage_blob(filename: "assignment-contract-tenant-001.pdf", content: blob_content)
         post attach_document_api_v1_receivable_path(@secondary_receivable.id),
           headers: authorization_headers(@document_token, idempotency_key: "idem-document-tenant-001"),
           params: {
             document: {
               actor_party_id: @receivable.creditor_party_id,
               document_type: "assignment_contract",
-              sha256: "sha-doc-tenant-001",
-              storage_key: "docs/assignment-contract-tenant-001.pdf",
+              sha256: Digest::SHA256.hexdigest(blob_content),
+              blob_signed_id: blob.signed_id,
               signed_at: Time.current.iso8601,
               provider_envelope_id: "env-doc-tenant-001",
               email_challenge_id: "challenge-email-tenant-001",
@@ -985,10 +1157,10 @@ module Api
 
       private
 
-      def authorization_headers(raw_token, idempotency_key: nil)
+      def authorization_headers(raw_token, idempotency_key: nil, extra: {})
         headers = { "Authorization" => "Bearer #{raw_token}" }
         headers["Idempotency-Key"] = idempotency_key if idempotency_key
-        headers
+        headers.merge(extra)
       end
 
       def create_active_storage_blob(filename:, content:)

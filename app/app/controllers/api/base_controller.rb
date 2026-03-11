@@ -5,7 +5,7 @@ module Api
     include RequestContext
 
     API_TOKEN_ROLE = "api_token".freeze
-    PRIVILEGED_ROLES = %w[hospital_admin ops_admin].freeze
+    TENANT_WIDE_ROLES = %w[ops_admin].freeze
 
     class AuthorizationError < StandardError
       attr_reader :code
@@ -20,6 +20,7 @@ module Api
     class_attribute :api_scope_requirements, instance_writer: false, default: {}
 
     before_action :require_declared_api_scopes!
+    before_action :enforce_partner_application_origin_allowlist!
 
     rescue_from ActiveRecord::RecordNotFound, with: :render_not_found
     rescue_from AuthorizationError, with: :render_forbidden
@@ -88,6 +89,16 @@ module Api
       scopes.each { |scope| ensure_api_scope!(scope) }
     end
 
+    def enforce_partner_application_origin_allowlist!
+      return if Current.partner_application.blank?
+
+      request_origin = request.headers["Origin"].to_s.strip
+      return if request_origin.blank?
+      return if Current.partner_application.browser_origin_allowed?(request_origin)
+
+      raise AuthorizationError.new(code: "origin_not_allowed", message: "Access denied.")
+    end
+
     def ensure_api_scope!(scope)
       token_scopes = Array(Current.api_access_token&.scopes)
       return if token_scopes.include?(scope)
@@ -96,7 +107,7 @@ module Api
     end
 
     def privileged_actor?
-      PRIVILEGED_ROLES.include?(Current.role.to_s)
+      TENANT_WIDE_ROLES.include?(Current.role.to_s)
     end
 
     def current_actor_party_id
@@ -127,13 +138,51 @@ module Api
       metadata["actor_party_id"].presence || metadata[:actor_party_id].presence
     end
 
-    def authorize_party_access!(party_id)
-      return if privileged_actor?
+    def hospital_scope_actor?
+      actor_party_id = current_actor_party_id
+      return false if actor_party_id.blank? || Current.tenant_id.blank?
+
+      Party.where(tenant_id: Current.tenant_id, id: actor_party_id, kind: "HOSPITAL").exists? ||
+        HospitalOwnership.where(
+          tenant_id: Current.tenant_id,
+          organization_party_id: actor_party_id,
+          active: true
+        ).exists?
+    end
+
+    def managed_hospital_party_ids
+      return [] unless hospital_scope_actor?
 
       actor_party_id = current_actor_party_id
-      if actor_party_id.blank? || party_id.to_s != actor_party_id.to_s
-        raise AuthorizationError.new(code: "forbidden", message: "Access denied.")
-      end
+      own_hospital_party_ids = Party.where(
+        tenant_id: Current.tenant_id,
+        id: actor_party_id,
+        kind: "HOSPITAL"
+      ).pluck(:id)
+      owned_hospital_party_ids = HospitalOwnership.where(
+        tenant_id: Current.tenant_id,
+        organization_party_id: actor_party_id,
+        active: true
+      ).pluck(:hospital_party_id)
+
+      (own_hospital_party_ids + owned_hospital_party_ids).map(&:to_s).uniq
+    end
+
+    def party_access_permitted?(party_id)
+      return false if party_id.blank?
+      return true if privileged_actor?
+
+      normalized_party_id = party_id.to_s
+      return true if current_actor_party_id.to_s == normalized_party_id
+      return true if managed_hospital_party_ids.include?(normalized_party_id)
+
+      false
+    end
+
+    def authorize_party_access!(party_id)
+      return if party_access_permitted?(party_id)
+
+      raise AuthorizationError.new(code: "forbidden", message: "Access denied.")
     end
 
     def enforce_actor_party_binding!(party_id)

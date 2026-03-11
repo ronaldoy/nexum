@@ -1,8 +1,14 @@
 module Security
   class DatabaseRoleGuard
-    VIOLATION_MESSAGE = "Database role security violation: application role must not be SUPERUSER or BYPASSRLS.".freeze
+    VIOLATION_MESSAGE = "Database role security violation: application role must not be SUPERUSER, BYPASSRLS, or own public tables.".freeze
 
     class << self
+      def audit!(connection: ActiveRecord::Base.connection)
+        return true if secure?(connection:)
+
+        raise VIOLATION_MESSAGE
+      end
+
       def ensure_secure!(connection: ActiveRecord::Base.connection)
         return true unless enforce_on_boot?
         return true if allow_insecure_role?
@@ -23,7 +29,9 @@ module Security
 
       def secure?(connection: ActiveRecord::Base.connection)
         flags = role_flags(connection:)
-        !flags.fetch(:role_is_superuser) && !flags.fetch(:role_bypasses_rls)
+        !flags.fetch(:role_is_superuser) &&
+          !flags.fetch(:role_bypasses_rls) &&
+          !flags.fetch(:role_owns_public_tables)
       end
 
       def role_flags(connection: ActiveRecord::Base.connection)
@@ -36,7 +44,8 @@ module Security
         {
           role_name: row&.fetch("role_name", current_role_name(connection:)),
           role_is_superuser: boolean_cast(row&.fetch("rolsuper", false)),
-          role_bypasses_rls: boolean_cast(row&.fetch("rolbypassrls", false))
+          role_bypasses_rls: boolean_cast(row&.fetch("rolbypassrls", false)),
+          role_owns_public_tables: public_table_ownership_count(connection:).positive?
         }
       end
 
@@ -58,6 +67,20 @@ module Security
         connection.select_value("SELECT current_user")
       rescue PG::Error, ActiveRecord::ActiveRecordError
         nil
+      end
+
+      def public_table_ownership_count(connection:)
+        connection.select_value(<<~SQL).to_i
+          SELECT COUNT(*)
+          FROM pg_class c
+          INNER JOIN pg_namespace n ON n.oid = c.relnamespace
+          INNER JOIN pg_roles r ON r.oid = c.relowner
+          WHERE n.nspname = 'public'
+            AND c.relkind IN ('r', 'p')
+            AND r.rolname = current_user
+        SQL
+      rescue PG::Error, ActiveRecord::ActiveRecordError
+        0
       end
 
       def boolean_env(key, default:)

@@ -2,7 +2,17 @@
 
 # If running the rails server then create or migrate existing database
 if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
-  ./bin/rails db:prepare
+  migration_env=()
+
+  if [ -n "${POSTGRES_MIGRATE_USER:-}" ]; then
+    migration_env+=("POSTGRES_APP_USER=${POSTGRES_MIGRATE_USER}")
+  fi
+
+  if [ -n "${POSTGRES_MIGRATE_PASSWORD:-}" ]; then
+    migration_env+=("POSTGRES_APP_PASSWORD=${POSTGRES_MIGRATE_PASSWORD}")
+  fi
+
+  env "${migration_env[@]}" ./bin/rails db:prepare
 fi
 
 exec "${@}"

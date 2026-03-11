@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-POSTGRES_USER="${POSTGRES_USER:-nexum}"
+POSTGRES_SUPERUSER="${POSTGRES_SUPERUSER:-${POSTGRES_USER:-nexum}}"
+POSTGRES_SUPERUSER_PASSWORD="${POSTGRES_SUPERUSER_PASSWORD:-${POSTGRES_PASSWORD:-}}"
+DB_HOST="${DB_HOST:-}"
+DB_PORT="${DB_PORT:-5432}"
+
+POSTGRES_MIGRATE_USER="${POSTGRES_MIGRATE_USER:-nexum_migrate}"
+POSTGRES_MIGRATE_PASSWORD="${POSTGRES_MIGRATE_PASSWORD:-nexum_migrate_password}"
+POSTGRES_RUNTIME_USER="${POSTGRES_RUNTIME_USER:-${POSTGRES_APP_USER:-nexum_runtime}}"
+POSTGRES_RUNTIME_PASSWORD="${POSTGRES_RUNTIME_PASSWORD:-${POSTGRES_APP_PASSWORD:-nexum_runtime_password}}"
+POSTGRES_READONLY_USER="${POSTGRES_READONLY_USER:-nexum_readonly}"
+POSTGRES_READONLY_PASSWORD="${POSTGRES_READONLY_PASSWORD:-nexum_readonly_password}"
 
 databases=(
   "${POSTGRES_DB:-nexum_development}"
@@ -9,21 +19,162 @@ databases=(
   "${POSTGRES_TEST_DB:-nexum_test}"
 )
 
-for db_name in "${databases[@]}"; do
-  exists="$(
-    docker compose exec -T postgres psql \
-      -U "$POSTGRES_USER" \
-      -d postgres \
-      -tAc "SELECT 1 FROM pg_database WHERE datname = '${db_name}'"
-  )"
+sql_literal() {
+  local value="$1"
+  value="${value//\'/\'\'}"
+  printf "'%s'" "$value"
+}
 
-  if [[ "$exists" != "1" ]]; then
-    echo "Creating database: ${db_name}"
-    docker compose exec -T postgres psql \
-      -U "$POSTGRES_USER" \
-      -d postgres \
-      -c "CREATE DATABASE \"${db_name}\";"
+sql_identifier() {
+  local value="$1"
+  value="${value//\"/\"\"}"
+  printf "\"%s\"" "$value"
+}
+
+using_client_psql() {
+  [[ -n "$DB_HOST" ]] && command -v psql >/dev/null 2>&1
+}
+
+query_database() {
+  local database="$1"
+  local sql="$2"
+
+  if using_client_psql; then
+    PGPASSWORD="$POSTGRES_SUPERUSER_PASSWORD" psql \
+      -v ON_ERROR_STOP=1 \
+      -h "$DB_HOST" \
+      -p "$DB_PORT" \
+      -U "$POSTGRES_SUPERUSER" \
+      -d "$database" \
+      -At \
+      -c "$sql"
   else
-    echo "Database already exists: ${db_name}"
+    docker compose exec -T postgres env PGPASSWORD="$POSTGRES_SUPERUSER_PASSWORD" psql \
+      -v ON_ERROR_STOP=1 \
+      -U "$POSTGRES_SUPERUSER" \
+      -d "$database" \
+      -At \
+      -c "$sql"
   fi
+}
+
+execute_database() {
+  local database="$1"
+  local sql="$2"
+
+  if using_client_psql; then
+    PGPASSWORD="$POSTGRES_SUPERUSER_PASSWORD" psql \
+      -v ON_ERROR_STOP=1 \
+      -h "$DB_HOST" \
+      -p "$DB_PORT" \
+      -U "$POSTGRES_SUPERUSER" \
+      -d "$database" \
+      -c "$sql"
+  else
+    docker compose exec -T postgres env PGPASSWORD="$POSTGRES_SUPERUSER_PASSWORD" psql \
+      -v ON_ERROR_STOP=1 \
+      -U "$POSTGRES_SUPERUSER" \
+      -d "$database" \
+      -c "$sql"
+  fi
+}
+
+create_or_update_role() {
+  local role_name="$1"
+  local role_password="$2"
+  local role_attributes="$3"
+
+  execute_database postgres "
+DO \$\$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $(sql_literal "$role_name")) THEN
+    EXECUTE format(
+      'ALTER ROLE %I WITH LOGIN PASSWORD %L ${role_attributes}',
+      $(sql_literal "$role_name"),
+      $(sql_literal "$role_password")
+    );
+  ELSE
+    EXECUTE format(
+      'CREATE ROLE %I WITH LOGIN PASSWORD %L ${role_attributes}',
+      $(sql_literal "$role_name"),
+      $(sql_literal "$role_password")
+    );
+  END IF;
+END
+\$\$;
+"
+}
+
+database_exists() {
+  local db_name="$1"
+  [[ "$(query_database postgres "SELECT 1 FROM pg_database WHERE datname = $(sql_literal "$db_name")")" == "1" ]]
+}
+
+configure_database() {
+  local db_name="$1"
+
+  execute_database postgres "
+ALTER DATABASE $(sql_identifier "$db_name") OWNER TO $(sql_identifier "$POSTGRES_MIGRATE_USER");
+REVOKE ALL ON DATABASE $(sql_identifier "$db_name") FROM PUBLIC;
+GRANT CONNECT, TEMPORARY ON DATABASE $(sql_identifier "$db_name") TO $(sql_identifier "$POSTGRES_MIGRATE_USER");
+GRANT CONNECT, TEMPORARY ON DATABASE $(sql_identifier "$db_name") TO $(sql_identifier "$POSTGRES_RUNTIME_USER");
+GRANT CONNECT ON DATABASE $(sql_identifier "$db_name") TO $(sql_identifier "$POSTGRES_READONLY_USER");
+"
+
+  execute_database "$db_name" "
+CREATE SCHEMA IF NOT EXISTS app AUTHORIZATION $(sql_identifier "$POSTGRES_MIGRATE_USER");
+ALTER SCHEMA public OWNER TO $(sql_identifier "$POSTGRES_MIGRATE_USER");
+ALTER SCHEMA app OWNER TO $(sql_identifier "$POSTGRES_MIGRATE_USER");
+
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON SCHEMA app FROM PUBLIC;
+
+GRANT USAGE, CREATE ON SCHEMA public TO $(sql_identifier "$POSTGRES_MIGRATE_USER");
+GRANT USAGE, CREATE ON SCHEMA app TO $(sql_identifier "$POSTGRES_MIGRATE_USER");
+GRANT USAGE ON SCHEMA public TO $(sql_identifier "$POSTGRES_RUNTIME_USER"), $(sql_identifier "$POSTGRES_READONLY_USER");
+GRANT USAGE ON SCHEMA app TO $(sql_identifier "$POSTGRES_RUNTIME_USER"), $(sql_identifier "$POSTGRES_READONLY_USER");
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO $(sql_identifier "$POSTGRES_RUNTIME_USER");
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO $(sql_identifier "$POSTGRES_RUNTIME_USER");
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO $(sql_identifier "$POSTGRES_RUNTIME_USER");
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA app TO $(sql_identifier "$POSTGRES_RUNTIME_USER");
+
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO $(sql_identifier "$POSTGRES_READONLY_USER");
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO $(sql_identifier "$POSTGRES_READONLY_USER");
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO $(sql_identifier "$POSTGRES_READONLY_USER");
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA app TO $(sql_identifier "$POSTGRES_READONLY_USER");
+
+ALTER DEFAULT PRIVILEGES FOR ROLE $(sql_identifier "$POSTGRES_MIGRATE_USER") IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO $(sql_identifier "$POSTGRES_RUNTIME_USER");
+ALTER DEFAULT PRIVILEGES FOR ROLE $(sql_identifier "$POSTGRES_MIGRATE_USER") IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO $(sql_identifier "$POSTGRES_RUNTIME_USER");
+ALTER DEFAULT PRIVILEGES FOR ROLE $(sql_identifier "$POSTGRES_MIGRATE_USER") IN SCHEMA public
+  GRANT EXECUTE ON FUNCTIONS TO $(sql_identifier "$POSTGRES_RUNTIME_USER");
+ALTER DEFAULT PRIVILEGES FOR ROLE $(sql_identifier "$POSTGRES_MIGRATE_USER") IN SCHEMA app
+  GRANT EXECUTE ON FUNCTIONS TO $(sql_identifier "$POSTGRES_RUNTIME_USER");
+
+ALTER DEFAULT PRIVILEGES FOR ROLE $(sql_identifier "$POSTGRES_MIGRATE_USER") IN SCHEMA public
+  GRANT SELECT ON TABLES TO $(sql_identifier "$POSTGRES_READONLY_USER");
+ALTER DEFAULT PRIVILEGES FOR ROLE $(sql_identifier "$POSTGRES_MIGRATE_USER") IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO $(sql_identifier "$POSTGRES_READONLY_USER");
+ALTER DEFAULT PRIVILEGES FOR ROLE $(sql_identifier "$POSTGRES_MIGRATE_USER") IN SCHEMA public
+  GRANT EXECUTE ON FUNCTIONS TO $(sql_identifier "$POSTGRES_READONLY_USER");
+ALTER DEFAULT PRIVILEGES FOR ROLE $(sql_identifier "$POSTGRES_MIGRATE_USER") IN SCHEMA app
+  GRANT EXECUTE ON FUNCTIONS TO $(sql_identifier "$POSTGRES_READONLY_USER");
+"
+}
+
+create_or_update_role "$POSTGRES_MIGRATE_USER" "$POSTGRES_MIGRATE_PASSWORD" "NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOBYPASSRLS"
+create_or_update_role "$POSTGRES_RUNTIME_USER" "$POSTGRES_RUNTIME_PASSWORD" "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS"
+create_or_update_role "$POSTGRES_READONLY_USER" "$POSTGRES_READONLY_PASSWORD" "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS"
+
+for db_name in "${databases[@]}"; do
+  if database_exists "$db_name"; then
+    echo "Database already exists: ${db_name}"
+  else
+    echo "Creating database: ${db_name}"
+    execute_database postgres "CREATE DATABASE $(sql_identifier "$db_name") OWNER $(sql_identifier "$POSTGRES_MIGRATE_USER");"
+  fi
+
+  configure_database "$db_name"
 done

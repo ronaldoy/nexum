@@ -1,0 +1,5 @@
+#!/usr/bin/env ruby
+require_relative "../config/environment"
+
+Security::DatabaseRoleGuard.audit!
+puts "database role security audit passed"

@@ -103,11 +103,20 @@ module Api
 
         def issue_access_token(application:, client_secret:)
           application.authenticate_secret!(client_secret)
+          enforce_browser_origin_allowlist!(application)
           Current.partner_application = application
           application.issue_access_token!(
             requested_scopes: oauth_params[:scope],
             audit_context: token_audit_context
           )
+        end
+
+        def enforce_browser_origin_allowlist!(application)
+          request_origin = request.headers["Origin"].to_s.strip
+          return if request_origin.blank?
+          return if application.browser_origin_allowed?(request_origin)
+
+          raise PartnerApplication::AuthenticationError, "client origin is not allowed."
         end
 
         def token_audit_context

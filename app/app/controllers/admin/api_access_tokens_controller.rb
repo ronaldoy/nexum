@@ -1,5 +1,6 @@
 module Admin
   class ApiAccessTokensController < ApplicationController
+    include AdminTenantScopedContext
     include AdminPasskeyMode
 
     MAX_TOKENS = 200
@@ -17,6 +18,7 @@ module Admin
     before_action :require_passkey_step_up!
     before_action :load_tenants!
     before_action :resolve_selected_tenant!
+    before_action :set_sensitive_response_headers
 
     def index
       @tokens = list_tokens_for_selected_tenant
@@ -111,6 +113,10 @@ module Admin
     def validated_scopes(raw_scopes)
       scopes = normalize_scopes(raw_scopes)
       raise ValidationError, "Informe pelo menos um escopo." if scopes.empty?
+      unknown = scopes - ApiAccessToken::ALLOWED_SCOPES
+      if unknown.any?
+        raise ValidationError, "Escopos não suportados: #{unknown.join(', ')}."
+      end
 
       scopes
     end
@@ -169,24 +175,6 @@ module Admin
       raise ValidationError, "Data de expiração deve estar no futuro." if parsed <= Time.current
 
       parsed
-    end
-
-    def with_tenant_database_context(tenant_id:)
-      ActiveRecord::Base.connection_pool.with_connection do
-        ActiveRecord::Base.transaction(requires_new: true) do
-          set_database_context!("app.tenant_id", tenant_id)
-          set_database_context!("app.actor_id", Current.actor_id)
-          set_database_context!("app.role", Current.role)
-          yield
-        end
-      end
-    end
-
-    def set_database_context!(key, value)
-      ActiveRecord::Base.connection.raw_connection.exec_params(
-        "SELECT set_config($1, $2, true)",
-        [ key.to_s, value.to_s ]
-      )
     end
 
     def render_create_success(issued)
@@ -257,23 +245,15 @@ module Admin
     end
 
     def base_audit_context
-      {
-        actor_party_id: Current.user&.party_id,
-        ip_address: request.remote_ip,
-        user_agent: request.user_agent,
-        request_id: request.request_id,
-        endpoint_path: request.fullpath,
-        http_method: request.method,
-        channel: "ADMIN"
-      }
+      tenant_scoped_audit_context(tenant_id: @selected_tenant.id)
     end
 
     def audit_context_for_issue(tenant:, user:)
-      base_audit_context.merge(metadata: issue_audit_metadata(tenant:, user:))
+      tenant_scoped_audit_context(tenant_id: @selected_tenant.id, metadata: issue_audit_metadata(tenant:, user:))
     end
 
     def audit_context_for_revoke(token:)
-      base_audit_context.merge(metadata: revoke_audit_metadata(token))
+      tenant_scoped_audit_context(tenant_id: @selected_tenant.id, metadata: revoke_audit_metadata(token))
     end
 
     def issue_audit_metadata(tenant:, user:)
@@ -310,6 +290,12 @@ module Admin
           }, status: :unprocessable_entity
         end
       end
+    end
+
+    def set_sensitive_response_headers
+      response.headers["Cache-Control"] = "no-store"
+      response.headers["Expires"] = "0"
+      response.headers["Pragma"] = "no-cache"
     end
   end
 end

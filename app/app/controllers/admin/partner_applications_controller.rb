@@ -1,5 +1,6 @@
 module Admin
   class PartnerApplicationsController < ApplicationController
+    include AdminTenantScopedContext
     include AdminPasskeyMode
 
     DEFAULT_TOKEN_TTL_MINUTES = 15
@@ -22,6 +23,7 @@ module Admin
     before_action :load_tenants!
     before_action :resolve_selected_tenant!
     before_action :load_available_actor_parties!
+    before_action :set_sensitive_response_headers
 
     def index
       @supported_scopes = SUPPORTED_SCOPES
@@ -175,94 +177,11 @@ module Admin
     end
 
     def lifecycle_audit_context(metadata: {})
-      base_lifecycle_audit_context.merge(metadata: metadata)
+      tenant_scoped_audit_context(tenant_id: @selected_tenant.id, metadata: metadata)
     end
 
     def base_lifecycle_audit_context
-      {
-        actor_party_id: Current.user&.party_id,
-        ip_address: request.remote_ip,
-        user_agent: request.user_agent,
-        request_id: request.request_id,
-        endpoint_path: request.fullpath,
-        http_method: request.method,
-        channel: "ADMIN"
-      }
-    end
-
-    def issue_audit_metadata(tenant)
-      {
-        "issued_for_tenant_id" => tenant.id,
-        "issued_for_tenant_slug" => tenant.slug
-      }
-    end
-
-    def partner_application_params
-      params.require(:partner_application).permit(*PARTNER_APPLICATION_PERMITTED_FIELDS)
-    end
-
-    def normalize_scopes(raw)
-      scopes = raw
-        .to_s
-        .split(/[\s,;]+/)
-        .map(&:strip)
-        .reject(&:blank?)
-        .uniq
-        .sort
-
-      unknown_scopes = scopes - SUPPORTED_SCOPES
-      if unknown_scopes.any?
-        raise ValidationError, "Escopos inválidos: #{unknown_scopes.join(', ')}."
-      end
-
-      scopes
-    end
-
-    def normalize_token_ttl(raw)
-      value = Integer(raw, exception: false)
-      return DEFAULT_TOKEN_TTL_MINUTES if value.blank?
-      return value if value.between?(5, 60)
-
-      raise ValidationError, "TTL do token deve estar entre 5 e 60 minutos."
-    end
-
-    def normalize_allowed_origins(raw)
-      values = raw
-        .to_s
-        .split(/[\n,;\s]+/)
-        .map(&:strip)
-        .reject(&:blank?)
-        .uniq
-        .sort
-
-      values.each do |origin|
-        uri = URI.parse(origin)
-        next if uri.is_a?(URI::HTTPS) && uri.host.present?
-
-        raise ValidationError, "Origem permitida inválida: #{origin}"
-      rescue URI::InvalidURIError
-        raise ValidationError, "Origem permitida inválida: #{origin}"
-      end
-
-      values
-    end
-
-    def with_tenant_database_context(tenant_id:)
-      ActiveRecord::Base.connection_pool.with_connection do
-        ActiveRecord::Base.transaction(requires_new: true) do
-          set_database_context!("app.tenant_id", tenant_id)
-          set_database_context!("app.actor_id", Current.actor_id)
-          set_database_context!("app.role", Current.role)
-          yield
-        end
-      end
-    end
-
-    def set_database_context!(key, value)
-      ActiveRecord::Base.connection.raw_connection.exec_params(
-        "SELECT set_config($1, $2, true)",
-        [ key.to_s, value.to_s ]
-      )
+      tenant_scoped_audit_context(tenant_id: @selected_tenant.id)
     end
 
     def render_create_success(issued)
@@ -321,6 +240,59 @@ module Admin
       admin_partner_applications_path(tenant_id: @selected_tenant.id)
     end
 
+    def issue_audit_metadata(tenant)
+      {
+        "issued_for_tenant_id" => tenant.id,
+        "issued_for_tenant_slug" => tenant.slug
+      }
+    end
+
+    def partner_application_params
+      params.require(:partner_application).permit(*PARTNER_APPLICATION_PERMITTED_FIELDS)
+    end
+
+    def normalize_scopes(raw)
+      scopes = raw
+        .to_s
+        .split(/[\s,;]+/)
+        .map(&:strip)
+        .reject(&:blank?)
+        .uniq
+        .sort
+
+      unknown_scopes = scopes - SUPPORTED_SCOPES
+      if unknown_scopes.any?
+        raise ValidationError, "Escopos inválidos: #{unknown_scopes.join(', ')}."
+      end
+
+      scopes
+    end
+
+    def normalize_token_ttl(raw)
+      value = Integer(raw, exception: false)
+      return DEFAULT_TOKEN_TTL_MINUTES if value.blank?
+      return value if value.between?(5, 60)
+
+      raise ValidationError, "TTL do token deve estar entre 5 e 60 minutos."
+    end
+
+    def normalize_allowed_origins(raw)
+      raw_values = raw
+        .to_s
+        .split(/[\n,;\s]+/)
+        .map(&:strip)
+        .reject(&:blank?)
+        .uniq
+        .sort
+
+      raw_values.map do |origin|
+        canonical_origin = PartnerApplication.canonical_origin(origin)
+        next canonical_origin if canonical_origin.present?
+
+        raise ValidationError, "Origem permitida inválida: #{origin}"
+      end
+    end
+
     def serialize_partner_application(application)
       {
         id: application.id,
@@ -377,6 +349,12 @@ module Admin
           }, status: :not_found
         end
       end
+    end
+
+    def set_sensitive_response_headers
+      response.headers["Cache-Control"] = "no-store"
+      response.headers["Expires"] = "0"
+      response.headers["Pragma"] = "no-cache"
     end
   end
 end

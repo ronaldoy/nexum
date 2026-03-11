@@ -16,7 +16,6 @@ module Api
           requester_party_id: record.requester_party_id,
           status: record.status,
           channel: record.channel,
-          idempotency_key: record.idempotency_key,
           requested_amount: decimal_money_as_string(record.requested_amount),
           discount_rate: decimal_as_string(record.discount_rate),
           discount_amount: decimal_money_as_string(record.discount_amount),
@@ -46,7 +45,6 @@ module Api
 
       def challenge_payload(challenge)
         {
-          id: challenge.id,
           delivery_channel: challenge.delivery_channel,
           destination_masked: challenge.destination_masked,
           status: challenge.status,

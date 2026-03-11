@@ -61,6 +61,7 @@ module Admin
       assert_redirected_to admin_api_access_tokens_path(tenant_id: @secondary_tenant.id)
       follow_redirect!
       assert_response :success
+      assert_equal "no-store", response.headers["Cache-Control"]
       assert_includes response.body, "Token gerado (exibir uma única vez)"
 
       with_tenant_db_context(tenant_id: @secondary_tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
@@ -115,8 +116,28 @@ module Admin
       }
 
       assert_response :created
+      assert_equal "no-store", response.headers["Cache-Control"]
       assert response.parsed_body.dig("data", "raw_token").present?
       assert_equal "API JSON Token", response.parsed_body.dig("data", "name")
+    end
+
+    test "rejects unsupported token scopes" do
+      sign_in_as(@ops_user, admin_webauthn_verified: true)
+
+      post admin_api_access_tokens_path, params: {
+        api_access_token: {
+          tenant_id: @tenant.id,
+          name: "Unsupported Scope Token",
+          scopes_input: "ops:write receivables:read"
+        }
+      }
+
+      assert_response :unprocessable_entity
+      assert_includes response.body, "Escopos não suportados: ops:write."
+
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
+        refute ApiAccessToken.where(tenant_id: @tenant.id, name: "Unsupported Scope Token").exists?
+      end
     end
   end
 end

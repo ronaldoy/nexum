@@ -199,7 +199,6 @@ module AnticipationRisk
           tenant: @tenant,
           bundle: bundle,
           requested_amount: "80.00",
-          net_amount: "75.00",
           status: "REQUESTED",
           requested_at: Time.current
         )
@@ -286,7 +285,6 @@ module AnticipationRisk
             tenant: @tenant,
             bundle: bundle,
             requested_amount: "100.00",
-            net_amount: "96.00",
             status: "REQUESTED",
             requested_at: historical_time
           )
@@ -373,7 +371,12 @@ module AnticipationRisk
       }
     end
 
-    def create_existing_request!(tenant:, bundle:, requested_amount:, net_amount:, status:, requested_at:)
+    def create_existing_request!(tenant:, bundle:, requested_amount:, status:, requested_at:, discount_rate: "0.05000000")
+      requested_amount = BigDecimal(requested_amount.to_s)
+      discount_rate = BigDecimal(discount_rate.to_s)
+      discount_amount = FinancialRounding.money(requested_amount * discount_rate)
+      net_amount = FinancialRounding.money(requested_amount - discount_amount)
+
       AnticipationRequest.create!(
         tenant: tenant,
         receivable: bundle[:receivable],
@@ -381,8 +384,8 @@ module AnticipationRisk
         requester_party: bundle[:legal_entity],
         idempotency_key: SecureRandom.uuid,
         requested_amount: requested_amount,
-        discount_rate: "0.05000000",
-        discount_amount: "5.00",
+        discount_rate: discount_rate,
+        discount_amount: discount_amount,
         net_amount: net_amount,
         status: status,
         channel: "API",

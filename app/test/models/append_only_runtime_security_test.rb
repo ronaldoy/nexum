@@ -17,6 +17,7 @@ class AppendOnlyRuntimeSecurityTest < ActiveSupport::TestCase
     ledger_transactions
     outbox_dispatch_attempts
     outbox_events
+    provider_webhook_receipts
     receivable_events
     receivable_payment_settlements
   ].freeze
@@ -196,10 +197,10 @@ class AppendOnlyRuntimeSecurityTest < ActiveSupport::TestCase
       receivable_allocation: allocation,
       paid_amount: "100.00",
       cnpj_amount: "20.00",
-      fdic_amount: "30.00",
+      fidc_amount: "30.00",
       beneficiary_amount: "50.00",
-      fdic_balance_before: "30.00",
-      fdic_balance_after: "0.00",
+      fidc_balance_before: "30.00",
+      fidc_balance_after: "0.00",
       paid_at: Time.current,
       payment_reference: "append-only-runtime-payment-#{suffix}-#{SecureRandom.hex(4)}",
       idempotency_key: "append-only-runtime-settlement-#{suffix}-#{SecureRandom.hex(6)}",
@@ -223,7 +224,11 @@ class AppendOnlyRuntimeSecurityTest < ActiveSupport::TestCase
       sha256: Digest::SHA256.hexdigest("append-only-runtime-document-#{suffix}-#{SecureRandom.hex(4)}"),
       storage_key: "documents/#{SecureRandom.uuid}",
       signed_at: Time.current,
-      metadata: {}
+      metadata: {
+        "provider_envelope_id" => "env-append-only-runtime",
+        "email_challenge_id" => SecureRandom.uuid,
+        "whatsapp_challenge_id" => SecureRandom.uuid
+      }
     )
 
     {
@@ -370,6 +375,18 @@ class AppendOnlyRuntimeSecurityTest < ActiveSupport::TestCase
         error_message: "retry scheduled",
         metadata: {}
       ).id
+    when "provider_webhook_receipts"
+      ProviderWebhookReceipt.create!(
+        tenant: tenant,
+        provider: "QITECH",
+        provider_event_id: "append-only-runtime-provider-webhook-#{suffix}-#{SecureRandom.hex(6)}",
+        event_type: "PAYMENT_SETTLED",
+        payload_sha256: Digest::SHA256.hexdigest("append-only-runtime-provider-webhook-payload-#{suffix}"),
+        payload: { "source" => "append-only-runtime" },
+        request_headers: {},
+        status: "PROCESSED",
+        processed_at: Time.current
+      ).id
     when "receivable_events"
       sequence = next_sequence_for(scope: :receivable_events, owner_id: bundle[:receivable].id)
       payload = { "source" => "append-only-runtime", "sequence" => sequence }
@@ -394,10 +411,10 @@ class AppendOnlyRuntimeSecurityTest < ActiveSupport::TestCase
         receivable_allocation: bundle[:allocation],
         paid_amount: "90.00",
         cnpj_amount: "10.00",
-        fdic_amount: "20.00",
+        fidc_amount: "20.00",
         beneficiary_amount: "60.00",
-        fdic_balance_before: "20.00",
-        fdic_balance_after: "0.00",
+        fidc_balance_before: "20.00",
+        fidc_balance_after: "0.00",
         paid_at: Time.current,
         payment_reference: "append-only-runtime-extra-payment-#{suffix}-#{SecureRandom.hex(4)}",
         idempotency_key: "append-only-runtime-extra-settlement-#{suffix}-#{SecureRandom.hex(6)}",

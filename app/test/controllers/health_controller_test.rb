@@ -30,6 +30,7 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert body["checks"].is_a?(Hash)
     assert_equal "ok", body.dig("checks", "primary")
     assert_equal "ok", body.dig("checks", "database_role")
+    assert_equal "ok", body.dig("checks", "database_schema")
     assert_equal "ok", body.dig("checks", "idempotency_conflicts")
     assert body["timestamp"].present?
   end
@@ -68,6 +69,40 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "ready returns service unavailable when database schema audit fails" do
+    original_method = Security::DatabaseSchemaAudit.method(:readiness_status)
+    Security::DatabaseSchemaAudit.singleton_class.define_method(:readiness_status) { |**| "error" }
+
+    begin
+      get "/ready"
+
+      assert_response :service_unavailable
+      body = response.parsed_body
+      assert_equal "error", body["status"]
+      assert_equal "error", body.dig("checks", "database_schema")
+    ensure
+      Security::DatabaseSchemaAudit.singleton_class.define_method(:readiness_status, original_method)
+    end
+  end
+
+  test "ready rejects remote probe without token" do
+    with_stubbed_ready_probe_local_request(false) do
+      get "/ready"
+    end
+
+    assert_response :not_found
+  end
+
+  test "ready accepts remote probe with configured token" do
+    with_environment("READY_CHECK_TOKEN" => "probe-secret") do
+      with_stubbed_ready_probe_local_request(false) do
+        get "/ready", headers: { "X-Ready-Token" => "probe-secret" }
+      end
+    end
+
+    assert_response :success
+  end
+
   private
 
   def with_environment(overrides)
@@ -78,5 +113,13 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     previous.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
     Rails.cache.clear
     Security::IdempotencyConflictMonitor.reset_for_test!
+  end
+
+  def with_stubbed_ready_probe_local_request(value)
+    original_method = HealthController.instance_method(:ready_probe_local_request?)
+    HealthController.send(:define_method, :ready_probe_local_request?) { value }
+    yield
+  ensure
+    HealthController.send(:define_method, :ready_probe_local_request?, original_method)
   end
 end

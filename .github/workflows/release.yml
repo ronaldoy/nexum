@@ -10,8 +10,16 @@ permissions:
 
 env:
   BUNDLE_GEMFILE: app/Gemfile
-  POSTGRES_APP_USER: postgres
-  POSTGRES_APP_PASSWORD: postgres
+  POSTGRES_APP_USER: nexum_runtime
+  POSTGRES_APP_PASSWORD: nexum_runtime_ci_password
+  POSTGRES_RUNTIME_USER: nexum_runtime
+  POSTGRES_RUNTIME_PASSWORD: nexum_runtime_ci_password
+  POSTGRES_MIGRATE_USER: nexum_migrate
+  POSTGRES_MIGRATE_PASSWORD: nexum_migrate_ci_password
+  POSTGRES_READONLY_USER: nexum_readonly
+  POSTGRES_READONLY_PASSWORD: nexum_readonly_ci_password
+  POSTGRES_SUPERUSER: postgres
+  POSTGRES_SUPERUSER_PASSWORD: postgres
   POSTGRES_USER: postgres
   POSTGRES_PASSWORD: postgres
   DB_HOST: 127.0.0.1
@@ -54,6 +62,9 @@ jobs:
         with:
           bundler-cache: true
 
+      - name: Bootstrap PostgreSQL roles
+        run: ../bin/db-bootstrap
+
       - name: Lint Ruby code
         run: bin/rubocop -f github
 
@@ -67,7 +78,16 @@ jobs:
         run: bin/importmap audit
 
       - name: Prepare test database
+        env:
+          POSTGRES_APP_USER: ${{ env.POSTGRES_MIGRATE_USER }}
+          POSTGRES_APP_PASSWORD: ${{ env.POSTGRES_MIGRATE_PASSWORD }}
         run: bin/rails db:prepare
+
+      - name: Audit database runtime role
+        run: bin/security-role-audit
+
+      - name: Audit database security schema
+        run: bin/security-schema-audit
 
       - name: Run test suite
         run: bin/rails test

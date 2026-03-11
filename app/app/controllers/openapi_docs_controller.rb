@@ -3,6 +3,7 @@ class OpenapiDocsController < ActionController::API
   AUTHORIZATION_HEADER = "Authorization".freeze
 
   before_action :authenticate_docs_token
+  before_action :set_protected_docs_headers
 
   def v1
     return send_file SPEC_PATH, disposition: "inline", type: "application/yaml; charset=utf-8" if SPEC_PATH.file?
@@ -31,7 +32,16 @@ class OpenapiDocsController < ActionController::API
 
   def valid_provided_token?(expected_token)
     provided = provided_token
-    provided.present? && ActiveSupport::SecurityUtils.secure_compare(provided, expected_token)
+    return false if provided.blank?
+    return false unless provided.bytesize == expected_token.to_s.bytesize
+
+    ActiveSupport::SecurityUtils.secure_compare(provided, expected_token)
+  end
+
+  def set_protected_docs_headers
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Expires"] = "0"
+    response.headers["Pragma"] = "no-cache"
   end
 
   def render_missing_token
@@ -51,6 +61,7 @@ class OpenapiDocsController < ActionController::API
         request_id: request.request_id
       }
     }, status: :not_found
+    apply_protected_docs_headers
   end
 
   def render_unauthorized
@@ -61,5 +72,12 @@ class OpenapiDocsController < ActionController::API
         request_id: request.request_id
       }
     }, status: :unauthorized
+    apply_protected_docs_headers
+  end
+
+  def apply_protected_docs_headers
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Expires"] = "0"
+    response.headers["Pragma"] = "no-cache"
   end
 end

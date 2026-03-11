@@ -7,6 +7,17 @@ def system!(*args)
   system(*args, exception: true)
 end
 
+def migration_env
+  env = {}
+  migrate_user = ENV["POSTGRES_MIGRATE_USER"].to_s
+  return env if migrate_user.empty?
+
+  env["POSTGRES_APP_USER"] = migrate_user
+  migrate_password = ENV["POSTGRES_MIGRATE_PASSWORD"].to_s
+  env["POSTGRES_APP_PASSWORD"] = migrate_password unless migrate_password.empty?
+  env
+end
+
 FileUtils.chdir APP_ROOT do
   # This script is a way to set up or update your development environment automatically.
   # This script is idempotent, so that you can run it at any time and get an expectable outcome.
@@ -23,8 +34,8 @@ FileUtils.chdir APP_ROOT do
   rails_cmd = "bundle exec rails"
 
   puts "\n== Preparing database =="
-  system! "#{rails_cmd} db:prepare"
-  system! "#{rails_cmd} db:reset" if ARGV.include?("--reset")
+  system!(migration_env, "#{rails_cmd} db:prepare")
+  system!(migration_env, "#{rails_cmd} db:reset") if ARGV.include?("--reset")
 
   puts "\n== Removing old logs and tempfiles =="
   system! "#{rails_cmd} log:clear tmp:clear"

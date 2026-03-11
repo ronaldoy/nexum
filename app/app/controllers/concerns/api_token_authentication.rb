@@ -19,7 +19,7 @@ module ApiTokenAuthentication
     return render_invalid_token_with_cleared_context unless valid_authenticated_token?(token, tenant_id)
 
     hydrate_request_context!(token)
-    return unless invalid_token_user_binding?(token)
+    return unless invalid_token_user_binding?(token) || invalid_partner_application_binding?(token)
 
     render_invalid_token_with_cleared_context
   rescue RequestContext::ContextError
@@ -49,10 +49,33 @@ module ApiTokenAuthentication
     Current.tenant_id = token.tenant_id
     Current.api_access_token = token
     Current.user = token.user
+    Current.partner_application = partner_application_for_token(token)
   end
 
   def invalid_token_user_binding?(token)
     Current.user.present? && Current.user.tenant_id.to_s != token.tenant_id.to_s
+  end
+
+  def invalid_partner_application_binding?(token)
+    partner_application_token?(token) && Current.partner_application.blank?
+  end
+
+  def partner_application_for_token(token)
+    partner_application_id = token_partner_application_id(token)
+    return nil if partner_application_id.blank?
+
+    PartnerApplication.active.find_by(tenant_id: token.tenant_id, id: partner_application_id)
+  end
+
+  def partner_application_token?(token)
+    token_partner_application_id(token).present?
+  end
+
+  def token_partner_application_id(token)
+    metadata = token.metadata
+    return nil unless metadata.is_a?(Hash)
+
+    metadata["partner_application_id"].presence || metadata[:partner_application_id].presence
   end
 
   def render_invalid_token

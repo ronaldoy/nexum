@@ -4,6 +4,14 @@ require "digest"
 
 class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   ALLOWED_SCOPES = %w[receivables:documents:write kyc:write documents:upload].freeze
+  ALLOWED_SESSION_ROLES = %w[
+    hospital_admin
+    ops_admin
+    physician_pf_user
+    physician_pj_admin
+    physician_pj_member
+    supplier_user
+  ].freeze
   DEFAULT_ACTOR_ROLE = "integration_api".freeze
   IDEMPOTENCY_KEY_HEADER = "Idempotency-Key".freeze
   DEFAULT_ALLOWED_CONTENT_TYPES = %w[
@@ -14,10 +22,11 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   DEFAULT_MAX_UPLOAD_BYTES = 25.megabytes
 
   before_action :authenticate_direct_upload_actor!
-  before_action :verify_csrf_for_session_authentication!
   before_action :require_idempotency_key!
   before_action :enforce_upload_limits!
-  protect_from_forgery with: :exception, unless: :token_authenticated_request?
+  before_action :set_direct_upload_response_headers
+  self.forgery_protection_verification_strategy = :header_or_legacy_token
+  protect_from_forgery with: :exception, unless: :authenticated_via_api_token?
 
   def create
     payload_hash = direct_upload_payload_hash
@@ -61,22 +70,15 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
 
   def authenticate_direct_upload_actor!
     if authenticate_from_session!
-      @authenticated_via_session = true
+      @authenticated_via_api_token = false
       return
     end
     if authenticate_from_api_token!
-      @authenticated_via_session = false
+      @authenticated_via_api_token = true
       return
     end
 
     render_unauthorized
-  end
-
-  def verify_csrf_for_session_authentication!
-    return unless @authenticated_via_session
-    return if valid_session_authenticity_token?
-
-    raise ActionController::InvalidCrossOriginRequest, "Can't verify CSRF token authenticity."
   end
 
   def authenticate_from_session!
@@ -88,6 +90,7 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
       return false unless valid_session_record?(session)
       user = session.user
       return false unless valid_session_user?(user, tenant_id)
+      return false unless session_user_allowed_for_direct_upload?(user)
 
       assign_actor_from_session(tenant_id:, user:)
       true
@@ -127,6 +130,13 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
 
   def valid_session_user?(user, tenant_id)
     user.present? && user.tenant_id.to_s == tenant_id.to_s
+  end
+
+  def session_user_allowed_for_direct_upload?(user)
+    return false if user.blank?
+    return true if user.role.to_s == "ops_admin"
+
+    user.party_id.present? && ALLOWED_SESSION_ROLES.include?(user.role.to_s)
   end
 
   def assign_actor_from_session(tenant_id:, user:)
@@ -177,15 +187,8 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
     value&.strip
   end
 
-  def token_authenticated_request?
-    bearer_token.present?
-  end
-
-  def valid_session_authenticity_token?
-    token = request.headers["X-CSRF-Token"].to_s.presence || params[:authenticity_token].to_s.presence
-    return false if token.blank?
-
-    valid_authenticity_token?(session, token)
+  def authenticated_via_api_token?
+    @authenticated_via_api_token == true
   end
 
   def enforce_upload_limits!
@@ -276,6 +279,7 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
 
   def render_direct_upload(blob:, replayed:)
     render json: direct_upload_json(blob).merge("replayed" => replayed)
+    apply_direct_upload_response_headers
   end
 
   def direct_upload_json(blob)
@@ -348,6 +352,19 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
         message: message
       }
     }, status: status
+    apply_direct_upload_response_headers
+  end
+
+  def set_direct_upload_response_headers
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Expires"] = "0"
+    response.headers["Pragma"] = "no-cache"
+  end
+
+  def apply_direct_upload_response_headers
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Expires"] = "0"
+    response.headers["Pragma"] = "no-cache"
   end
 
   def with_database_tenant_context(tenant_id, actor_id: nil, role: nil)
@@ -359,20 +376,11 @@ class ActiveStorage::DirectUploadsController < ActiveStorage::BaseController
   end
 
   def with_database_context(tenant_id:, actor_id: nil, role: nil)
-    ActiveRecord::Base.connection_pool.with_connection do
-      ActiveRecord::Base.transaction(requires_new: true) do
-        set_database_context!("app.tenant_id", tenant_id)
-        set_database_context!("app.actor_id", actor_id)
-        set_database_context!("app.role", role)
-        yield
-      end
-    end
-  end
-
-  def set_database_context!(key, value)
-    ActiveRecord::Base.connection.raw_connection.exec_params(
-      "SELECT set_config($1, $2, true)",
-      [ key.to_s, value.to_s ]
-    )
+    DatabaseRequestContext.with(
+      tenant_id: tenant_id,
+      actor_id: actor_id,
+      role: role,
+      request_id: request.request_id
+    ) { yield }
   end
 end

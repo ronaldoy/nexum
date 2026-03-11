@@ -13,7 +13,7 @@ class PasswordsController < ApplicationController
 
   def create
     tenant_slug, tenant_id = password_reset_tenant_context(params[:tenant_slug])
-    return if performed?
+    return redirect_to_password_reset_confirmation(tenant_slug) if tenant_id.blank?
 
     user = find_password_reset_user
     enqueue_password_reset(user:, tenant_slug:) if user.present?
@@ -25,7 +25,19 @@ class PasswordsController < ApplicationController
   end
 
   def update
-    return handle_password_reset_success if @user.update(password_update_params)
+    reset_completed = false
+
+    User.transaction do
+      if @user.update(password_update_params)
+        revoke_active_sessions!
+        revoke_active_api_access_tokens!
+        reset_completed = true
+      else
+        raise ActiveRecord::Rollback
+      end
+    end
+
+    return handle_password_reset_success if reset_completed
 
     handle_password_reset_failure
   end
@@ -33,7 +45,7 @@ class PasswordsController < ApplicationController
   private
   def set_user_by_token
     tenant_slug, tenant_id = password_reset_tenant_context(params[:tenant_slug])
-    return if performed?
+    return redirect_to new_password_path(**tenant_slug_path_params(tenant_slug)), alert: "O link de redefinição de senha é inválido ou expirado." if tenant_id.blank?
 
     @user = User.find_by_password_reset_token!(params[:token])
   rescue ActiveSupport::MessageVerifier::InvalidSignature
@@ -44,11 +56,7 @@ class PasswordsController < ApplicationController
   def password_reset_tenant_context(raw_tenant_slug)
     tenant_slug = normalized_tenant_slug(raw_tenant_slug)
     tenant_id = resolve_tenant_id_from_slug(tenant_slug)
-
-    unless tenant_id
-      redirect_to new_password_path(**tenant_slug_path_params(tenant_slug)), alert: "Organização não encontrada."
-      return [ nil, nil ]
-    end
+    return [ tenant_slug, nil ] unless tenant_id
 
     bootstrap_database_tenant_context!(tenant_id)
     [ tenant_slug, tenant_id ]
@@ -83,7 +91,6 @@ class PasswordsController < ApplicationController
   end
 
   def handle_password_reset_success
-    @user.sessions.destroy_all
     create_password_action_log!(
       tenant_id: @user.tenant_id,
       action_type: PASSWORD_RESET_COMPLETED_ACTION,
@@ -137,6 +144,40 @@ class PasswordsController < ApplicationController
     slug.present? ? { tenant_slug: slug } : {}
   end
 
+  def revoke_active_api_access_tokens!
+    @user.api_access_tokens.active.find_each do |token|
+      token.revoke!(audit_context: password_reset_token_revoke_audit_context)
+    end
+  end
+
+  def revoke_active_sessions!
+    @user.sessions.destroy_all
+  end
+
+  def password_reset_token_revoke_audit_context
+    {
+      actor_party_id: @user.party_id,
+      ip_address: request.remote_ip,
+      user_agent: request.user_agent,
+      request_id: request.request_id,
+      endpoint_path: password_action_endpoint_path,
+      http_method: request.method,
+      channel: "PORTAL",
+      metadata: {
+        "tenant_slug" => params[:tenant_slug].to_s,
+        "password_reset" => true
+      }
+    }
+  end
+
+  def password_action_endpoint_path
+    if params[:token].present? && request.path.start_with?("/passwords/")
+      "/passwords/[FILTERED]"
+    else
+      request.path
+    end
+  end
+
   def create_password_action_log!(tenant_id:, action_type:, success:, actor_party_id: nil, target_id: nil, target_type: nil, metadata: {})
     return if tenant_id.blank?
 
@@ -159,7 +200,7 @@ class PasswordsController < ApplicationController
       ip_address: request.remote_ip.presence || "0.0.0.0",
       user_agent: request.user_agent,
       request_id: request.request_id,
-      endpoint_path: request.fullpath,
+      endpoint_path: password_action_endpoint_path,
       http_method: request.method,
       channel: "PORTAL",
       target_type: target_type,

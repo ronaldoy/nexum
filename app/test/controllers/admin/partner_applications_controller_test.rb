@@ -64,6 +64,7 @@ module Admin
       assert_redirected_to admin_partner_applications_path(tenant_id: @secondary_tenant.id)
       follow_redirect!
       assert_response :success
+      assert_equal "no-store", response.headers["Cache-Control"]
       assert_includes response.body, "Credencial gerada"
       assert_includes response.body, "client_secret"
 
@@ -116,6 +117,8 @@ module Admin
       post rotate_secret_admin_partner_application_path(application_id, tenant_id: @secondary_tenant.id)
 
       assert_redirected_to admin_partner_applications_path(tenant_id: @secondary_tenant.id)
+      follow_redirect!
+      assert_equal "no-store", response.headers["Cache-Control"]
 
       with_tenant_db_context(tenant_id: @secondary_tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
         application = PartnerApplication.find(application_id)
@@ -157,6 +160,24 @@ module Admin
         assert_equal false, application.active
         assert token.revoked_at.present?
       end
+    end
+
+    test "returns json payload with no-store headers when creating partner application" do
+      sign_in_as(@ops_user, admin_webauthn_verified: true)
+
+      post admin_partner_applications_path(format: :json), params: {
+        partner_application: {
+          tenant_id: @secondary_tenant.id,
+          actor_party_id: @secondary_actor_party.id,
+          name: "JSON Partner App",
+          scopes_input: "receivables:read",
+          token_ttl_minutes: 15
+        }
+      }
+
+      assert_response :created
+      assert_equal "no-store", response.headers["Cache-Control"]
+      assert response.parsed_body.dig("data", "client_secret").present?
     end
   end
 end

@@ -161,6 +161,7 @@ For account opening, provide provider-specific payload in party metadata:
 - OpenAPI contract: `docs/openapi/v1.yaml`
 - Generated API reference: `docs/api_reference.md`
 - Generated DB model docs: `docs/database_model.md`
+- Security operations runbook: `docs/security_operations_runbook.md`
 - Planned migration strategy for `users.id` UUID transition: `docs/user_id_uuid_migration_plan.md`
 - Changelog and release notes source: `CHANGELOG.md`
 - Upright monitor guide: `monitoring/upright/README.md`
@@ -176,6 +177,10 @@ rv ruby run -- script/generate_documentation.rb
 
 ```bash
 ./bin/db-up
+export POSTGRES_APP_USER=nexum_runtime
+export POSTGRES_APP_PASSWORD=nexum_runtime_password
+export POSTGRES_MIGRATE_USER=nexum_migrate
+export POSTGRES_MIGRATE_PASSWORD=nexum_migrate_password
 ./bin/db-bootstrap
 cd app
 rv clean-install
@@ -188,6 +193,7 @@ rv ruby run -- -S bin/rails server
 
 - CI workflow: `.github/workflows/ci.yml`
 - Release workflow (tag-driven): `.github/workflows/release.yml`
+- Scheduled security assurance workflow: `.github/workflows/security-assurance.yml`
 - Dependabot: `.github/dependabot.yml`
 - Kamal scaffold: `app/config/deploy.yml`
 - Upright monitor deploy scaffold: `monitoring/upright/config/deploy.yml`
@@ -196,6 +202,12 @@ rv ruby run -- -S bin/rails server
 
 - Repository scanning command:
   - `./bin/secret-scan --no-banner`
+- Schema security audit:
+  - `cd app && rv ruby run -- -S bin/security-schema-audit`
+- Runtime DB role audit:
+  - `cd app && rv ruby run -- -S bin/security-role-audit`
+- Database bootstrap now provisions separate `nexum_runtime`, `nexum_migrate`, and `nexum_readonly` roles when the corresponding env vars are set.
+- `app/bin/setup` and `app/bin/docker-entrypoint` automatically use `POSTGRES_MIGRATE_USER` and `POSTGRES_MIGRATE_PASSWORD` for `db:prepare` when they are present.
 - Local pre-commit enforcement:
   - `./bin/setup-git-hooks`
 - Pre-commit hook scans staged changes with `gitleaks` (or Docker fallback) and blocks commits on detected secrets.
@@ -248,7 +260,7 @@ Default hospital organization seed code: `hospital-organization-main`
 - `hospital_unit_user@demo.nexum.capital` (single hospital unit)
 - `supplier_user@demo.nexum.capital`
 - `physician_user@demo.nexum.capital`
-- `fdic_user@demo.nexum.capital`
+- `fidc_user@demo.nexum.capital`
 
 Security notes:
 - `SHOW_DEMO_CREDENTIALS` controls whether demo accounts are rendered on the login page.

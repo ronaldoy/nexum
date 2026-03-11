@@ -40,10 +40,15 @@ module RequestContext
   end
 
   def apply_database_request_context
-    set_database_context!("app.tenant_id", Current.tenant_id)
-    set_database_context!("app.actor_id", Current.actor_id)
     Current.role = resolved_role
-    set_database_context!("app.role", Current.role)
+    DatabaseRequestContext.apply!(
+      tenant_id: Current.tenant_id,
+      actor_id: Current.actor_id,
+      role: Current.role,
+      request_id: Current.request_id
+    )
+  rescue DatabaseRequestContext::Error => error
+    raise ContextError, error.message
   end
 
   def set_database_context!(key, value)
@@ -52,11 +57,8 @@ module RequestContext
 
   class_methods do
     def set_database_context!(key, value)
-      ActiveRecord::Base.connection.raw_connection.exec_params(
-        "SELECT set_config($1, $2, true)",
-        [ key.to_s, value.to_s ]
-      )
-    rescue ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid => error
+      DatabaseRequestContext.set_setting!(key, value)
+    rescue DatabaseRequestContext::Error => error
       raise ContextError, "failed to apply request context #{key}: #{error.message}"
     end
   end

@@ -61,7 +61,8 @@ module Admin
         @pending_request.reload
         assert_equal "REQUESTED", @pending_request.status
         assert_equal "APPROVED", @pending_request.metadata.fetch("review_decision")
-        assert_equal @ops_user.party_id, @pending_request.metadata.fetch("review_decision_by_party_id")
+        assert_nil @pending_request.metadata["review_decision_by_party_id"]
+        assert_equal @ops_user.uuid_id, @pending_request.metadata.fetch("review_decision_by_admin_user_uuid_id")
 
         assert_equal 1, ActionIpLog.where(
           tenant_id: @secondary_tenant.id,
@@ -121,6 +122,47 @@ module Admin
           receivable_id: @pending_request.receivable_id,
           event_type: "ANTICIPATION_REVIEW_REJECTED"
         ).count
+      end
+    end
+
+    test "review audit keeps actor nil when reviewer has no bound party" do
+      reviewer = nil
+
+      with_tenant_db_context(tenant_id: @default_tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
+        reviewer = User.create!(
+          tenant: @default_tenant,
+          email_address: "ops-no-party-reviewer@example.com",
+          password: "password",
+          password_confirmation: "password",
+          role: "ops_admin"
+        )
+      end
+
+      sign_in_as(reviewer, admin_webauthn_verified: true)
+
+      patch approve_admin_anticipation_review_path(@pending_request.id), params: {
+        tenant_id: @secondary_tenant.id,
+        review_note: "Aprovada sem vínculo societário direto."
+      }
+
+      assert_redirected_to admin_anticipation_reviews_path(tenant_id: @secondary_tenant.id)
+
+      with_tenant_db_context(tenant_id: @secondary_tenant.id, actor_id: reviewer.id, role: "ops_admin") do
+        action_log = ActionIpLog.where(
+          tenant_id: @secondary_tenant.id,
+          action_type: "ANTICIPATION_REVIEW_APPROVED",
+          target_id: @pending_request.id
+        ).order(created_at: :desc).first
+        receivable_event = ReceivableEvent.where(
+          tenant_id: @secondary_tenant.id,
+          receivable_id: @pending_request.receivable_id,
+          event_type: "ANTICIPATION_REVIEW_APPROVED"
+        ).order(created_at: :desc).first
+
+        assert_nil action_log.actor_party_id
+        assert_nil receivable_event.actor_party_id
+        refute_equal @pending_request.requester_party_id, action_log.actor_party_id
+        refute_equal @pending_request.requester_party_id, receivable_event.actor_party_id
       end
     end
 

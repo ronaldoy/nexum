@@ -15,13 +15,13 @@ module Admin
       end
     end
 
-    test "ops_admin can see fdic cockpit dashboard" do
+    test "ops_admin can see fidc cockpit dashboard" do
       sign_in_as(@ops_user, admin_webauthn_verified: true)
 
       get admin_dashboard_path
 
       assert_response :success
-      assert_includes response.body, "Averta FDIC Manager Cockpit"
+      assert_includes response.body, "Averta FIDC Manager Cockpit"
       assert_includes response.body, "Gestão diária da carteira performada"
       assert_includes response.body, @default_tenant.slug
       assert_includes response.body, "/chart.umd.min.js"
@@ -44,7 +44,7 @@ module Admin
 
       assert_redirected_to root_path
       follow_redirect!
-      assert_includes response.body, "Acesso restrito ao perfil de gestão FDIC."
+      assert_includes response.body, "Acesso restrito ao perfil de gestão FIDC."
     end
 
     test "ops_admin without passkey step-up is redirected to passkey verification" do
@@ -57,15 +57,25 @@ module Admin
       assert_includes response.body, "Validar acesso ao painel administrativo"
     end
 
-    test "ops_admin can access cockpit without passkey in demo mode" do
+    test "ops_admin can access cockpit without passkey with explicit skip flag" do
+      sign_in_as(@ops_user)
+
+      with_environment("SKIP_ADMIN_PASSKEY" => "true") do
+        get admin_dashboard_path
+      end
+
+      assert_response :success
+      assert_includes response.body, "Averta FIDC Manager Cockpit"
+    end
+
+    test "show seed credentials flag does not bypass admin passkey step-up" do
       sign_in_as(@ops_user)
 
       with_environment("SHOW_SEED_CREDENTIALS" => "true") do
         get admin_dashboard_path
       end
 
-      assert_response :success
-      assert_includes response.body, "Averta FDIC Manager Cockpit"
+      assert_redirected_to new_admin_passkey_verification_path(return_to: admin_dashboard_path)
     end
 
     test "ops_admin can filter dashboard loans by PF and PJ" do
@@ -100,10 +110,18 @@ module Admin
       get root_path
 
       assert_response :success
-      refute_includes response.body, "Averta FDIC Manager Cockpit"
+      refute_includes response.body, "Averta FIDC Manager Cockpit"
     end
 
     private
+
+    def with_environment(overrides)
+      previous = overrides.keys.to_h { |key| [ key, ENV[key] ] }
+      overrides.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+      yield
+    ensure
+      previous.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+    end
 
     def create_dashboard_sample_data!(tenant:, suffix:)
       hospital = Party.create!(
@@ -203,10 +221,10 @@ module Admin
         receivable_allocation: allocation,
         paid_amount: "200.00",
         cnpj_amount: "0.00",
-        fdic_amount: "200.00",
+        fidc_amount: "200.00",
         beneficiary_amount: "0.00",
-        fdic_balance_before: "200.00",
-        fdic_balance_after: "0.00",
+        fidc_balance_before: "200.00",
+        fidc_balance_after: "0.00",
         paid_at: Time.zone.parse("2026-02-12 09:00:00"),
         payment_reference: "pay-#{suffix}",
         idempotency_key: settlement_idempotency

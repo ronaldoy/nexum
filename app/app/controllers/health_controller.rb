@@ -1,4 +1,8 @@
 class HealthController < ActionController::API
+  READY_TOKEN_HEADER = "X-Ready-Token".freeze
+
+  before_action :authenticate_ready_probe!, only: :ready
+
   def health
     render_health_response
   end
@@ -9,6 +13,13 @@ class HealthController < ActionController::API
   end
 
   private
+
+  def authenticate_ready_probe!
+    return if ready_probe_local_request?
+    return if valid_ready_probe_token?
+
+    head :not_found
+  end
 
   def render_health_response
     render json: health_payload(checks: {})
@@ -42,6 +53,7 @@ class HealthController < ActionController::API
   def security_checks
     {
       "database_role" => Security::DatabaseRoleGuard.readiness_status,
+      "database_schema" => Security::DatabaseSchemaAudit.readiness_status,
       "idempotency_conflicts" => Security::IdempotencyConflictMonitor.readiness_status
     }
   end
@@ -77,5 +89,22 @@ class HealthController < ActionController::API
       password: config[:password],
       connect_timeout: 2
     }.compact
+  end
+
+  def ready_probe_local_request?
+    request.local?
+  end
+
+  def valid_ready_probe_token?
+    expected_token = ready_probe_token
+    provided_token = request.headers[READY_TOKEN_HEADER].to_s.strip
+    return false if expected_token.blank? || provided_token.blank?
+    return false unless expected_token.bytesize == provided_token.bytesize
+
+    ActiveSupport::SecurityUtils.secure_compare(provided_token, expected_token)
+  end
+
+  def ready_probe_token
+    Rails.app.creds.option(:health, :ready_token, default: ENV["READY_CHECK_TOKEN"]).to_s.strip
   end
 end

@@ -8,7 +8,7 @@ class ActiveStorage::DirectUploadsControllerTest < ActionDispatch::IntegrationTe
     @secondary_token = nil
 
     with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
-      @user.update!(role: "ops_admin")
+      @user.update!(role: "supplier_user")
       _, @token = ApiAccessToken.issue!(
         tenant: @tenant,
         user: @user,
@@ -36,6 +36,7 @@ class ActiveStorage::DirectUploadsControllerTest < ActionDispatch::IntegrationTe
     post rails_direct_uploads_path, params: valid_blob_payload, as: :json
 
     assert_response :unauthorized
+    assert_equal "no-store", response.headers["Cache-Control"]
     assert_equal "invalid_token", response.parsed_body.dig("error", "code")
   end
 
@@ -46,6 +47,7 @@ class ActiveStorage::DirectUploadsControllerTest < ActionDispatch::IntegrationTe
       as: :json
 
     assert_response :success
+    assert_equal "no-store", response.headers["Cache-Control"]
     signed_id = response.parsed_body["signed_id"]
     blob = ActiveStorage::Blob.find_signed!(signed_id)
     assert_equal @tenant.id.to_s, blob.metadata["tenant_id"]
@@ -75,12 +77,30 @@ class ActiveStorage::DirectUploadsControllerTest < ActionDispatch::IntegrationTe
     assert_response :unprocessable_entity
   end
 
+  test "does not let an invalid bearer header bypass csrf for a session-authenticated upload" do
+    sign_in_as(@user)
+
+    with_forgery_protection do
+      post rails_direct_uploads_path,
+        headers: {
+          "Authorization" => "Bearer invalid-token",
+          "Idempotency-Key" => "direct-upload-csrf-session-invalid-bearer-001"
+        },
+        params: valid_blob_payload,
+        as: :json
+    end
+
+    assert_response :unprocessable_entity
+  end
+
   test "accepts session-authenticated direct upload with csrf token when forgery protection is enabled" do
     sign_in_as(@user)
 
     with_forgery_protection do
       get root_path
-      csrf_token = response.body.match(/name="csrf-token" content="([^"]+)"/)&.captures&.first
+      follow_redirect! if response.redirect?
+      assert_response :success
+      csrf_token = csrf_token_from_response_body
       assert csrf_token.present?
 
       post rails_direct_uploads_path,
@@ -218,12 +238,22 @@ class ActiveStorage::DirectUploadsControllerTest < ActionDispatch::IntegrationTe
 
   def with_forgery_protection
     original_base = ActionController::Base.allow_forgery_protection
+    original_application = ApplicationController.allow_forgery_protection
+    original_dashboard = DashboardController.allow_forgery_protection
     original_direct_uploads = ActiveStorage::DirectUploadsController.allow_forgery_protection
     ActionController::Base.allow_forgery_protection = true
+    ApplicationController.allow_forgery_protection = true
+    DashboardController.allow_forgery_protection = true
     ActiveStorage::DirectUploadsController.allow_forgery_protection = true
     yield
   ensure
     ActionController::Base.allow_forgery_protection = original_base
+    ApplicationController.allow_forgery_protection = original_application
+    DashboardController.allow_forgery_protection = original_dashboard
     ActiveStorage::DirectUploadsController.allow_forgery_protection = original_direct_uploads
+  end
+
+  def csrf_token_from_response_body
+    response.body[%r{<meta name="csrf-token" content="([^"]+)"}i, 1]
   end
 end

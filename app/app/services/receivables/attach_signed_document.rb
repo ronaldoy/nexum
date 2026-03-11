@@ -62,6 +62,7 @@ module Receivables
     end
 
     def call(receivable_id:, raw_payload:, default_actor_party_id:, privileged_actor: false)
+      preflight_replay_conflict_without_payload_hash!
       inputs = build_call_inputs(
         receivable_id: receivable_id,
         raw_payload: raw_payload,
@@ -93,6 +94,14 @@ module Receivables
 
     def resolve_failure_receivable_id(inputs:, fallback_receivable_id:)
       inputs&.receivable_id || fallback_receivable_id
+    end
+
+    def preflight_replay_conflict_without_payload_hash!
+      existing_outbox = OutboxEvent.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
+      return if existing_outbox.blank?
+
+      ensure_replay_outbox_operation!(existing_outbox)
+      ensure_replay_payload_hash!(existing_outbox:, payload_hash: nil) if existing_outbox.payload&.dig(PAYLOAD_HASH_KEY).blank?
     end
 
     def recover_after_unique_violation(error:, inputs:, receivable_id:)
@@ -227,6 +236,9 @@ module Receivables
 
       sha256 = payload[:sha256].to_s.strip
       blob = resolve_blob(raw_signed_id: payload[:blob_signed_id])
+      raise_validation_error!("blob_signed_id_required", "blob_signed_id is required.") if blob.blank?
+      validate_blob_tenant_metadata!(blob: blob)
+      validate_blob_sha256!(blob: blob, expected_sha256: sha256) if sha256.present?
       storage_key = resolve_storage_key!(blob:, payload_storage_key: payload[:storage_key])
       provider_envelope_id = payload[:provider_envelope_id].to_s.strip
       email_challenge_id = payload[:email_challenge_id].to_s.strip
@@ -234,9 +246,7 @@ module Receivables
 
       raise_validation_error!("sha256_required", "sha256 is required.") if sha256.blank?
       raise_validation_error!("storage_key_required", "storage_key is required.") if storage_key.blank?
-      validate_blob_sha256!(blob:, expected_sha256: sha256) if blob.present?
-      validate_blob_tenant_metadata!(blob:) if blob.present?
-      validate_blob_actor_party_metadata!(blob:, expected_actor_party_id: actor_party_id) if blob.present?
+      validate_blob_actor_party_metadata!(blob:, expected_actor_party_id: actor_party_id)
       raise_validation_error!("provider_envelope_id_required", "provider_envelope_id is required.") if provider_envelope_id.blank?
       raise_validation_error!("email_challenge_id_required", "email_challenge_id is required.") if email_challenge_id.blank?
       raise_validation_error!("whatsapp_challenge_id_required", "whatsapp_challenge_id is required.") if whatsapp_challenge_id.blank?
@@ -274,8 +284,6 @@ module Receivables
 
     def resolve_storage_key!(blob:, payload_storage_key:)
       provided_storage_key = payload_storage_key.to_s.strip
-      return provided_storage_key if blob.blank?
-
       if provided_storage_key.present? && provided_storage_key != blob.key
         raise_validation_error!("storage_key_blob_mismatch", "storage_key does not match blob key.")
       end

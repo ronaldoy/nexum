@@ -3,12 +3,28 @@ class ApiAccessToken < ApplicationRecord
   TOKEN_DELIMITER = ".".freeze
   TOKEN_ISSUED_ACTION = "API_ACCESS_TOKEN_ISSUED".freeze
   TOKEN_REVOKED_ACTION = "API_ACCESS_TOKEN_REVOKED".freeze
+  ALLOWED_SCOPES = %w[
+    anticipation_requests:challenge
+    anticipation_requests:confirm
+    anticipation_requests:write
+    documents:upload
+    kyc:read
+    kyc:write
+    physicians:read
+    physicians:write
+    receivables:documents:write
+    receivables:history
+    receivables:read
+    receivables:settle
+    receivables:write
+  ].freeze
 
   belongs_to :tenant
   belongs_to :user, foreign_key: :user_uuid_id, primary_key: :uuid_id, inverse_of: :api_access_tokens, optional: true
 
   validates :name, :token_identifier, :token_digest, presence: true
   validates :token_identifier, uniqueness: true
+  validate :scopes_supported
 
   scope :active, -> { where(revoked_at: nil).where("expires_at IS NULL OR expires_at > ?", Time.current) }
 
@@ -142,6 +158,13 @@ class ApiAccessToken < ApplicationRecord
     self.scopes = self.class.normalize_scope_values(scopes)
   end
 
+  def scopes_supported
+    unknown = Array(scopes) - ALLOWED_SCOPES
+    return if unknown.empty?
+
+    errors.add(:scopes, "include unsupported values: #{unknown.join(', ')}")
+  end
+
   def log_token_lifecycle_action!(action_type:, success:, audit_context:)
     metadata = (audit_context[:metadata].is_a?(Hash) ? audit_context[:metadata].dup : {})
     metadata.merge!(
@@ -152,7 +175,7 @@ class ApiAccessToken < ApplicationRecord
 
     ActionIpLog.create!(
       tenant_id: tenant_id,
-      actor_party_id: audit_context[:actor_party_id] || user&.party_id,
+      actor_party_id: resolved_audit_actor_party_id(audit_context:, fallback_party_id: user&.party_id),
       action_type: action_type,
       ip_address: audit_context[:ip_address].presence || "0.0.0.0",
       user_agent: audit_context[:user_agent],
@@ -172,5 +195,18 @@ class ApiAccessToken < ApplicationRecord
       "token_id=#{id} action_type=#{action_type} error_class=#{error.class.name} error_message=#{error.message}"
     )
     raise
+  end
+
+  def resolved_audit_actor_party_id(audit_context:, fallback_party_id:)
+    candidate_party_id = if audit_context.is_a?(Hash)
+      audit_context.fetch(:actor_party_id, fallback_party_id)
+    else
+      fallback_party_id
+    end
+
+    return nil if candidate_party_id.blank?
+    return candidate_party_id if Party.where(tenant_id: tenant_id, id: candidate_party_id).exists?
+
+    nil
   end
 end

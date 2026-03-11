@@ -3,6 +3,17 @@
 module Api
   module V1
     class KycProfilePayloadPresenter
+      CONTROL_PLANE_KEYS = %w[
+        request_id
+        storage_key
+        sha256
+        idempotency_key
+        payload_hash
+        provider_envelope_id
+        email_challenge_id
+        whatsapp_challenge_id
+      ].freeze
+
       def profile(profile)
         {
           id: profile.id,
@@ -13,7 +24,7 @@ module Api
           submitted_at: profile.submitted_at&.iso8601,
           reviewed_at: profile.reviewed_at&.iso8601,
           reviewer_party_id: profile.reviewer_party_id,
-          metadata: profile.metadata || {},
+          metadata: public_payload(profile.metadata),
           documents: profile.kyc_documents.order(created_at: :asc).map { |entry| document(entry) },
           events: profile.kyc_events.order(occurred_at: :asc).map { |entry| event(entry) }
         }
@@ -35,9 +46,7 @@ module Api
           status: document.status,
           verified_at: document.verified_at&.iso8601,
           rejection_reason: document.rejection_reason,
-          storage_key: document.storage_key,
-          sha256: document.sha256,
-          metadata: document.metadata || {}
+          metadata: public_payload(document.metadata)
         }
       end
 
@@ -52,9 +61,16 @@ module Api
           actor_party_id: event.actor_party_id,
           event_type: event.event_type,
           occurred_at: event.occurred_at&.iso8601,
-          request_id: event.request_id,
-          payload: event.payload || {}
+          payload: public_payload(event.payload)
         }
+      end
+
+      def public_payload(raw_payload)
+        normalized = MetadataSanitizer.normalize(raw_payload)
+        return {} unless normalized.is_a?(Hash)
+
+        allowed_keys = normalized.keys.reject { |key| CONTROL_PLANE_KEYS.include?(key.to_s) }
+        MetadataSanitizer.sanitize(normalized, allowed_keys: allowed_keys)
       end
     end
   end

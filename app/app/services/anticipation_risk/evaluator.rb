@@ -115,28 +115,22 @@ module AnticipationRisk
       rule_scope = rule_scope.where("effective_from IS NULL OR effective_from <= ?", now)
       rule_scope = rule_scope.where("effective_until IS NULL OR effective_until >= ?", now)
 
-      scope_conditions = []
-      scope_values = {}
-
-      scope_map.each do |scope_type, scope_party_ids|
-        type_key = :"#{scope_key(scope_type)}_type"
-        party_key = :"#{scope_key(scope_type)}_party_ids"
+      scoped_relations = scope_map.filter_map do |scope_type, scope_party_ids|
         normalized_party_ids = Array(scope_party_ids).compact.uniq
+        scoped_rules = rule_scope.where(scope_type: scope_type)
 
         if normalized_party_ids.empty?
-          scope_conditions << "(scope_type = :#{type_key} AND scope_party_id IS NULL)"
-          scope_values[type_key] = scope_type
-          next
+          scoped_rules.where(scope_party_id: nil)
+        else
+          scoped_rules.where(scope_party_id: normalized_party_ids)
         end
-
-        scope_conditions << "(scope_type = :#{type_key} AND scope_party_id IN (:#{party_key}))"
-        scope_values[type_key] = scope_type
-        scope_values[party_key] = normalized_party_ids
       end
 
-      return [] if scope_conditions.empty?
+      return [] if scoped_relations.empty?
 
-      rule_scope.where(scope_conditions.join(" OR "), scope_values)
+      scoped_relations.reduce do |combined_scope, scoped_rules|
+        combined_scope.or(scoped_rules)
+      end
         .order(priority: :asc, created_at: :asc)
         .to_a
     end
@@ -481,10 +475,6 @@ module AnticipationRisk
       )
 
       keys.compact.uniq.sort
-    end
-
-    def scope_key(scope_type)
-      scope_type.to_s.downcase
     end
 
     def cnpj_scope_document_numbers(receivable:, receivable_allocation:, requester_party:)

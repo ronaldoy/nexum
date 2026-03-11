@@ -3,6 +3,7 @@ require "json"
 
 module Admin
   class AnticipationReviewsController < ApplicationController
+    include AdminTenantScopedContext
     include AdminPasskeyMode
 
     MAX_PENDING_REVIEWS = 300
@@ -89,10 +90,12 @@ module Admin
         decision = approved ? "APPROVED" : "REJECTED"
         target_status = approved ? "REQUESTED" : "REJECTED"
         reviewed_at = Time.current
+        reviewer_party_id = tenant_scoped_audit_actor_party_id(@selected_tenant.id)
         transition_metadata = {
           "review_decision" => decision,
           "review_decision_at" => reviewed_at.utc.iso8601(6),
-          "review_decision_by_party_id" => Current.user&.party_id,
+          "review_decision_by_party_id" => reviewer_party_id,
+          "review_decision_by_admin_user_uuid_id" => Current.user&.uuid_id,
           "review_note" => note,
           "review_decision_request_id" => request.request_id
         }.compact
@@ -107,7 +110,8 @@ module Admin
           event_type: approved ? "ANTICIPATION_REVIEW_APPROVED" : "ANTICIPATION_REVIEW_REJECTED",
           decision: decision,
           note: note,
-          reviewed_at: reviewed_at
+          reviewed_at: reviewed_at,
+          reviewed_by_party_id: reviewer_party_id
         )
         create_action_log!(
           action_type: approved ? "ANTICIPATION_REVIEW_APPROVED" : "ANTICIPATION_REVIEW_REJECTED",
@@ -136,7 +140,7 @@ module Admin
       note
     end
 
-    def create_receivable_event!(anticipation_request:, event_type:, decision:, note:, reviewed_at:)
+    def create_receivable_event!(anticipation_request:, event_type:, decision:, note:, reviewed_at:, reviewed_by_party_id:)
       receivable = anticipation_request.receivable
       previous = receivable.receivable_events.order(sequence: :desc).limit(1).pluck(:sequence, :event_hash).first
       sequence = previous ? previous[0] + 1 : 1
@@ -148,7 +152,8 @@ module Admin
         review_decision: decision,
         review_note: note,
         reviewed_at: reviewed_at.utc.iso8601(6),
-        reviewed_by_party_id: Current.user&.party_id,
+        reviewed_by_party_id: reviewed_by_party_id,
+        reviewed_by_admin_user_uuid_id: Current.user&.uuid_id,
         request_id: request.request_id
       }.compact
 
@@ -168,11 +173,11 @@ module Admin
       ReceivableEvent.create!(
         tenant_id: @selected_tenant.id,
         receivable: receivable,
-        actor_party_id: Current.user&.party_id || anticipation_request.requester_party_id,
+        actor_party_id: reviewed_by_party_id,
         event_type: event_type,
         payload: payload,
         sequence: sequence,
-        prev_event_hash: prev_hash,
+        prev_hash: prev_hash,
         event_hash: event_hash,
         occurred_at: reviewed_at
       )
@@ -180,36 +185,17 @@ module Admin
 
     def create_action_log!(action_type:, requester_party_id:, target_id:, metadata:)
       ActionIpLog.create!(
-        tenant_id: @selected_tenant.id,
-        actor_party_id: Current.user&.party_id || requester_party_id,
-        action_type: action_type,
-        ip_address: request.remote_ip,
-        user_agent: request.user_agent,
-        request_id: request.request_id,
-        endpoint_path: request.fullpath,
-        http_method: request.method,
-        channel: "ADMIN",
-        target_type: "AnticipationRequest",
-        target_id: target_id,
-        success: true,
-        occurred_at: Time.current,
-        metadata: normalized_metadata(metadata)
+        tenant_scoped_audit_context(
+          tenant_id: @selected_tenant.id,
+          metadata: metadata.merge("requester_party_id" => requester_party_id)
+        ).merge(
+          action_type: action_type,
+          target_type: "AnticipationRequest",
+          target_id: target_id,
+          success: true,
+          occurred_at: Time.current
+        )
       )
-    end
-
-    def normalized_metadata(raw_metadata)
-      case raw_metadata
-      when ActionController::Parameters
-        normalized_metadata(raw_metadata.to_unsafe_h)
-      when Hash
-        raw_metadata.each_with_object({}) do |(key, value), output|
-          output[key.to_s] = normalized_metadata(value)
-        end
-      when Array
-        raw_metadata.map { |value| normalized_metadata(value) }
-      else
-        raw_metadata
-      end
     end
 
     def canonical_json(value)
@@ -237,22 +223,5 @@ module Admin
         alert: "Solicitação não encontrada para o tenant selecionado."
     end
 
-    def with_tenant_database_context(tenant_id:)
-      ActiveRecord::Base.connection_pool.with_connection do
-        ActiveRecord::Base.transaction(requires_new: true) do
-          set_database_context!("app.tenant_id", tenant_id)
-          set_database_context!("app.actor_id", Current.actor_id)
-          set_database_context!("app.role", Current.role)
-          yield
-        end
-      end
-    end
-
-    def set_database_context!(key, value)
-      ActiveRecord::Base.connection.raw_connection.exec_params(
-        "SELECT set_config($1, $2, true)",
-        [ key.to_s, value.to_s ]
-      )
-    end
   end
 end

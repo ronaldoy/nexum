@@ -44,6 +44,23 @@ module Webhooks
       end
     end
 
+    test "rejects webhook payload without a signed event id" do
+      with_environment(qitech_secret_env(@tenant.slug) => "secret-key") do
+        payload = {
+          "request_control_key" => "missing-payout",
+          "status" => "SENT"
+        }
+        body = JSON.generate(payload)
+
+        post webhooks_escrow_path(provider: "QITECH", tenant_slug: @tenant.slug),
+          params: body,
+          headers: json_webhook_headers(signature: hmac_signature(body: body, secret: "secret-key"))
+
+        assert_response :bad_request
+        assert_equal "webhook_event_id_missing", response.parsed_body.dig("error", "code")
+      end
+    end
+
     test "reconciles payout webhook and stores processed receipt" do
       payout = nil
 
@@ -313,10 +330,10 @@ module Webhooks
         receivable_allocation: allocation,
         paid_amount: "100.00",
         cnpj_amount: "0.00",
-        fdic_amount: "5.00",
+        fidc_amount: "5.00",
         beneficiary_amount: "95.00",
-        fdic_balance_before: "5.00",
-        fdic_balance_after: "0.00",
+        fidc_balance_before: "5.00",
+        fidc_balance_after: "0.00",
         paid_at: Time.current,
         payment_reference: "payment-ref-#{suffix}",
         idempotency_key: "settlement-#{suffix}",

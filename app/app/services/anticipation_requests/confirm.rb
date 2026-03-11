@@ -5,8 +5,8 @@ module AnticipationRequests
     CONFIRMATION_PURPOSE = "ANTICIPATION_CONFIRMATION".freeze
     TARGET_TYPE = "AnticipationRequest".freeze
     PAYLOAD_HASH_METADATA_KEY = "_confirmation_payload_hash".freeze
-    FDIC_FUNDING_OUTBOX_EVENT_TYPE = "ANTICIPATION_FIDC_FUNDING_REQUESTED".freeze
-    FDIC_FUNDING_OUTBOX_IDEMPOTENCY_SUFFIX = "fdic_funding_request".freeze
+    FIDC_FUNDING_OUTBOX_EVENT_TYPE = "ANTICIPATION_FIDC_FUNDING_REQUESTED".freeze
+    FIDC_FUNDING_OUTBOX_IDEMPOTENCY_SUFFIX = "fidc_funding_request".freeze
     CONFIRMATION_CHANNELS = %w[EMAIL WHATSAPP].freeze
     RISK_BLOCKED_PUBLIC_MESSAGE = "Anticipation request blocked by risk policy.".freeze
     RISK_REVIEW_PUBLIC_MESSAGE = "Anticipation request requires manual review.".freeze
@@ -130,7 +130,7 @@ module AnticipationRequests
         whatsapp_challenge: whatsapp_challenge,
         occurred_at: confirmed_at
       )
-      create_fdic_funding_outbox_event!(anticipation_request: anticipation_request)
+      create_fidc_funding_outbox_event!(anticipation_request: anticipation_request)
       log_confirmation_success!(anticipation_request: anticipation_request)
 
       Result.new(anticipation_request:, replayed: false)
@@ -339,7 +339,7 @@ module AnticipationRequests
     end
 
     def valid_confirmation_code?(challenge:, code:)
-      secure_compare_digest(digest(code), challenge.code_digest)
+      AuthChallenge.valid_code?(raw_code: code, stored_digest: challenge.code_digest)
     end
 
     def mark_challenge_verified!(challenge:, attempts:)
@@ -420,19 +420,19 @@ module AnticipationRequests
       )
     end
 
-    def create_fdic_funding_outbox_event!(anticipation_request:)
-      provider = Integrations::Fdic::ProviderConfig.default_provider(tenant_id: @tenant_id)
+    def create_fidc_funding_outbox_event!(anticipation_request:)
+      provider = Integrations::Fidc::ProviderConfig.default_provider(tenant_id: @tenant_id)
       receivable = anticipation_request.receivable
       funding_amount = decimal_as_string(anticipation_request.net_amount)
-      funding_idempotency_key = "#{anticipation_request.id}:#{FDIC_FUNDING_OUTBOX_IDEMPOTENCY_SUFFIX}"
+      funding_idempotency_key = "#{anticipation_request.id}:#{FIDC_FUNDING_OUTBOX_IDEMPOTENCY_SUFFIX}"
       receivable_origin = receivable_origin_payload(receivable)
-      payload_hash = fdic_funding_payload_hash(
+      payload_hash = fidc_funding_payload_hash(
         anticipation_request: anticipation_request,
         provider: provider,
         amount: funding_amount,
         receivable_origin: receivable_origin
       )
-      outbox_payload = build_fdic_funding_outbox_payload(
+      outbox_payload = build_fidc_funding_outbox_payload(
         anticipation_request: anticipation_request,
         provider: provider,
         funding_amount: funding_amount,
@@ -445,7 +445,7 @@ module AnticipationRequests
         tenant_id: @tenant_id,
         aggregate_type: TARGET_TYPE,
         aggregate_id: anticipation_request.id,
-        event_type: FDIC_FUNDING_OUTBOX_EVENT_TYPE,
+        event_type: FIDC_FUNDING_OUTBOX_EVENT_TYPE,
         status: "PENDING",
         idempotency_key: funding_idempotency_key,
         payload: outbox_payload
@@ -454,12 +454,12 @@ module AnticipationRequests
       assert_outbox_payload_hash_matches!(
         idempotency_key: funding_idempotency_key,
         payload_hash: payload_hash,
-        code: "fdic_funding_idempotency_conflict",
-        message: "FDIC funding idempotency key was already used with a different payload."
+        code: "fidc_funding_idempotency_conflict",
+        message: "FIDC funding idempotency key was already used with a different payload."
       )
     end
 
-    def build_fdic_funding_outbox_payload(anticipation_request:, provider:, funding_amount:, funding_idempotency_key:, payload_hash:, receivable_origin:)
+    def build_fidc_funding_outbox_payload(anticipation_request:, provider:, funding_amount:, funding_idempotency_key:, payload_hash:, receivable_origin:)
       {
         "payload_hash" => payload_hash,
         "anticipation_request_id" => anticipation_request.id,
@@ -544,17 +544,6 @@ module AnticipationRequests
       )
     end
 
-    def digest(raw_value)
-      Digest::SHA256.hexdigest(raw_value.to_s.strip)
-    end
-
-    def secure_compare_digest(left, right)
-      return false if left.blank? || right.blank?
-      return false unless left.bytesize == right.bytesize
-
-      ActiveSupport::SecurityUtils.secure_compare(left, right)
-    end
-
     def canonical_json(value)
       CanonicalJson.encode(value)
     end
@@ -563,7 +552,7 @@ module AnticipationRequests
       value.to_d.to_s("F")
     end
 
-    def fdic_funding_payload_hash(anticipation_request:, provider:, amount:, receivable_origin:)
+    def fidc_funding_payload_hash(anticipation_request:, provider:, amount:, receivable_origin:)
       Digest::SHA256.hexdigest(
         canonical_json(
           anticipation_request_id: anticipation_request.id,

@@ -18,6 +18,29 @@ module Api
         :channel,
         { metadata: {} }
       ].freeze
+      RECEIVABLE_VISIBILITY_SQL = <<~SQL.squish.freeze
+        receivables.debtor_party_id = :actor_party_id
+        OR receivables.creditor_party_id = :actor_party_id
+        OR receivables.beneficiary_party_id = :actor_party_id
+        OR EXISTS (
+          SELECT 1
+          FROM hospital_ownerships
+          WHERE hospital_ownerships.tenant_id = receivables.tenant_id
+            AND hospital_ownerships.organization_party_id = :actor_party_id
+            AND hospital_ownerships.hospital_party_id = receivables.debtor_party_id
+            AND hospital_ownerships.active = TRUE
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM receivable_allocations
+          WHERE receivable_allocations.tenant_id = receivables.tenant_id
+            AND receivable_allocations.receivable_id = receivables.id
+            AND (
+              receivable_allocations.allocated_party_id = :actor_party_id
+              OR receivable_allocations.physician_party_id = :actor_party_id
+            )
+        )
+      SQL
 
       CONFIRMATION_PERMITTED_FIELDS = %i[email_code whatsapp_code].freeze
       CHALLENGE_ISSUE_PERMITTED_FIELDS = %i[email_destination whatsapp_destination].freeze
@@ -62,6 +85,9 @@ module Api
       def authorize_requester_party_access!(payload)
         requester_party_id = payload[:requester_party_id]
         authorize_party_access!(requester_party_id) if requester_party_id.present?
+        return true if anticipation_request_receivable_access_permitted?(payload[:receivable_id])
+
+        raise AuthorizationError.new(code: "forbidden", message: "Access denied.")
       end
 
       def create_payload_types_valid?(payload)
@@ -86,6 +112,8 @@ module Api
 
       def load_anticipation_request_with_access!(anticipation_request_id)
         anticipation_request = tenant_anticipation_requests.find(anticipation_request_id)
+        return anticipation_request if anticipation_request_receivable_access_permitted?(anticipation_request.receivable_id)
+
         authorize_party_access!(anticipation_request.requester_party_id)
         anticipation_request
       end
@@ -166,6 +194,35 @@ module Api
 
       def tenant_anticipation_requests
         AnticipationRequest.where(tenant_id: Current.tenant_id)
+      end
+
+      def anticipation_request_receivable_access_permitted?(receivable_id)
+        return true if privileged_actor?
+
+        receivable_visible_to_actor?(receivable_id)
+      end
+
+      def receivable_visible_to_actor?(receivable_id)
+        return false if receivable_id.blank?
+
+        visible_receivables_scope.where(id: receivable_id).exists?
+      end
+
+      def visible_receivables_scope
+        scope = Receivable.where(tenant_id: Current.tenant_id)
+        return scope if privileged_actor?
+
+        if hospital_scope_actor?
+          hospital_ids = managed_hospital_party_ids
+          return scope.none if hospital_ids.empty?
+
+          return scope.where(debtor_party_id: hospital_ids)
+        end
+
+        actor_party_id = current_actor_party_id
+        return scope.none if actor_party_id.blank?
+
+        scope.where(RECEIVABLE_VISIBILITY_SQL, actor_party_id: actor_party_id)
       end
 
       def payload_presenter

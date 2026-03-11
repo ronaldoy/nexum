@@ -56,6 +56,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :redirect
     assert_nil cookies[:session_id]
+    follow_redirect!
+    assert_includes response.body, "Tente outro e-mail ou senha."
   end
 
   test "create with blank tenant slug" do

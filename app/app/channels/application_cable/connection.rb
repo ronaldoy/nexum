@@ -107,21 +107,12 @@ module ApplicationCable
       end
 
       def with_database_context(tenant_id:, actor_id: nil, role: nil)
-        ActiveRecord::Base.connection_pool.with_connection do
-          ActiveRecord::Base.transaction(requires_new: true) do
-            set_database_context!("app.tenant_id", tenant_id)
-            set_database_context!("app.actor_id", actor_id)
-            set_database_context!("app.role", role)
-            yield
-          end
-        end
-      end
-
-      def set_database_context!(key, value)
-        connection = ActiveRecord::Base.connection
-        connection.execute(
-          "SELECT set_config(#{connection.quote(key.to_s)}, #{connection.quote(value.to_s)}, true)"
-        )
+        DatabaseRequestContext.with(
+          tenant_id: tenant_id,
+          actor_id: actor_id,
+          role: role,
+          request_id: request.request_id
+        ) { yield }
       end
   end
 end

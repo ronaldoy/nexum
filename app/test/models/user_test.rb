@@ -117,6 +117,25 @@ class UserTest < ActiveSupport::TestCase
     refute user.valid_mfa_code?("000000")
   end
 
+  test "rejects OTP reuse from a stale user instance" do
+    user = User.create!(
+      tenant: @tenant,
+      role: "ops_admin",
+      email_address: "ops-mfa-stale@example.com",
+      password: "Password@2026",
+      password_confirmation: "Password@2026",
+      mfa_enabled: true,
+      mfa_secret: ROTP::Base32.random
+    )
+
+    code = ROTP::TOTP.new(user.mfa_secret).now
+    first_view = User.find(user.id)
+    stale_view = User.find(user.id)
+
+    assert first_view.valid_mfa_code?(code)
+    refute stale_view.valid_mfa_code?(code)
+  end
+
   test "regenerates webauthn_id using base64url when legacy value is invalid" do
     user = User.create!(
       tenant: @tenant,

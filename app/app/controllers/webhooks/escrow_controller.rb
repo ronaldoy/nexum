@@ -335,11 +335,15 @@ module Webhooks
       payload_value = [
         payload["event_id"],
         payload["eventId"],
-        payload["id"],
-        payload["request_control_key"],
-        payload["external_reference"],
-        payload.dig("pix_transfer", "request_control_key")
+        payload["id"]
       ].lazy.map { |value| value.to_s.strip.presence }.find(&:present?)
+
+      if payload_value.blank?
+        raise BadRequestError.new(
+          code: "webhook_event_id_missing",
+          message: "Webhook event id is required in the signed payload."
+        )
+      end
 
       if payload_value.present? && header_value.present? && payload_value != header_value
         raise BadRequestError.new(
@@ -348,7 +352,7 @@ module Webhooks
         )
       end
 
-      payload_value || payload_sha256
+      payload_value
     end
 
     def ensure_matching_payload!(existing:, payload_sha256:)

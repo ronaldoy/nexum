@@ -11,6 +11,13 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 --
+-- Name: app; Type: SCHEMA; Schema: -; Owner: -
+--
+
+CREATE SCHEMA app;
+
+
+--
 -- Name: citext; Type: EXTENSION; Schema: -; Owner: -
 --
 
@@ -36,6 +43,22 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
 --
 
 COMMENT ON EXTENSION pgcrypto IS 'cryptographic functions';
+
+
+--
+-- Name: set_request_context(text, text, text, text, boolean); Type: FUNCTION; Schema: app; Owner: -
+--
+
+CREATE FUNCTION app.set_request_context(tenant_id text, actor_id text DEFAULT NULL::text, actor_role text DEFAULT NULL::text, request_id text DEFAULT NULL::text, is_local boolean DEFAULT true) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  PERFORM set_config('app.tenant_id', COALESCE(tenant_id, ''), is_local);
+  PERFORM set_config('app.actor_id', COALESCE(actor_id, ''), is_local);
+  PERFORM set_config('app.role', COALESCE(actor_role, ''), is_local);
+  PERFORM set_config('app.request_id', COALESCE(request_id, ''), is_local);
+END;
+$$;
 
 
 --
@@ -93,6 +116,39 @@ CREATE FUNCTION public.app_current_tenant_id() RETURNS uuid
     LANGUAGE sql STABLE
     AS $$
   SELECT NULLIF(current_setting('app.tenant_id', true), '')::uuid
+$$;
+
+
+--
+-- Name: app_enforce_active_auth_challenge_uniqueness(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.app_enforce_active_auth_challenge_uniqueness() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.consumed_at IS NULL AND NEW.status IN ('PENDING', 'VERIFIED') THEN
+    PERFORM 1
+    FROM public.auth_challenges existing
+    WHERE existing.tenant_id = NEW.tenant_id
+      AND existing.actor_party_id = NEW.actor_party_id
+      AND existing.purpose = NEW.purpose
+      AND existing.delivery_channel = NEW.delivery_channel
+      AND existing.target_type = NEW.target_type
+      AND existing.target_id = NEW.target_id
+      AND existing.consumed_at IS NULL
+      AND existing.status IN ('PENDING', 'VERIFIED')
+      AND existing.id <> NEW.id
+    LIMIT 1;
+
+    IF FOUND THEN
+      RAISE EXCEPTION 'Active auth_challenge already exists for tenant %, actor %, purpose %, channel %, target %/%',
+        NEW.tenant_id, NEW.actor_party_id, NEW.purpose, NEW.delivery_channel, NEW.target_type, NEW.target_id;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
 $$;
 
 
@@ -170,6 +226,101 @@ BEGIN
 
     IF NEW.status <> 'SETTLED' AND NEW.settled_at IS DISTINCT FROM OLD.settled_at THEN
       RAISE EXCEPTION 'settled_at can only change when status transitions to SETTLED';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: app_protect_auth_challenges(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.app_protect_auth_challenges() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'DELETE not allowed on auth_challenges';
+  END IF;
+
+  IF TG_OP = 'UPDATE' THEN
+    IF NEW.id IS DISTINCT FROM OLD.id
+      OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+      OR NEW.actor_party_id IS DISTINCT FROM OLD.actor_party_id
+      OR NEW.purpose IS DISTINCT FROM OLD.purpose
+      OR NEW.delivery_channel IS DISTINCT FROM OLD.delivery_channel
+      OR NEW.destination_masked IS DISTINCT FROM OLD.destination_masked
+      OR NEW.code_digest IS DISTINCT FROM OLD.code_digest
+      OR NEW.max_attempts IS DISTINCT FROM OLD.max_attempts
+      OR NEW.expires_at IS DISTINCT FROM OLD.expires_at
+      OR NEW.request_id IS DISTINCT FROM OLD.request_id
+      OR NEW.target_type IS DISTINCT FROM OLD.target_type
+      OR NEW.target_id IS DISTINCT FROM OLD.target_id
+      OR NEW.metadata IS DISTINCT FROM OLD.metadata
+      OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+      RAISE EXCEPTION 'Only status, attempts, consumed_at, and updated_at can change on auth_challenges';
+    END IF;
+
+    IF NEW.attempts < OLD.attempts OR NEW.attempts > OLD.attempts + 1 THEN
+      RAISE EXCEPTION 'auth_challenges attempts can only stay the same or increment by 1';
+    END IF;
+
+    IF NEW.attempts > NEW.max_attempts THEN
+      RAISE EXCEPTION 'auth_challenges attempts cannot exceed max_attempts';
+    END IF;
+
+    IF OLD.consumed_at IS NOT NULL AND NEW.consumed_at IS DISTINCT FROM OLD.consumed_at THEN
+      RAISE EXCEPTION 'auth_challenges consumed_at cannot change once set';
+    END IF;
+
+    IF NEW.status = 'PENDING' AND NEW.consumed_at IS NOT NULL THEN
+      RAISE EXCEPTION 'auth_challenges consumed_at must be null while status is PENDING';
+    END IF;
+
+    IF NOT (
+      (OLD.status = 'PENDING' AND NEW.status IN ('PENDING', 'VERIFIED', 'EXPIRED', 'CANCELLED')) OR
+      (OLD.status = 'VERIFIED' AND NEW.status IN ('VERIFIED', 'CANCELLED')) OR
+      (OLD.status = 'EXPIRED' AND NEW.status = 'EXPIRED') OR
+      (OLD.status = 'CANCELLED' AND NEW.status = 'CANCELLED')
+    ) THEN
+      RAISE EXCEPTION 'Invalid auth_challenges status transition from % to %', OLD.status, NEW.status;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: app_protect_documents(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.app_protect_documents() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'DELETE not allowed on documents';
+  END IF;
+
+  IF TG_OP = 'UPDATE' THEN
+    IF NEW.id IS DISTINCT FROM OLD.id
+      OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+      OR NEW.receivable_id IS DISTINCT FROM OLD.receivable_id
+      OR NEW.actor_party_id IS DISTINCT FROM OLD.actor_party_id
+      OR NEW.document_type IS DISTINCT FROM OLD.document_type
+      OR NEW.signature_method IS DISTINCT FROM OLD.signature_method
+      OR NEW.status IS DISTINCT FROM OLD.status
+      OR NEW.sha256 IS DISTINCT FROM OLD.sha256
+      OR NEW.storage_key IS DISTINCT FROM OLD.storage_key
+      OR NEW.signed_at IS DISTINCT FROM OLD.signed_at
+      OR NEW.metadata IS DISTINCT FROM OLD.metadata
+      OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+      RAISE EXCEPTION 'Only updated_at can change on documents';
     END IF;
   END IF;
 
@@ -493,6 +644,9 @@ CREATE TABLE public.anticipation_requests (
     CONSTRAINT anticipation_requests_channel_check CHECK (((channel)::text = ANY (ARRAY[('API'::character varying)::text, ('PORTAL'::character varying)::text, ('WEBHOOK'::character varying)::text, ('INTERNAL'::character varying)::text]))),
     CONSTRAINT anticipation_requests_discount_amount_check CHECK ((discount_amount >= (0)::numeric)),
     CONSTRAINT anticipation_requests_discount_rate_check CHECK ((discount_rate >= (0)::numeric)),
+    CONSTRAINT anticipation_requests_discount_rounding_check CHECK ((discount_amount = (ceil(((requested_amount * discount_rate) * (100)::numeric)) / (100)::numeric))),
+    CONSTRAINT anticipation_requests_idempotency_key_present_check CHECK ((btrim((idempotency_key)::text) <> ''::text)),
+    CONSTRAINT anticipation_requests_net_amount_breakdown_check CHECK ((net_amount = (requested_amount - discount_amount))),
     CONSTRAINT anticipation_requests_net_amount_positive_check CHECK ((net_amount > (0)::numeric)),
     CONSTRAINT anticipation_requests_requested_amount_positive_check CHECK ((requested_amount > (0)::numeric)),
     CONSTRAINT anticipation_requests_status_check CHECK (((status)::text = ANY ((ARRAY['REQUESTED'::character varying, 'PENDING_REVIEW'::character varying, 'APPROVED'::character varying, 'FUNDED'::character varying, 'SETTLED'::character varying, 'CANCELLED'::character varying, 'REJECTED'::character varying])::text[])))
@@ -727,9 +881,14 @@ CREATE TABLE public.auth_challenges (
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
     CONSTRAINT auth_challenges_attempts_check CHECK ((attempts >= 0)),
+    CONSTRAINT auth_challenges_attempts_lte_max_check CHECK ((attempts <= max_attempts)),
+    CONSTRAINT auth_challenges_code_digest_format_check CHECK (((code_digest)::text ~ '^(hmac-sha256-v1\$)?[0-9a-f]{64}$'::text)),
     CONSTRAINT auth_challenges_delivery_channel_check CHECK (((delivery_channel)::text = ANY (ARRAY[('EMAIL'::character varying)::text, ('WHATSAPP'::character varying)::text]))),
+    CONSTRAINT auth_challenges_destination_masked_present_check CHECK ((NULLIF(btrim((destination_masked)::text), ''::text) IS NOT NULL)),
     CONSTRAINT auth_challenges_max_attempts_check CHECK ((max_attempts > 0)),
-    CONSTRAINT auth_challenges_status_check CHECK (((status)::text = ANY (ARRAY[('PENDING'::character varying)::text, ('VERIFIED'::character varying)::text, ('EXPIRED'::character varying)::text, ('CANCELLED'::character varying)::text])))
+    CONSTRAINT auth_challenges_purpose_present_check CHECK ((NULLIF(btrim((purpose)::text), ''::text) IS NOT NULL)),
+    CONSTRAINT auth_challenges_status_check CHECK (((status)::text = ANY (ARRAY[('PENDING'::character varying)::text, ('VERIFIED'::character varying)::text, ('EXPIRED'::character varying)::text, ('CANCELLED'::character varying)::text]))),
+    CONSTRAINT auth_challenges_target_type_present_check CHECK ((NULLIF(btrim((target_type)::text), ''::text) IS NOT NULL))
 );
 
 ALTER TABLE ONLY public.auth_challenges FORCE ROW LEVEL SECURITY;
@@ -774,7 +933,12 @@ CREATE TABLE public.documents (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT documents_status_check CHECK (((status)::text = ANY (ARRAY[('SIGNED'::character varying)::text, ('REVOKED'::character varying)::text, ('SUPERSEDED'::character varying)::text])))
+    CONSTRAINT documents_admin_import_metadata_check CHECK ((((signature_method)::text <> 'ADMIN_IMPORTED_EVIDENCE'::text) OR (NULLIF(btrim(COALESCE((metadata ->> 'imported_by_party_id'::text), ''::text)), ''::text) IS NOT NULL))),
+    CONSTRAINT documents_own_platform_confirmation_metadata_check CHECK ((((signature_method)::text <> 'OWN_PLATFORM_CONFIRMATION'::text) OR ((NULLIF(btrim(COALESCE((metadata ->> 'provider_envelope_id'::text), ''::text)), ''::text) IS NOT NULL) AND (NULLIF(btrim(COALESCE((metadata ->> 'email_challenge_id'::text), ''::text)), ''::text) IS NOT NULL) AND (NULLIF(btrim(COALESCE((metadata ->> 'whatsapp_challenge_id'::text), ''::text)), ''::text) IS NOT NULL)))),
+    CONSTRAINT documents_sha256_format_check CHECK (((sha256)::text ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT documents_signature_method_check CHECK (((signature_method)::text = ANY ((ARRAY['OWN_PLATFORM_CONFIRMATION'::character varying, 'ADMIN_IMPORTED_EVIDENCE'::character varying])::text[]))),
+    CONSTRAINT documents_status_check CHECK (((status)::text = ANY (ARRAY[('SIGNED'::character varying)::text, ('REVOKED'::character varying)::text, ('SUPERSEDED'::character varying)::text]))),
+    CONSTRAINT documents_storage_key_present_check CHECK ((btrim((storage_key)::text) <> ''::text))
 );
 
 ALTER TABLE ONLY public.documents FORCE ROW LEVEL SECURITY;
@@ -841,10 +1005,10 @@ ALTER TABLE ONLY public.escrow_payouts FORCE ROW LEVEL SECURITY;
 
 
 --
--- Name: fdic_operations; Type: TABLE; Schema: public; Owner: -
+-- Name: fidc_operations; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.fdic_operations (
+CREATE TABLE public.fidc_operations (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     tenant_id uuid NOT NULL,
     anticipation_request_id uuid,
@@ -863,16 +1027,16 @@ CREATE TABLE public.fdic_operations (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT fdic_operations_amount_positive_check CHECK ((amount > (0)::numeric)),
-    CONSTRAINT fdic_operations_currency_check CHECK (((currency)::text = 'BRL'::text)),
-    CONSTRAINT fdic_operations_idempotency_key_present_check CHECK ((btrim((idempotency_key)::text) <> ''::text)),
-    CONSTRAINT fdic_operations_operation_type_check CHECK (((operation_type)::text = ANY ((ARRAY['FUNDING_REQUEST'::character varying, 'SETTLEMENT_REPORT'::character varying])::text[]))),
-    CONSTRAINT fdic_operations_provider_check CHECK (((provider)::text = ANY ((ARRAY['MOCK'::character varying, 'WEBHOOK'::character varying])::text[]))),
-    CONSTRAINT fdic_operations_single_source_reference_check CHECK ((((anticipation_request_id IS NOT NULL) AND (receivable_payment_settlement_id IS NULL)) OR ((anticipation_request_id IS NULL) AND (receivable_payment_settlement_id IS NOT NULL)))),
-    CONSTRAINT fdic_operations_status_check CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying])::text[])))
+    CONSTRAINT fidc_operations_amount_positive_check CHECK ((amount > (0)::numeric)),
+    CONSTRAINT fidc_operations_currency_check CHECK (((currency)::text = 'BRL'::text)),
+    CONSTRAINT fidc_operations_idempotency_key_present_check CHECK ((btrim((idempotency_key)::text) <> ''::text)),
+    CONSTRAINT fidc_operations_operation_type_check CHECK (((operation_type)::text = ANY ((ARRAY['FUNDING_REQUEST'::character varying, 'SETTLEMENT_REPORT'::character varying])::text[]))),
+    CONSTRAINT fidc_operations_provider_check CHECK (((provider)::text = ANY ((ARRAY['MOCK'::character varying, 'WEBHOOK'::character varying])::text[]))),
+    CONSTRAINT fidc_operations_single_source_reference_check CHECK ((((anticipation_request_id IS NOT NULL) AND (receivable_payment_settlement_id IS NULL)) OR ((anticipation_request_id IS NULL) AND (receivable_payment_settlement_id IS NOT NULL)))),
+    CONSTRAINT fidc_operations_status_check CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying])::text[])))
 );
 
-ALTER TABLE ONLY public.fdic_operations FORCE ROW LEVEL SECURITY;
+ALTER TABLE ONLY public.fidc_operations FORCE ROW LEVEL SECURITY;
 
 
 --
@@ -1261,6 +1425,7 @@ CREATE TABLE public.provider_webhook_receipts (
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
     CONSTRAINT provider_webhook_receipts_event_id_present_check CHECK ((btrim((provider_event_id)::text) <> ''::text)),
+    CONSTRAINT provider_webhook_receipts_failed_error_details_check CHECK ((((status)::text <> 'FAILED'::text) OR ((NULLIF(btrim((COALESCE(error_code, ''::character varying))::text), ''::text) IS NOT NULL) AND (NULLIF(btrim((COALESCE(error_message, ''::character varying))::text), ''::text) IS NOT NULL)))),
     CONSTRAINT provider_webhook_receipts_payload_sha256_check CHECK (((payload_sha256)::text ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT provider_webhook_receipts_provider_check CHECK (((provider)::text = ANY ((ARRAY['QITECH'::character varying, 'STARKBANK'::character varying])::text[]))),
     CONSTRAINT provider_webhook_receipts_status_check CHECK (((status)::text = ANY ((ARRAY['PROCESSED'::character varying, 'IGNORED'::character varying, 'FAILED'::character varying])::text[])))
@@ -1350,10 +1515,10 @@ CREATE TABLE public.receivable_payment_settlements (
     receivable_allocation_id uuid,
     paid_amount numeric(18,2) NOT NULL,
     cnpj_amount numeric(18,2) DEFAULT 0.0 NOT NULL,
-    fdic_amount numeric(18,2) DEFAULT 0.0 NOT NULL,
+    fidc_amount numeric(18,2) DEFAULT 0.0 NOT NULL,
     beneficiary_amount numeric(18,2) DEFAULT 0.0 NOT NULL,
-    fdic_balance_before numeric(18,2) DEFAULT 0.0 NOT NULL,
-    fdic_balance_after numeric(18,2) DEFAULT 0.0 NOT NULL,
+    fidc_balance_before numeric(18,2) DEFAULT 0.0 NOT NULL,
+    fidc_balance_after numeric(18,2) DEFAULT 0.0 NOT NULL,
     paid_at timestamp(6) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     payment_reference character varying NOT NULL,
     request_id character varying,
@@ -1363,14 +1528,14 @@ CREATE TABLE public.receivable_payment_settlements (
     idempotency_key character varying NOT NULL,
     CONSTRAINT receivable_payment_settlements_beneficiary_non_negative_check CHECK ((beneficiary_amount >= (0)::numeric)),
     CONSTRAINT receivable_payment_settlements_cnpj_non_negative_check CHECK ((cnpj_amount >= (0)::numeric)),
-    CONSTRAINT receivable_payment_settlements_fdic_after_non_negative_check CHECK ((fdic_balance_after >= (0)::numeric)),
-    CONSTRAINT receivable_payment_settlements_fdic_balance_flow_check CHECK ((fdic_balance_before >= fdic_balance_after)),
-    CONSTRAINT receivable_payment_settlements_fdic_before_non_negative_check CHECK ((fdic_balance_before >= (0)::numeric)),
-    CONSTRAINT receivable_payment_settlements_fdic_non_negative_check CHECK ((fdic_amount >= (0)::numeric)),
+    CONSTRAINT receivable_payment_settlements_fidc_after_non_negative_check CHECK ((fidc_balance_after >= (0)::numeric)),
+    CONSTRAINT receivable_payment_settlements_fidc_balance_flow_check CHECK ((fidc_balance_before >= fidc_balance_after)),
+    CONSTRAINT receivable_payment_settlements_fidc_before_non_negative_check CHECK ((fidc_balance_before >= (0)::numeric)),
+    CONSTRAINT receivable_payment_settlements_fidc_non_negative_check CHECK ((fidc_amount >= (0)::numeric)),
     CONSTRAINT receivable_payment_settlements_idempotency_key_present_check CHECK ((btrim((idempotency_key)::text) <> ''::text)),
     CONSTRAINT receivable_payment_settlements_paid_positive_check CHECK ((paid_amount > (0)::numeric)),
     CONSTRAINT receivable_payment_settlements_payment_reference_present_check CHECK ((btrim((payment_reference)::text) <> ''::text)),
-    CONSTRAINT receivable_payment_settlements_split_total_check CHECK ((((cnpj_amount + fdic_amount) + beneficiary_amount) = paid_amount))
+    CONSTRAINT receivable_payment_settlements_split_total_check CHECK ((((cnpj_amount + fidc_amount) + beneficiary_amount) = paid_amount))
 );
 
 ALTER TABLE ONLY public.receivable_payment_settlements FORCE ROW LEVEL SECURITY;
@@ -1786,11 +1951,11 @@ ALTER TABLE ONLY public.escrow_payouts
 
 
 --
--- Name: fdic_operations fdic_operations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fidc_operations fidc_operations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.fdic_operations
-    ADD CONSTRAINT fdic_operations_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.fidc_operations
+    ADD CONSTRAINT fidc_operations_pkey PRIMARY KEY (id);
 
 
 --
@@ -2047,6 +2212,20 @@ CREATE UNIQUE INDEX idx_ase_unique_request_per_payment ON public.anticipation_se
 
 
 --
+-- Name: idx_auth_challenges_active_uniqueness_lookup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_auth_challenges_active_uniqueness_lookup ON public.auth_challenges USING btree (tenant_id, actor_party_id, purpose, delivery_channel, target_type, target_id) WHERE ((consumed_at IS NULL) AND ((status)::text = ANY ((ARRAY['PENDING'::character varying, 'VERIFIED'::character varying])::text[])));
+
+
+--
+-- Name: idx_documents_tenant_id_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_documents_tenant_id_id ON public.documents USING btree (tenant_id, id);
+
+
+--
 -- Name: idx_kyc_documents_lookup; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2208,10 +2387,31 @@ CREATE INDEX idx_on_receivable_payment_settlement_id_98a0387829 ON public.antici
 
 
 --
+-- Name: idx_parties_tenant_id_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_parties_tenant_id_id ON public.parties USING btree (tenant_id, id);
+
+
+--
 -- Name: idx_physicians_tenant_crm; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX idx_physicians_tenant_crm ON public.physicians USING btree (tenant_id, crm_state, crm_number) WHERE (crm_number IS NOT NULL);
+
+
+--
+-- Name: idx_receivable_allocations_tenant_id_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_receivable_allocations_tenant_id_id ON public.receivable_allocations USING btree (tenant_id, id);
+
+
+--
+-- Name: idx_receivables_tenant_id_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_receivables_tenant_id_id ON public.receivables USING btree (tenant_id, id);
 
 
 --
@@ -2789,52 +2989,52 @@ CREATE INDEX index_escrow_payouts_on_tenant_status_requested_at ON public.escrow
 
 
 --
--- Name: index_fdic_operations_dispatch_scan; Type: INDEX; Schema: public; Owner: -
+-- Name: index_fidc_operations_dispatch_scan; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX index_fdic_operations_dispatch_scan ON public.fdic_operations USING btree (tenant_id, operation_type, status, requested_at);
-
-
---
--- Name: index_fdic_operations_on_anticipation_request_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_fdic_operations_on_anticipation_request_id ON public.fdic_operations USING btree (anticipation_request_id);
+CREATE INDEX index_fidc_operations_dispatch_scan ON public.fidc_operations USING btree (tenant_id, operation_type, status, requested_at);
 
 
 --
--- Name: index_fdic_operations_on_receivable_payment_settlement_id; Type: INDEX; Schema: public; Owner: -
+-- Name: index_fidc_operations_on_anticipation_request_id; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX index_fdic_operations_on_receivable_payment_settlement_id ON public.fdic_operations USING btree (receivable_payment_settlement_id);
-
-
---
--- Name: index_fdic_operations_on_tenant_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_fdic_operations_on_tenant_id ON public.fdic_operations USING btree (tenant_id);
+CREATE INDEX index_fidc_operations_on_anticipation_request_id ON public.fidc_operations USING btree (anticipation_request_id);
 
 
 --
--- Name: index_fdic_operations_on_tenant_idempotency_key; Type: INDEX; Schema: public; Owner: -
+-- Name: index_fidc_operations_on_receivable_payment_settlement_id; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX index_fdic_operations_on_tenant_idempotency_key ON public.fdic_operations USING btree (tenant_id, idempotency_key);
-
-
---
--- Name: index_fdic_operations_unique_funding_per_request; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX index_fdic_operations_unique_funding_per_request ON public.fdic_operations USING btree (tenant_id, anticipation_request_id, operation_type) WHERE (anticipation_request_id IS NOT NULL);
+CREATE INDEX index_fidc_operations_on_receivable_payment_settlement_id ON public.fidc_operations USING btree (receivable_payment_settlement_id);
 
 
 --
--- Name: index_fdic_operations_unique_settlement_per_payment; Type: INDEX; Schema: public; Owner: -
+-- Name: index_fidc_operations_on_tenant_id; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX index_fdic_operations_unique_settlement_per_payment ON public.fdic_operations USING btree (tenant_id, receivable_payment_settlement_id, operation_type) WHERE (receivable_payment_settlement_id IS NOT NULL);
+CREATE INDEX index_fidc_operations_on_tenant_id ON public.fidc_operations USING btree (tenant_id);
+
+
+--
+-- Name: index_fidc_operations_on_tenant_idempotency_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_fidc_operations_on_tenant_idempotency_key ON public.fidc_operations USING btree (tenant_id, idempotency_key);
+
+
+--
+-- Name: index_fidc_operations_unique_funding_per_request; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_fidc_operations_unique_funding_per_request ON public.fidc_operations USING btree (tenant_id, anticipation_request_id, operation_type) WHERE (anticipation_request_id IS NOT NULL);
+
+
+--
+-- Name: index_fidc_operations_unique_settlement_per_payment; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_fidc_operations_unique_settlement_per_payment ON public.fidc_operations USING btree (tenant_id, receivable_payment_settlement_id, operation_type) WHERE (receivable_payment_settlement_id IS NOT NULL);
 
 
 --
@@ -3594,10 +3794,31 @@ CREATE TRIGGER anticipation_settlement_entries_no_update_delete BEFORE DELETE OR
 
 
 --
+-- Name: auth_challenges auth_challenges_active_uniqueness; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER auth_challenges_active_uniqueness BEFORE INSERT OR UPDATE ON public.auth_challenges FOR EACH ROW EXECUTE FUNCTION public.app_enforce_active_auth_challenge_uniqueness();
+
+
+--
+-- Name: auth_challenges auth_challenges_protect_mutation; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER auth_challenges_protect_mutation BEFORE DELETE OR UPDATE ON public.auth_challenges FOR EACH ROW EXECUTE FUNCTION public.app_protect_auth_challenges();
+
+
+--
 -- Name: document_events document_events_no_update_delete; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER document_events_no_update_delete BEFORE DELETE OR UPDATE ON public.document_events FOR EACH ROW EXECUTE FUNCTION public.app_forbid_mutation();
+
+
+--
+-- Name: documents documents_protect_mutation; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER documents_protect_mutation BEFORE DELETE OR UPDATE ON public.documents FOR EACH ROW EXECUTE FUNCTION public.app_protect_documents();
 
 
 --
@@ -3643,6 +3864,13 @@ CREATE TRIGGER outbox_events_no_update_delete BEFORE DELETE OR UPDATE ON public.
 
 
 --
+-- Name: provider_webhook_receipts provider_webhook_receipts_no_update_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER provider_webhook_receipts_no_update_delete BEFORE DELETE OR UPDATE ON public.provider_webhook_receipts FOR EACH ROW EXECUTE FUNCTION public.app_forbid_mutation();
+
+
+--
 -- Name: receivable_events receivable_events_no_update_delete; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3657,11 +3885,123 @@ CREATE TRIGGER receivable_payment_settlements_no_update_delete BEFORE DELETE OR 
 
 
 --
+-- Name: action_ip_logs fk_action_ip_logs_tenant_actor_party; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.action_ip_logs
+    ADD CONSTRAINT fk_action_ip_logs_tenant_actor_party FOREIGN KEY (tenant_id, actor_party_id) REFERENCES public.parties(tenant_id, id);
+
+
+--
+-- Name: anticipation_requests fk_anticipation_requests_tenant_receivable; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_requests
+    ADD CONSTRAINT fk_anticipation_requests_tenant_receivable FOREIGN KEY (tenant_id, receivable_id) REFERENCES public.receivables(tenant_id, id);
+
+
+--
+-- Name: anticipation_requests fk_anticipation_requests_tenant_receivable_allocation; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_requests
+    ADD CONSTRAINT fk_anticipation_requests_tenant_receivable_allocation FOREIGN KEY (tenant_id, receivable_allocation_id) REFERENCES public.receivable_allocations(tenant_id, id);
+
+
+--
+-- Name: anticipation_requests fk_anticipation_requests_tenant_requester_party; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.anticipation_requests
+    ADD CONSTRAINT fk_anticipation_requests_tenant_requester_party FOREIGN KEY (tenant_id, requester_party_id) REFERENCES public.parties(tenant_id, id);
+
+
+--
+-- Name: auth_challenges fk_auth_challenges_tenant_actor_party; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_challenges
+    ADD CONSTRAINT fk_auth_challenges_tenant_actor_party FOREIGN KEY (tenant_id, actor_party_id) REFERENCES public.parties(tenant_id, id);
+
+
+--
+-- Name: document_events fk_document_events_tenant_actor_party; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.document_events
+    ADD CONSTRAINT fk_document_events_tenant_actor_party FOREIGN KEY (tenant_id, actor_party_id) REFERENCES public.parties(tenant_id, id);
+
+
+--
+-- Name: document_events fk_document_events_tenant_document; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.document_events
+    ADD CONSTRAINT fk_document_events_tenant_document FOREIGN KEY (tenant_id, document_id) REFERENCES public.documents(tenant_id, id);
+
+
+--
+-- Name: document_events fk_document_events_tenant_receivable; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.document_events
+    ADD CONSTRAINT fk_document_events_tenant_receivable FOREIGN KEY (tenant_id, receivable_id) REFERENCES public.receivables(tenant_id, id);
+
+
+--
+-- Name: documents fk_documents_tenant_actor_party; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.documents
+    ADD CONSTRAINT fk_documents_tenant_actor_party FOREIGN KEY (tenant_id, actor_party_id) REFERENCES public.parties(tenant_id, id);
+
+
+--
+-- Name: documents fk_documents_tenant_receivable; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.documents
+    ADD CONSTRAINT fk_documents_tenant_receivable FOREIGN KEY (tenant_id, receivable_id) REFERENCES public.receivables(tenant_id, id);
+
+
+--
 -- Name: ledger_entries fk_ledger_entries_ledger_transactions; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.ledger_entries
     ADD CONSTRAINT fk_ledger_entries_ledger_transactions FOREIGN KEY (tenant_id, txn_id) REFERENCES public.ledger_transactions(tenant_id, txn_id);
+
+
+--
+-- Name: ledger_entries fk_ledger_entries_tenant_party; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ledger_entries
+    ADD CONSTRAINT fk_ledger_entries_tenant_party FOREIGN KEY (tenant_id, party_id) REFERENCES public.parties(tenant_id, id);
+
+
+--
+-- Name: ledger_entries fk_ledger_entries_tenant_receivable; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ledger_entries
+    ADD CONSTRAINT fk_ledger_entries_tenant_receivable FOREIGN KEY (tenant_id, receivable_id) REFERENCES public.receivables(tenant_id, id);
+
+
+--
+-- Name: ledger_transactions fk_ledger_transactions_tenant_actor_party; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ledger_transactions
+    ADD CONSTRAINT fk_ledger_transactions_tenant_actor_party FOREIGN KEY (tenant_id, actor_party_id) REFERENCES public.parties(tenant_id, id);
+
+
+--
+-- Name: ledger_transactions fk_ledger_transactions_tenant_receivable; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ledger_transactions
+    ADD CONSTRAINT fk_ledger_transactions_tenant_receivable FOREIGN KEY (tenant_id, receivable_id) REFERENCES public.receivables(tenant_id, id);
 
 
 --
@@ -3793,10 +4133,10 @@ ALTER TABLE ONLY public.anticipation_request_events
 
 
 --
--- Name: fdic_operations fk_rails_20c5515e7d; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fidc_operations fk_rails_20c5515e7d; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.fdic_operations
+ALTER TABLE ONLY public.fidc_operations
     ADD CONSTRAINT fk_rails_20c5515e7d FOREIGN KEY (anticipation_request_id) REFERENCES public.anticipation_requests(id);
 
 
@@ -3921,10 +4261,10 @@ ALTER TABLE ONLY public.receivable_statistics_daily
 
 
 --
--- Name: fdic_operations fk_rails_3d4ce4fb52; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fidc_operations fk_rails_3d4ce4fb52; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.fdic_operations
+ALTER TABLE ONLY public.fidc_operations
     ADD CONSTRAINT fk_rails_3d4ce4fb52 FOREIGN KEY (receivable_payment_settlement_id) REFERENCES public.receivable_payment_settlements(id);
 
 
@@ -3969,10 +4309,10 @@ ALTER TABLE ONLY public.documents
 
 
 --
--- Name: fdic_operations fk_rails_5123c49b42; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fidc_operations fk_rails_5123c49b42; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.fdic_operations
+ALTER TABLE ONLY public.fidc_operations
     ADD CONSTRAINT fk_rails_5123c49b42 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 
@@ -4641,6 +4981,38 @@ ALTER TABLE ONLY public.anticipation_risk_decisions
 
 
 --
+-- Name: receivable_events fk_receivable_events_tenant_actor_party; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.receivable_events
+    ADD CONSTRAINT fk_receivable_events_tenant_actor_party FOREIGN KEY (tenant_id, actor_party_id) REFERENCES public.parties(tenant_id, id);
+
+
+--
+-- Name: receivable_events fk_receivable_events_tenant_receivable; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.receivable_events
+    ADD CONSTRAINT fk_receivable_events_tenant_receivable FOREIGN KEY (tenant_id, receivable_id) REFERENCES public.receivables(tenant_id, id);
+
+
+--
+-- Name: receivable_payment_settlements fk_receivable_payment_settlements_tenant_receivable; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.receivable_payment_settlements
+    ADD CONSTRAINT fk_receivable_payment_settlements_tenant_receivable FOREIGN KEY (tenant_id, receivable_id) REFERENCES public.receivables(tenant_id, id);
+
+
+--
+-- Name: receivable_payment_settlements fk_receivable_payment_settlements_tenant_receivable_allocation; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.receivable_payment_settlements
+    ADD CONSTRAINT fk_receivable_payment_settlements_tenant_receivable_allocation FOREIGN KEY (tenant_id, receivable_allocation_id) REFERENCES public.receivable_allocations(tenant_id, id);
+
+
+--
 -- Name: action_ip_logs; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -4870,16 +5242,16 @@ CREATE POLICY escrow_payouts_tenant_policy ON public.escrow_payouts USING ((tena
 
 
 --
--- Name: fdic_operations; Type: ROW SECURITY; Schema: public; Owner: -
+-- Name: fidc_operations; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
-ALTER TABLE public.fdic_operations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.fidc_operations ENABLE ROW LEVEL SECURITY;
 
 --
--- Name: fdic_operations fdic_operations_tenant_policy; Type: POLICY; Schema: public; Owner: -
+-- Name: fidc_operations fidc_operations_tenant_policy; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY fdic_operations_tenant_policy ON public.fdic_operations USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+CREATE POLICY fidc_operations_tenant_policy ON public.fidc_operations USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
 
 
 --
@@ -5267,6 +5639,12 @@ CREATE POLICY webauthn_credentials_tenant_policy ON public.webauthn_credentials 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260311143000'),
+('20260311130000'),
+('20260311124000'),
+('20260311123000'),
+('20260310171000'),
+('20260310164000'),
 ('20260227151000'),
 ('20260227150000'),
 ('20260227120000'),

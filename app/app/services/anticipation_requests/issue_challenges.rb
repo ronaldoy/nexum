@@ -239,7 +239,7 @@ module AnticipationRequests
         purpose: CONFIRMATION_PURPOSE,
         delivery_channel: delivery_channel,
         destination_masked: destination_masked,
-        code_digest: digest(code),
+        code_digest: AuthChallenge.digest_code(code),
         status: "PENDING",
         attempts: 0,
         max_attempts: 5,
@@ -288,7 +288,7 @@ module AnticipationRequests
           "purpose" => CONFIRMATION_PURPOSE,
           "destination" => destination,
           "destination_masked" => challenge.destination_masked,
-          "code" => code,
+          "encrypted_code" => AuthChallenge.encrypt_code(code),
           "expires_at" => challenge.expires_at.utc.iso8601(6),
           "request_id" => @request_id
         }
@@ -442,10 +442,6 @@ module AnticipationRequests
           whatsapp_destination: whatsapp_destination
         )
       )
-    end
-
-    def digest(raw_value)
-      Digest::SHA256.hexdigest(raw_value.to_s)
     end
 
     def canonical_json(value)

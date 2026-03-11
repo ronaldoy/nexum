@@ -40,6 +40,13 @@ class Rack::Attack
     request.ip
   end
 
+  throttle("api-confirmation/actor", limit: 12, period: 5.minutes) do |request|
+    next unless request.post?
+    next unless request.path.match?(%r{\A/api/v1/(anticipation_requests|receivables)/[^/]+/(confirm|attach_document)\z})
+
+    actor_throttle_fingerprint(request)
+  end
+
   throttle("oauth-token/ip", limit: 30, period: 5.minutes) do |request|
     request.ip if oauth_token_request?(request)
   end
@@ -73,6 +80,21 @@ class Rack::Attack
 
   throttle("csp-report/ip", limit: 120, period: 5.minutes) do |request|
     request.ip if csp_report_request?(request)
+  end
+
+  throttle("escrow-webhook/ip", limit: 120, period: 5.minutes) do |request|
+    request.ip if escrow_webhook_request?(request)
+  end
+
+  throttle("escrow-webhook/payload", limit: 10, period: 5.minutes) do |request|
+    next unless escrow_webhook_request?(request)
+
+    tenant_slug = request.path.split("/").last.to_s.strip.downcase
+    provider = request.path.split("/")[-2].to_s.strip.upcase
+    payload_fingerprint = request_body_fingerprint(request)
+    next if tenant_slug.blank? || provider.blank? || payload_fingerprint.blank?
+
+    "#{provider}:#{tenant_slug}:#{payload_fingerprint}"
   end
 
   throttle("openapi-docs/credential", limit: 20, period: 10.minutes) do |request|
@@ -119,6 +141,10 @@ class Rack::Attack
 
   def self.csp_report_request?(request)
     request.post? && request.path == "/security/csp_reports"
+  end
+
+  def self.escrow_webhook_request?(request)
+    request.post? && request.path.match?(%r{\A/webhooks/escrow/[^/]+/[^/]+\z})
   end
 
   def self.oauth_token_request?(request)
@@ -169,5 +195,23 @@ class Rack::Attack
     request.params[key].to_s.strip.downcase.presence
   rescue StandardError
     nil
+  end
+
+  def self.actor_throttle_fingerprint(request)
+    authorization = request.get_header("HTTP_AUTHORIZATION").to_s
+    return "token:#{Digest::SHA256.hexdigest(authorization)}" if authorization.present?
+
+    tenant_cookie = request.cookies["session_tenant_id"].to_s
+    session_cookie = request.cookies["session_id"].to_s
+    return nil if tenant_cookie.blank? || session_cookie.blank?
+
+    "session:#{Digest::SHA256.hexdigest("#{tenant_cookie}:#{session_cookie}")}"
+  end
+
+  def self.request_body_fingerprint(request)
+    body = request.body.read.to_s
+    Digest::SHA256.hexdigest(body)
+  ensure
+    request.body.rewind if request.body.respond_to?(:rewind)
   end
 end

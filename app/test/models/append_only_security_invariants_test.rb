@@ -16,6 +16,7 @@ class AppendOnlySecurityInvariantsTest < ActiveSupport::TestCase
     ledger_transactions
     outbox_dispatch_attempts
     outbox_events
+    provider_webhook_receipts
     receivable_events
     receivable_payment_settlements
   ].freeze
@@ -160,7 +161,12 @@ class AppendOnlySecurityInvariantsTest < ActiveSupport::TestCase
         sha256: Digest::SHA256.hexdigest("append-document-#{SecureRandom.hex(8)}"),
         storage_key: "documents/#{SecureRandom.uuid}",
         signed_at: Time.current,
-        metadata: { "source" => "append-only-test" }
+        metadata: {
+          "source" => "append-only-test",
+          "provider_envelope_id" => "env-append-document",
+          "email_challenge_id" => SecureRandom.uuid,
+          "whatsapp_challenge_id" => SecureRandom.uuid
+        }
       )
 
       event = DocumentEvent.create!(

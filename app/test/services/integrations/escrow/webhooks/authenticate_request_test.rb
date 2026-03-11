@@ -44,7 +44,11 @@ module Integrations
         end
 
         test "accepts bearer token when token auth is configured" do
-          with_environment(qitech_secret_env => nil, qitech_token_env => "token-123") do
+          with_environment(
+            qitech_secret_env => nil,
+            qitech_token_env => "token-123",
+            qitech_insecure_token_auth_env => "true"
+          ) do
             request = RequestDouble.new(headers: {}, authorization: "Bearer token-123")
 
             result = AuthenticateRequest.new.call(
@@ -59,7 +63,11 @@ module Integrations
         end
 
         test "accepts provider token header when bearer token is absent" do
-          with_environment(qitech_secret_env => nil, qitech_token_env => "header-token") do
+          with_environment(
+            qitech_secret_env => nil,
+            qitech_token_env => "header-token",
+            qitech_insecure_token_auth_env => "true"
+          ) do
             request = RequestDouble.new(headers: { "X-QITECH-Webhook-Token" => "header-token" }, authorization: nil)
 
             result = AuthenticateRequest.new.call(
@@ -91,7 +99,11 @@ module Integrations
         end
 
         test "rejects invalid webhook token" do
-          with_environment(qitech_secret_env => nil, qitech_token_env => "token-123") do
+          with_environment(
+            qitech_secret_env => nil,
+            qitech_token_env => "token-123",
+            qitech_insecure_token_auth_env => "true"
+          ) do
             request = RequestDouble.new(headers: {}, authorization: "Bearer token-other")
 
             error = assert_raises(AuthenticateRequest::Error) do
@@ -107,8 +119,25 @@ module Integrations
           end
         end
 
+        test "rejects token auth unless insecure token auth is explicitly enabled" do
+          with_environment(qitech_secret_env => nil, qitech_token_env => "token-123", qitech_insecure_token_auth_env => nil) do
+            request = RequestDouble.new(headers: {}, authorization: "Bearer token-123")
+
+            error = assert_raises(AuthenticateRequest::Error) do
+              AuthenticateRequest.new.call(
+                provider: "QITECH",
+                request: request,
+                raw_body: "{}",
+                tenant_slug: TENANT_SLUG
+              )
+            end
+
+            assert_equal "webhook_insecure_token_auth_disabled", error.code
+          end
+        end
+
         test "requires auth configuration" do
-          with_environment(qitech_secret_env => nil, qitech_token_env => nil) do
+          with_environment(qitech_secret_env => nil, qitech_token_env => nil, qitech_insecure_token_auth_env => nil) do
             request = RequestDouble.new(headers: {}, authorization: nil)
 
             error = assert_raises(AuthenticateRequest::Error) do
@@ -124,6 +153,25 @@ module Integrations
           end
         end
 
+        test "does not use env-backed webhook secrets for unsafe tenant slugs" do
+          with_environment("QITECH_WEBHOOK_SECRET__ACME_BANK" => "test-secret") do
+            body = '{"event_id":"evt-unsafe-tenant"}'
+            signature = OpenSSL::HMAC.hexdigest("SHA256", "test-secret", body)
+            request = RequestDouble.new(headers: { "X-QITECH-Signature" => signature }, authorization: nil)
+
+            error = assert_raises(AuthenticateRequest::Error) do
+              AuthenticateRequest.new.call(
+                provider: "QITECH",
+                request: request,
+                raw_body: body,
+                tenant_slug: "acme_bank"
+              )
+            end
+
+            assert_equal "webhook_auth_not_configured", error.code
+          end
+        end
+
         private
 
         def qitech_secret_env
@@ -132,6 +180,10 @@ module Integrations
 
         def qitech_token_env
           "QITECH_WEBHOOK_TOKEN__#{TENANT_SLUG.upcase}"
+        end
+
+        def qitech_insecure_token_auth_env
+          "QITECH_WEBHOOK_ALLOW_INSECURE_TOKEN_AUTH__#{TENANT_SLUG.upcase}"
         end
 
         def with_environment(overrides)

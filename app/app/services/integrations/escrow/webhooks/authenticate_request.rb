@@ -4,6 +4,7 @@ module Integrations
   module Escrow
     module Webhooks
       class AuthenticateRequest
+        SAFE_ENV_TENANT_SLUG_PATTERN = Tenant::SLUG_FORMAT
         Error = Class.new(StandardError) do
           attr_reader :code
 
@@ -26,12 +27,14 @@ module Integrations
           "QITECH" => {
             credentials_key: :qitech,
             secret_env: "QITECH_WEBHOOK_SECRET",
-            token_env: "QITECH_WEBHOOK_TOKEN"
+            token_env: "QITECH_WEBHOOK_TOKEN",
+            token_auth_flag_env: "QITECH_WEBHOOK_ALLOW_INSECURE_TOKEN_AUTH"
           },
           "STARKBANK" => {
             credentials_key: :starkbank,
             secret_env: "STARKBANK_WEBHOOK_SECRET",
-            token_env: "STARKBANK_WEBHOOK_TOKEN"
+            token_env: "STARKBANK_WEBHOOK_TOKEN",
+            token_auth_flag_env: "STARKBANK_WEBHOOK_ALLOW_INSECURE_TOKEN_AUTH"
           }
         }.freeze
 
@@ -41,7 +44,8 @@ module Integrations
           secret = webhook_secret_for(provider_code, tenant_slug: normalized_tenant_slug)
           token = webhook_token_for(provider_code, tenant_slug: normalized_tenant_slug)
           return authenticate_with_signature(provider_code:, secret:, request:, raw_body:) if secret.present?
-          return authenticate_with_token(provider_code:, token:, request:) if token.present?
+          return authenticate_with_token(provider_code:, token:, request:) if token_auth_enabled?(provider_code, tenant_slug: normalized_tenant_slug, token: token)
+          return raise_insecure_token_auth_disabled!(provider_code) if token.present?
 
           raise_webhook_auth_not_configured!(provider_code)
         end
@@ -72,6 +76,13 @@ module Integrations
           raise Error.new(
             code: "webhook_auth_not_configured",
             message: "Webhook authentication is not configured for provider #{provider_code}."
+          )
+        end
+
+        def raise_insecure_token_auth_disabled!(provider_code)
+          raise Error.new(
+            code: "webhook_insecure_token_auth_disabled",
+            message: "Insecure webhook token authentication is disabled for provider #{provider_code}."
           )
         end
 
@@ -145,15 +156,35 @@ module Integrations
           )
         end
 
+        def token_auth_enabled?(provider, tenant_slug:, token:)
+          return false if token.blank? || tenant_slug.blank?
+
+          provider_config = WEBHOOK_PROVIDER_CONFIG[provider]
+          return false if provider_config.blank?
+
+          env_key = tenant_scoped_env_key(
+            base_key: provider_config.fetch(:token_auth_flag_env),
+            tenant_slug: tenant_slug
+          )
+          credentials_key = provider_config.fetch(:credentials_key)
+          configured = Rails.app.creds.option(
+            :integrations,
+            credentials_key,
+            :webhooks,
+            :tenants,
+            tenant_slug,
+            :allow_insecure_token_auth,
+            default: ENV[env_key]
+          )
+
+          ActiveModel::Type::Boolean.new.cast(configured)
+        end
+
         def webhook_config_value(provider:, tenant_slug:, credential_name:, env_key_name:)
           provider_config = WEBHOOK_PROVIDER_CONFIG[provider]
           return "" if provider_config.blank?
           return "" if tenant_slug.blank?
 
-          env_key = tenant_scoped_env_key(
-            base_key: provider_config.fetch(env_key_name),
-            tenant_slug: tenant_slug
-          )
           credentials_key = provider_config.fetch(:credentials_key)
           Rails.app.creds.option(
             :integrations,
@@ -162,7 +193,10 @@ module Integrations
             :tenants,
             tenant_slug,
             credential_name,
-            default: ENV[env_key]
+            default: tenant_scoped_env_value(
+              base_key: provider_config.fetch(env_key_name),
+              tenant_slug: tenant_slug
+            )
           ).to_s.strip
         end
 
@@ -177,6 +211,12 @@ module Integrations
         def tenant_scoped_env_key(base_key:, tenant_slug:)
           normalized_slug = tenant_slug.to_s.upcase.gsub(/[^A-Z0-9]+/, "_")
           "#{base_key}__#{normalized_slug}"
+        end
+
+        def tenant_scoped_env_value(base_key:, tenant_slug:)
+          return nil unless SAFE_ENV_TENANT_SLUG_PATTERN.match?(tenant_slug.to_s)
+
+          ENV[tenant_scoped_env_key(base_key:, tenant_slug: tenant_slug)]
         end
       end
     end

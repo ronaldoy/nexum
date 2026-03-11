@@ -8,7 +8,7 @@ module Integrations
       class QiTech
         class Client
           def initialize(base_url:, api_client_key:, signer:, open_timeout: 10, read_timeout: 30)
-            @base_uri = URI.parse(base_url)
+            @base_uri = parse_and_validate_base_uri!(base_url)
             @api_client_key = api_client_key.to_s.strip
             @signer = signer
             @open_timeout = open_timeout.to_i
@@ -104,6 +104,29 @@ module Integrations
             else
               raise ArgumentError, "Unsupported HTTP method #{method.inspect}"
             end
+          end
+
+          def parse_and_validate_base_uri!(value)
+            uri = URI.parse(value.to_s)
+            invalid_reasons = []
+            invalid_reasons << "must use HTTPS" unless uri.is_a?(URI::HTTPS)
+            invalid_reasons << "must include host" if uri.host.to_s.blank?
+            invalid_reasons << "must not include userinfo" if uri.userinfo.present?
+            invalid_reasons << "must not include query parameters" if uri.query.present?
+            invalid_reasons << "must not include fragments" if uri.fragment.present?
+            return uri if invalid_reasons.empty?
+
+            raise ConfigurationError.new(
+              code: "qitech_base_url_invalid",
+              message: "QI Tech base URL is invalid.",
+              details: { reason: invalid_reasons.join(", ") }
+            )
+          rescue URI::InvalidURIError => error
+            raise ConfigurationError.new(
+              code: "qitech_base_url_invalid",
+              message: "QI Tech base URL is invalid.",
+              details: { error_message: error.message }
+            )
           end
         end
       end

@@ -39,6 +39,76 @@ module Api
           assert response.parsed_body["expires_in"].positive?
         end
 
+        test "allows browser-originated token issuance from an allowlisted origin" do
+          with_tenant_db_context(tenant_id: @tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
+            @partner_application.update!(allowed_origins: [ "https://frontend.parceiro.com.br/" ])
+          end
+
+          post api_v1_oauth_token_path(tenant_slug: @tenant.slug),
+            headers: default_headers.merge("Origin" => "https://frontend.parceiro.com.br"),
+            params: {
+              grant_type: "client_credentials",
+              client_id: @partner_application.client_id,
+              client_secret: @client_secret,
+              scope: "receivables:write"
+            }
+
+          assert_response :success
+          assert_equal "receivables:write", response.parsed_body["scope"]
+        end
+
+        test "does not attribute oauth token issuance to the application creator" do
+          request_id = "oauth-token-audit-attribution-request-id"
+
+          post api_v1_oauth_token_path(tenant_slug: @tenant.slug),
+            headers: default_headers.merge("X-Request-Id" => request_id),
+            params: {
+              grant_type: "client_credentials",
+              client_id: @partner_application.client_id,
+              client_secret: @client_secret,
+              scope: "receivables:write"
+            }
+
+          assert_response :success
+
+          with_tenant_db_context(tenant_id: @tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
+            partner_action_log = ActionIpLog.find_by!(
+              tenant_id: @tenant.id,
+              action_type: "PARTNER_APPLICATION_TOKEN_ISSUED",
+              target_type: "PartnerApplication",
+              target_id: @partner_application.id,
+              request_id: request_id
+            )
+            api_token_log = ActionIpLog.find_by!(
+              tenant_id: @tenant.id,
+              action_type: "API_ACCESS_TOKEN_ISSUED",
+              target_type: "ApiAccessToken",
+              request_id: request_id
+            )
+
+            assert_nil partner_action_log.actor_party_id
+            assert_nil api_token_log.actor_party_id
+          end
+        end
+
+        test "rejects browser-originated token issuance from a disallowed origin" do
+          with_tenant_db_context(tenant_id: @tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
+            @partner_application.update!(allowed_origins: [ "https://frontend.parceiro.com.br" ])
+          end
+
+          post api_v1_oauth_token_path(tenant_slug: @tenant.slug),
+            headers: default_headers.merge("Origin" => "https://evil.parceiro.com.br"),
+            params: {
+              grant_type: "client_credentials",
+              client_id: @partner_application.client_id,
+              client_secret: @client_secret,
+              scope: "receivables:write"
+            }
+
+          assert_response :unauthorized
+          assert_equal "invalid_client", response.parsed_body["error"]
+        end
+
         test "issues bearer token when client credentials are sent via basic auth" do
           encoded_credentials = Base64.strict_encode64("#{@partner_application.client_id}:#{@client_secret}")
 

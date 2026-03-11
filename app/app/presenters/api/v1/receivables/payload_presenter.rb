@@ -4,6 +4,19 @@ module Api
   module V1
     module Receivables
       class PayloadPresenter
+        CONTROL_PLANE_KEYS = %w[
+          request_id
+          event_hash
+          prev_hash
+          storage_key
+          sha256
+          idempotency_key
+          payload_hash
+          provider_envelope_id
+          email_challenge_id
+          whatsapp_challenge_id
+        ].freeze
+
         def initialize(provenance_resolver:)
           @provenance_resolver = provenance_resolver
         end
@@ -37,10 +50,7 @@ module Api
             actor_party_id: event.actor_party_id,
             actor_role: event.actor_role,
             occurred_at: event.occurred_at&.iso8601,
-            request_id: event.request_id,
-            event_hash: event.event_hash,
-            prev_hash: event.prev_hash,
-            payload: event.payload
+            payload: public_payload(event.payload)
           }
         end
 
@@ -52,13 +62,12 @@ module Api
             payment_reference: settlement.payment_reference,
             paid_amount: decimal_as_string(settlement.paid_amount),
             cnpj_amount: decimal_as_string(settlement.cnpj_amount),
-            fdic_amount: decimal_as_string(settlement.fdic_amount),
+            fidc_amount: decimal_as_string(settlement.fidc_amount),
             beneficiary_amount: decimal_as_string(settlement.beneficiary_amount),
             physician_amount: decimal_as_string(settlement.physician_amount),
-            fdic_balance_before: decimal_as_string(settlement.fdic_balance_before),
-            fdic_balance_after: decimal_as_string(settlement.fdic_balance_after),
-            paid_at: settlement.paid_at&.iso8601,
-            request_id: settlement.request_id
+            fidc_balance_before: decimal_as_string(settlement.fidc_balance_before),
+            fidc_balance_after: decimal_as_string(settlement.fidc_balance_after),
+            paid_at: settlement.paid_at&.iso8601
           }
         end
 
@@ -71,20 +80,25 @@ module Api
           }
         end
 
-        def document(document)
-          {
+        def document(document, expose_internal_fields: false)
+          payload = {
             id: document.id,
             receivable_id: document.receivable_id,
             actor_party_id: document.actor_party_id,
             document_type: document.document_type,
             signature_method: document.signature_method,
             status: document.status,
-            sha256: document.sha256,
-            storage_key: document.storage_key,
             signed_at: document.signed_at&.iso8601,
-            metadata: document.metadata || {},
+            metadata: public_payload(document.metadata),
             events: document.document_events.order(occurred_at: :asc).map { |event| document_event(event) }
           }
+
+          if expose_internal_fields
+            payload[:sha256] = document.sha256
+            payload[:storage_key] = document.storage_key
+          end
+
+          payload
         end
 
         private
@@ -99,9 +113,16 @@ module Api
             event_type: event.event_type,
             occurred_at: event.occurred_at&.iso8601,
             actor_party_id: event.actor_party_id,
-            request_id: event.request_id,
-            payload: event.payload
+            payload: public_payload(event.payload)
           }
+        end
+
+        def public_payload(raw_payload)
+          normalized = MetadataSanitizer.normalize(raw_payload)
+          return {} unless normalized.is_a?(Hash)
+
+          allowed_keys = normalized.keys.reject { |key| CONTROL_PLANE_KEYS.include?(key.to_s) }
+          MetadataSanitizer.sanitize(normalized, allowed_keys: allowed_keys)
         end
       end
     end

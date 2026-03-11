@@ -69,7 +69,7 @@ module Api
         assert_equal "100.00", body.dig("data", "requested_amount")
         assert_equal "5.00", body.dig("data", "discount_amount")
         assert_equal "95.00", body.dig("data", "net_amount")
-        assert_equal idempotency_key, body.dig("data", "idempotency_key")
+        assert_nil body.dig("data", "idempotency_key")
         provenance = body.dig("data", "receivable_provenance")
         assert_equal @tenant_bundle[:debtor].legal_name, provenance.dig("hospital", "legal_name")
         assert_equal @tenant_bundle[:creditor].legal_name, provenance.dig("owning_organization", "legal_name")
@@ -89,7 +89,7 @@ module Api
         end
       end
 
-      test "exposes hospital ownership provenance for fdic funding visibility" do
+      test "exposes hospital ownership provenance for fidc funding visibility" do
         custom_bundle = nil
         owning_org = nil
 
@@ -430,10 +430,15 @@ module Api
           assert_equal 2, challenges.count
           assert_equal %w[EMAIL WHATSAPP], challenges.order(delivery_channel: :asc).pluck(:delivery_channel)
           assert_equal %w[PENDING PENDING], challenges.order(delivery_channel: :asc).pluck(:status)
+          assert challenges.all? { |challenge| challenge.code_digest.start_with?("#{AuthChallenge::CODE_DIGEST_VERSION}$") }
 
           assert_equal 1, OutboxEvent.where(tenant_id: @tenant.id, idempotency_key: "idem-issue-001", event_type: "ANTICIPATION_CONFIRMATION_CHALLENGES_ISSUED").count
-          assert_equal 1, OutboxEvent.where(tenant_id: @tenant.id, idempotency_key: "idem-issue-001:email", event_type: "AUTH_CHALLENGE_EMAIL_DISPATCH_REQUESTED").count
-          assert_equal 1, OutboxEvent.where(tenant_id: @tenant.id, idempotency_key: "idem-issue-001:whatsapp", event_type: "AUTH_CHALLENGE_WHATSAPP_DISPATCH_REQUESTED").count
+          email_event = OutboxEvent.find_by!(tenant_id: @tenant.id, idempotency_key: "idem-issue-001:email", event_type: "AUTH_CHALLENGE_EMAIL_DISPATCH_REQUESTED")
+          whatsapp_event = OutboxEvent.find_by!(tenant_id: @tenant.id, idempotency_key: "idem-issue-001:whatsapp", event_type: "AUTH_CHALLENGE_WHATSAPP_DISPATCH_REQUESTED")
+          assert_nil email_event.payload["code"]
+          assert_nil whatsapp_event.payload["code"]
+          assert AuthChallenge.decrypt_code(email_event.payload["encrypted_code"]).present?
+          assert AuthChallenge.decrypt_code(whatsapp_event.payload["encrypted_code"]).present?
 
           assert_equal 1, ReceivableEvent.where(receivable_id: anticipation_request.receivable_id, event_type: "ANTICIPATION_CONFIRMATION_CHALLENGES_ISSUED").count
           assert_equal 1, ActionIpLog.where(action_type: "ANTICIPATION_CHALLENGES_ISSUED", target_id: anticipation_request.id).count
@@ -644,18 +649,18 @@ module Api
 
           assert_equal 1, ActionIpLog.where(action_type: "ANTICIPATION_CONFIRMED", target_id: anticipation_request.id).count
 
-          fdic_outbox = OutboxEvent.find_by!(
+          fidc_outbox = OutboxEvent.find_by!(
             tenant_id: @tenant.id,
             aggregate_type: "AnticipationRequest",
             aggregate_id: anticipation_request.id,
             event_type: "ANTICIPATION_FIDC_FUNDING_REQUESTED",
-            idempotency_key: "#{anticipation_request.id}:fdic_funding_request"
+            idempotency_key: "#{anticipation_request.id}:fidc_funding_request"
           )
-          assert_equal anticipation_request.id, fdic_outbox.payload["anticipation_request_id"]
-          assert_equal anticipation_request.receivable_id, fdic_outbox.payload["receivable_id"]
-          assert_equal anticipation_request.net_amount.to_d, BigDecimal(fdic_outbox.payload["amount"])
-          assert_equal "BRL", fdic_outbox.payload["currency"]
-          assert_equal anticipation_request.receivable.debtor_party_id, fdic_outbox.payload.dig("receivable_origin", "hospital_party_id")
+          assert_equal anticipation_request.id, fidc_outbox.payload["anticipation_request_id"]
+          assert_equal anticipation_request.receivable_id, fidc_outbox.payload["receivable_id"]
+          assert_equal anticipation_request.net_amount.to_d, BigDecimal(fidc_outbox.payload["amount"])
+          assert_equal "BRL", fidc_outbox.payload["currency"]
+          assert_equal anticipation_request.receivable.debtor_party_id, fidc_outbox.payload.dig("receivable_origin", "hospital_party_id")
 
           assert_equal 0, OutboxEvent.where(
             tenant_id: @tenant.id,
@@ -702,7 +707,7 @@ module Api
             tenant_id: @tenant.id,
             aggregate_id: anticipation_request.id,
             event_type: "ANTICIPATION_FIDC_FUNDING_REQUESTED",
-            idempotency_key: "#{anticipation_request.id}:fdic_funding_request"
+            idempotency_key: "#{anticipation_request.id}:fidc_funding_request"
           ).count
         end
       end
@@ -999,16 +1004,26 @@ module Api
         email_code = nil
         whatsapp_code = nil
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
-          email_code = OutboxEvent.find_by!(
+          email_event = OutboxEvent.find_by!(
             tenant_id: @tenant.id,
             aggregate_id: anticipation_request.id,
             event_type: "AUTH_CHALLENGE_EMAIL_DISPATCH_REQUESTED"
-          ).payload.fetch("code")
-          whatsapp_code = OutboxEvent.find_by!(
+          )
+          whatsapp_event = OutboxEvent.find_by!(
             tenant_id: @tenant.id,
             aggregate_id: anticipation_request.id,
             event_type: "AUTH_CHALLENGE_WHATSAPP_DISPATCH_REQUESTED"
-          ).payload.fetch("code")
+          )
+
+          assert_nil email_event.payload["code"]
+          assert_nil whatsapp_event.payload["code"]
+
+          email_code = AuthChallenge.decrypt_code(email_event.payload.fetch("encrypted_code"))
+          whatsapp_code = AuthChallenge.decrypt_code(whatsapp_event.payload.fetch("encrypted_code"))
+
+          email_challenge = AuthChallenge.find(email_event.payload.fetch("challenge_id"))
+          refute_equal Digest::SHA256.hexdigest(email_code), email_challenge.code_digest
+          assert email_challenge.code_digest.start_with?("#{AuthChallenge::CODE_DIGEST_VERSION}$")
         end
 
         post confirm_api_v1_anticipation_request_path(anticipation_request.id),

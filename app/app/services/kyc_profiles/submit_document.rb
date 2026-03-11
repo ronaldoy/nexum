@@ -56,6 +56,7 @@ module KycProfiles
     end
 
     def call(kyc_profile_id:, raw_payload:)
+      preflight_replay_conflict_without_payload_hash!
       inputs = build_submission_inputs(kyc_profile_id:, raw_payload:)
       ActiveRecord::Base.transaction do
         submit_or_replay(inputs)
@@ -85,6 +86,14 @@ module KycProfiles
 
     def resolve_failure_target_id(inputs:, fallback_kyc_profile_id:)
       inputs&.kyc_profile_id || fallback_kyc_profile_id
+    end
+
+    def preflight_replay_conflict_without_payload_hash!
+      existing_outbox = OutboxEvent.find_by(tenant_id: @tenant_id, idempotency_key: @idempotency_key)
+      return if existing_outbox.blank?
+
+      ensure_replay_outbox_operation!(existing_outbox)
+      ensure_replay_payload_hash!(existing_outbox:, payload_hash: nil) if existing_outbox.payload&.dig(PAYLOAD_HASH_KEY).blank?
     end
 
     def build_submission_inputs(kyc_profile_id:, raw_payload:)
@@ -185,6 +194,11 @@ module KycProfiles
       metadata = sanitize_client_metadata(payload[:metadata] || {})
 
       blob = resolve_blob(raw_signed_id: payload[:blob_signed_id])
+      raise_validation_error!("blob_signed_id_required", "blob_signed_id is required.") if blob.blank?
+      sha256 = payload[:sha256].to_s.strip
+      raise_validation_error!("sha256_required", "sha256 is required.") if sha256.blank?
+      validate_blob_tenant_metadata!(blob: blob)
+      validate_blob_sha256!(blob:, expected_sha256: sha256)
       storage_key = resolve_storage_key!(blob: blob, payload_storage_key: payload[:storage_key])
 
       {
@@ -198,15 +212,12 @@ module KycProfiles
         is_key_document: parse_boolean(payload.fetch(:is_key_document, false)),
         storage_key: storage_key,
         blob: blob,
-        sha256: payload[:sha256].to_s,
+        sha256: sha256,
         metadata: metadata
       }
     end
 
     def resolve_storage_key!(blob:, payload_storage_key:)
-      return payload_storage_key.to_s.strip if blob.blank?
-
-      validate_blob_tenant_metadata!(blob: blob)
       provided_storage_key = payload_storage_key.to_s.strip
       if provided_storage_key.present? && provided_storage_key != blob.key
         raise_validation_error!("storage_key_blob_mismatch", "storage_key does not match blob key.")
@@ -241,6 +252,14 @@ module KycProfiles
       return false if %w[false 0 no n].include?(raw_value.to_s.strip.downcase)
 
       raise_validation_error!("invalid_is_key_document", "is_key_document is invalid.")
+    end
+
+    def validate_blob_sha256!(blob:, expected_sha256:)
+      actual = Digest::SHA256.hexdigest(blob.download)
+      return if expected_sha256.bytesize == actual.bytesize &&
+        ActiveSupport::SecurityUtils.secure_compare(actual, expected_sha256)
+
+      raise_validation_error!("sha256_mismatch", "sha256 does not match uploaded content.")
     end
 
     def validate_party_consistency!(kyc_profile:, payload:)

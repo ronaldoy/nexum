@@ -20,6 +20,7 @@ class OpenapiDocsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_equal "application/yaml", response.media_type
+    assert_equal "no-store", response.headers["Cache-Control"]
     assert_includes response.body, "openapi: 3.1.0"
     assert_includes response.body, "title: Nexum API"
   end
@@ -29,10 +30,18 @@ class OpenapiDocsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :unauthorized
     assert_equal "unauthorized", response.parsed_body.dig("error", "code")
+    assert_equal "no-store", response.headers["Cache-Control"]
   end
 
   test "returns unauthorized with invalid bearer token" do
     get "/docs/openapi/v1", headers: authorization_header("invalid")
+
+    assert_response :unauthorized
+    assert_equal "unauthorized", response.parsed_body.dig("error", "code")
+  end
+
+  test "returns unauthorized with short malformed bearer token" do
+    get "/docs/openapi/v1", headers: authorization_header("x")
 
     assert_response :unauthorized
     assert_equal "unauthorized", response.parsed_body.dig("error", "code")

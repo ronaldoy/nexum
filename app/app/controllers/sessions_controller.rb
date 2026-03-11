@@ -12,7 +12,7 @@ class SessionsController < ApplicationController
 
   def create
     tenant_slug, tenant_id = session_tenant_context(params[:tenant_slug])
-    return if performed?
+    return handle_authentication_failure(tenant_id: nil, tenant_slug:) if tenant_id.blank?
 
     user = authenticated_user
     return handle_authenticated_user(user:, tenant_slug:, tenant_id:) if user.present?
@@ -31,11 +31,7 @@ class SessionsController < ApplicationController
   def session_tenant_context(raw_tenant_slug)
     tenant_slug = normalized_tenant_slug(raw_tenant_slug)
     tenant_id = resolve_tenant_id_from_slug(tenant_slug)
-
-    unless tenant_id
-      redirect_to new_session_path(**tenant_slug_path_params(tenant_slug)), alert: "Organização não encontrada."
-      return [ nil, nil ]
-    end
+    return [ tenant_slug, nil ] unless tenant_id
 
     bootstrap_database_tenant_context!(tenant_id)
     [ tenant_slug, tenant_id ]

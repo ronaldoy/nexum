@@ -286,7 +286,7 @@ module Api
 
       def render_attach_document_response(result)
         render json: {
-          data: payload_presenter.document(result.document).merge(replayed: result.replayed?)
+          data: payload_presenter.document(result.document, expose_internal_fields: true).merge(replayed: result.replayed?)
         }, status: (result.replayed? ? :ok : :created)
       end
 

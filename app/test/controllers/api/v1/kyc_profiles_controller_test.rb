@@ -208,7 +208,8 @@ module Api
       end
 
       test "submits kyc document with append-only event and action log" do
-        blob = create_active_storage_blob(filename: "kyc-rg-001.pdf", content: "kyc rg content")
+        blob_content = "kyc rg content"
+        blob = create_active_storage_blob(filename: "kyc-rg-001.pdf", content: blob_content)
 
         post submit_document_api_v1_kyc_profile_path(@kyc_profile.id),
           headers: authorization_headers(@write_token, idempotency_key: "idem-kyc-doc-submit-001"),
@@ -222,7 +223,7 @@ module Api
               expires_on: "2030-01-10",
               is_key_document: false,
               blob_signed_id: blob.signed_id,
-              sha256: "abc123",
+              sha256: Digest::SHA256.hexdigest(blob_content),
               metadata: { source: "portal_upload" }
             }
           },
@@ -259,7 +260,7 @@ module Api
               issuing_state: "SP",
               is_key_document: false,
               blob_signed_id: blob.signed_id,
-              sha256: "sha-meta-001",
+              sha256: Digest::SHA256.hexdigest("kyc metadata content"),
               metadata: {
                 source: "portal_upload",
                 source_reference: "rg-front-001",
@@ -290,14 +291,16 @@ module Api
       end
 
       test "replays kyc document submission with same idempotency key and payload" do
+        blob_content = "kyc cpf replay 001"
+        blob = create_active_storage_blob(filename: "kyc-cpf-replay-001.pdf", content: blob_content)
         payload = {
           kyc_document: {
             document_type: "CPF",
             document_number: valid_cpf_from_seed("kyc-doc-replay-cpf"),
             issuing_country: "BR",
             is_key_document: true,
-            storage_key: "kyc/cpf-001.pdf",
-            sha256: "sha-cpf-001"
+            blob_signed_id: blob.signed_id,
+            sha256: Digest::SHA256.hexdigest(blob_content)
           }
         }
 
@@ -325,25 +328,29 @@ module Api
       end
 
       test "returns conflict when kyc document idempotency key is reused with different payload" do
+        first_content = "kyc rg conflict 001"
+        first_blob = create_active_storage_blob(filename: "kyc-rg-conflict-001.pdf", content: first_content)
         post submit_document_api_v1_kyc_profile_path(@kyc_profile.id),
           headers: authorization_headers(@write_token, idempotency_key: "idem-kyc-doc-conflict-001"),
           params: {
             kyc_document: {
               document_type: "RG",
-              storage_key: "kyc/rg-conflict-001.pdf",
-              sha256: "sha-rg-conflict-001"
+              blob_signed_id: first_blob.signed_id,
+              sha256: Digest::SHA256.hexdigest(first_content)
             }
           },
           as: :json
         assert_response :created
 
+        second_content = "kyc rg conflict 002"
+        second_blob = create_active_storage_blob(filename: "kyc-rg-conflict-002.pdf", content: second_content)
         post submit_document_api_v1_kyc_profile_path(@kyc_profile.id),
           headers: authorization_headers(@write_token, idempotency_key: "idem-kyc-doc-conflict-001"),
           params: {
             kyc_document: {
               document_type: "RG",
-              storage_key: "kyc/rg-conflict-002.pdf",
-              sha256: "sha-rg-conflict-002"
+              blob_signed_id: second_blob.signed_id,
+              sha256: Digest::SHA256.hexdigest(second_content)
             }
           },
           as: :json
@@ -385,13 +392,15 @@ module Api
           )
         end
 
+        blob_content = "kyc rg missing hash"
+        blob = create_active_storage_blob(filename: "kyc-rg-missing-hash.pdf", content: blob_content)
         post submit_document_api_v1_kyc_profile_path(@kyc_profile.id),
           headers: authorization_headers(@write_token, idempotency_key: idempotency_key),
           params: {
             kyc_document: {
               document_type: "RG",
-              storage_key: "kyc/input-controller-submit.pdf",
-              sha256: "sha-input-controller-submit"
+              blob_signed_id: blob.signed_id,
+              sha256: Digest::SHA256.hexdigest(blob_content)
             }
           },
           as: :json
@@ -405,14 +414,16 @@ module Api
       end
 
       test "returns unprocessable entity for invalid kyc document payload" do
+        blob_content = "kyc rg invalid payload"
+        blob = create_active_storage_blob(filename: "kyc-rg-invalid.pdf", content: blob_content)
         post submit_document_api_v1_kyc_profile_path(@kyc_profile.id),
           headers: authorization_headers(@write_token, idempotency_key: "idem-kyc-doc-invalid-001"),
           params: {
             kyc_document: {
-              document_type: "RG",
+              document_type: "",
               is_key_document: true,
-              storage_key: "kyc/rg-invalid.pdf",
-              sha256: "sha-rg-invalid"
+              blob_signed_id: blob.signed_id,
+              sha256: Digest::SHA256.hexdigest(blob_content)
             }
           },
           as: :json

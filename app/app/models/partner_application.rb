@@ -32,6 +32,7 @@ class PartnerApplication < ApplicationRecord
   validates :token_ttl_minutes, numericality: { only_integer: true, greater_than_or_equal_to: 5, less_than_or_equal_to: 60 }
   validate :scopes_must_be_known
   validate :actor_party_tenant_match
+  validate :allowed_origins_must_be_valid_https
 
   before_validation :normalize_scopes
   before_validation :normalize_allowed_origins
@@ -81,7 +82,14 @@ class PartnerApplication < ApplicationRecord
   end
 
   def self.normalize_allowed_origin_values(origins)
-    Array(origins).map(&:to_s).map(&:strip).reject(&:blank?).uniq.sort
+    Array(origins).map { |origin| normalize_allowed_origin_value(origin) }.reject(&:blank?).uniq.sort
+  end
+
+  def self.normalize_allowed_origin_value(origin)
+    raw = origin.to_s.strip
+    return nil if raw.blank?
+
+    canonical_origin(raw) || raw
   end
 
   def self.secure_compare_digest(left, right)
@@ -89,6 +97,25 @@ class PartnerApplication < ApplicationRecord
     return false unless left.bytesize == right.bytesize
 
     ActiveSupport::SecurityUtils.secure_compare(left, right)
+  end
+
+  def self.canonical_origin(origin)
+    raw = origin.to_s.strip
+    return nil if raw.blank?
+
+    uri = URI.parse(raw)
+    return nil unless uri.is_a?(URI::HTTPS)
+    return nil if uri.host.blank? || uri.userinfo.present?
+    return nil if uri.query.present? || uri.fragment.present?
+
+    path = uri.path.to_s
+    return nil unless path.blank? || path == "/"
+
+    canonical = +"#{uri.scheme.downcase}://#{uri.host.downcase}"
+    canonical << ":#{uri.port}" unless uri.port == uri.default_port
+    canonical
+  rescue URI::InvalidURIError
+    nil
   end
 
   def self.normalize_metadata(raw)
@@ -196,6 +223,13 @@ class PartnerApplication < ApplicationRecord
     "#{ISSUED_TOKEN_NAME_PREFIX}:#{id}:#{client_id}"
   end
 
+  def browser_origin_allowed?(origin)
+    normalized_origin = self.class.canonical_origin(origin)
+    return false if normalized_origin.blank?
+
+    normalized_allowed_origins.include?(normalized_origin)
+  end
+
   private
 
   def normalize_scopes
@@ -253,6 +287,13 @@ class PartnerApplication < ApplicationRecord
     errors.add(:actor_party_id, "must belong to the same tenant")
   end
 
+  def allowed_origins_must_be_valid_https
+    invalid_origins = Array(allowed_origins).reject { |origin| self.class.canonical_origin(origin).present? }
+    return if invalid_origins.empty?
+
+    errors.add(:allowed_origins, "include invalid HTTPS origins: #{invalid_origins.join(', ')}")
+  end
+
   def scopes_must_be_known
     unknown = Array(scopes) - ALLOWED_SCOPES
     return if unknown.empty?
@@ -301,7 +342,7 @@ class PartnerApplication < ApplicationRecord
 
     ActionIpLog.create!(
       tenant_id: tenant_id,
-      actor_party_id: audit_context[:actor_party_id] || created_by_user&.party_id,
+      actor_party_id: resolved_audit_actor_party_id(audit_context:, fallback_party_id: created_by_user&.party_id),
       action_type: action_type,
       ip_address: audit_context[:ip_address].presence || "0.0.0.0",
       user_agent: audit_context[:user_agent],
@@ -323,6 +364,19 @@ class PartnerApplication < ApplicationRecord
     raise
   end
 
+  def resolved_audit_actor_party_id(audit_context:, fallback_party_id:)
+    candidate_party_id = if audit_context.is_a?(Hash)
+      audit_context.fetch(:actor_party_id, fallback_party_id)
+    else
+      fallback_party_id
+    end
+
+    return nil if candidate_party_id.blank?
+    return candidate_party_id if Party.where(tenant_id: tenant_id, id: candidate_party_id).exists?
+
+    nil
+  end
+
   def normalize_metadata(raw)
     self.class.normalize_metadata(raw)
   end
@@ -330,5 +384,9 @@ class PartnerApplication < ApplicationRecord
   def normalize_hash_metadata(raw)
     normalized = normalize_metadata(raw)
     normalized.is_a?(Hash) ? normalized : {}
+  end
+
+  def normalized_allowed_origins
+    Array(allowed_origins).filter_map { |origin| self.class.canonical_origin(origin) }
   end
 end
