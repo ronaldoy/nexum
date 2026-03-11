@@ -9,13 +9,13 @@ module Ledger
       @actor_role = actor_role
     end
 
-    def call(settlement:, receivable:, allocation:, cnpj_amount:, fdic_amount:, beneficiary_amount:, paid_at:)
+    def call(settlement:, receivable:, allocation:, cnpj_amount:, fidc_amount:, beneficiary_amount:, paid_at:)
       entries = settlement_entries(
         settlement: settlement,
         receivable: receivable,
         allocation: allocation,
         cnpj_amount: cnpj_amount,
-        fdic_amount: fdic_amount,
+        fidc_amount: fidc_amount,
         beneficiary_amount: beneficiary_amount
       )
       return [] if entries.empty?
@@ -42,12 +42,12 @@ module Ledger
       )
     end
 
-    def settlement_entries(settlement:, receivable:, allocation:, cnpj_amount:, fdic_amount:, beneficiary_amount:)
+    def settlement_entries(settlement:, receivable:, allocation:, cnpj_amount:, fidc_amount:, beneficiary_amount:)
       paid_amount = settlement.paid_amount.to_d
       debtor_party_id = receivable.debtor_party_id
       entries = base_settlement_entries(paid_amount: paid_amount, debtor_party_id: debtor_party_id)
       entries.concat(cnpj_entries(allocation: allocation, cnpj_amount: cnpj_amount))
-      entries.concat(fdic_entries(fdic_amount: fdic_amount))
+      entries.concat(fidc_entries(fidc_amount: fidc_amount))
       entries.concat(beneficiary_entries(receivable: receivable, beneficiary_amount: beneficiary_amount))
       entries
     end
@@ -70,14 +70,14 @@ module Ledger
       ]
     end
 
-    def fdic_entries(fdic_amount:)
-      return [] unless positive_amount?(fdic_amount)
+    def fidc_entries(fidc_amount:)
+      return [] unless positive_amount?(fidc_amount)
 
-      amount = fdic_amount.to_d
-      fdic_party_id = resolve_fdic_party_id
+      amount = fidc_amount.to_d
+      fidc_party_id = resolve_fidc_party_id
       [
-        { account_code: "obligations:fdic", entry_side: "DEBIT", amount: amount, party_id: fdic_party_id },
-        { account_code: "clearing:settlement", entry_side: "CREDIT", amount: amount, party_id: fdic_party_id }
+        { account_code: "obligations:fidc", entry_side: "DEBIT", amount: amount, party_id: fidc_party_id },
+        { account_code: "clearing:settlement", entry_side: "CREDIT", amount: amount, party_id: fidc_party_id }
       ]
     end
 
@@ -102,9 +102,9 @@ module Ledger
       allocation.allocated_party_id
     end
 
-    def resolve_fdic_party_id
-      fdic = Party.find_by(tenant_id: @tenant_id, kind: "FIDC")
-      fdic&.id
+    def resolve_fidc_party_id
+      fidc = Party.find_by(tenant_id: @tenant_id, kind: "FIDC")
+      fidc&.id
     end
   end
 end

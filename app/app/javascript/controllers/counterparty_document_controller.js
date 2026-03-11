@@ -14,7 +14,7 @@ export default class extends Controller {
     this.documentInputTarget.placeholder = physicianSelected ? "Somente números do CPF" : "Somente números do CNPJ"
     this.documentHintTarget.textContent = physicianSelected ?
       "Médicos PF devem informar um CPF válido." :
-      "Hospitais, fornecedores, entidades jurídicas e FDIC devem informar um CNPJ válido."
+      "Hospitais, fornecedores, entidades jurídicas e FIDC devem informar um CNPJ válido."
 
     this.physicianFieldTargets.forEach((element) => {
       element.hidden = !physicianSelected

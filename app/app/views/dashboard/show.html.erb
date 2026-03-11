@@ -141,7 +141,7 @@
 
   <section class="panel">
     <header class="panel-header">
-      <h3><%= fdic_persona? ? "Performance por antecipação (FDIC)" : "Solicitações de antecipação" %></h3>
+      <h3><%= fidc_persona? ? "Performance por antecipação (FIDC)" : "Solicitações de antecipação" %></h3>
       <p>Visão de execução, exposição e retorno por contrato de antecipação.</p>
     </header>
 
@@ -156,18 +156,18 @@
             <th>Solicitado</th>
             <th>Desconto</th>
             <th>Líquido</th>
-            <% if fdic_persona? %>
+            <% if fidc_persona? %>
               <th>Hospital de origem</th>
               <th>Organização de origem</th>
-              <th>Exposição FDIC</th>
+              <th>Exposição FIDC</th>
               <th>Prazo útil</th>
               <th>Retorno</th>
             <% end %>
           </tr>
         </thead>
         <tbody>
-          <% if fdic_persona? %>
-            <% @fdic_anticipation_rows.each do |row| %>
+          <% if fidc_persona? %>
+            <% @fidc_anticipation_rows.each do |row| %>
               <% anticipation = row[:anticipation] %>
               <tr>
                 <td><%= anticipation.id.first(8) %></td>
@@ -202,7 +202,7 @@
     </div>
   </section>
 
-  <% if fdic_persona? %>
+  <% if fidc_persona? %>
     <section class="panel">
       <header class="panel-header">
         <h3>Série diária consolidada</h3>

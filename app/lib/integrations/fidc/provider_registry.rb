@@ -1,7 +1,7 @@
-require "integrations/fdic/error"
+require "integrations/fidc/error"
 
 module Integrations
-  module Fdic
+  module Fidc
     module ProviderRegistry
       module_function
 
@@ -15,7 +15,7 @@ module Integrations
           Providers::Webhook.new
         else
           raise UnsupportedProviderError.new(
-            code: "unsupported_fdic_provider",
+            code: "unsupported_fidc_provider",
             message: "Unsupported FIDC provider: #{provider_code.inspect}",
             details: { provider: provider_code }
           )

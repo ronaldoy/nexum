@@ -1,10 +1,10 @@
-class CreateFdicOperations < ActiveRecord::Migration[8.2]
+class CreateFidcOperations < ActiveRecord::Migration[8.2]
   PROVIDERS = %w[MOCK WEBHOOK].freeze
   OPERATION_TYPES = %w[FUNDING_REQUEST SETTLEMENT_REPORT].freeze
   STATUSES = %w[PENDING SENT FAILED].freeze
 
   def up
-    create_table :fdic_operations, id: :uuid do |t|
+    create_table :fidc_operations, id: :uuid do |t|
       t.references :tenant, null: false, type: :uuid, foreign_key: true
       t.references :anticipation_request, type: :uuid, foreign_key: true
       t.references :receivable_payment_settlement, type: :uuid, foreign_key: true
@@ -24,72 +24,72 @@ class CreateFdicOperations < ActiveRecord::Migration[8.2]
     end
 
     add_check_constraint(
-      :fdic_operations,
+      :fidc_operations,
       "provider IN ('#{PROVIDERS.join("','")}')",
-      name: "fdic_operations_provider_check"
+      name: "fidc_operations_provider_check"
     )
     add_check_constraint(
-      :fdic_operations,
+      :fidc_operations,
       "operation_type IN ('#{OPERATION_TYPES.join("','")}')",
-      name: "fdic_operations_operation_type_check"
+      name: "fidc_operations_operation_type_check"
     )
     add_check_constraint(
-      :fdic_operations,
+      :fidc_operations,
       "status IN ('#{STATUSES.join("','")}')",
-      name: "fdic_operations_status_check"
+      name: "fidc_operations_status_check"
     )
     add_check_constraint(
-      :fdic_operations,
+      :fidc_operations,
       "amount > 0",
-      name: "fdic_operations_amount_positive_check"
+      name: "fidc_operations_amount_positive_check"
     )
     add_check_constraint(
-      :fdic_operations,
+      :fidc_operations,
       "currency = 'BRL'",
-      name: "fdic_operations_currency_check"
+      name: "fidc_operations_currency_check"
     )
     add_check_constraint(
-      :fdic_operations,
+      :fidc_operations,
       "btrim(idempotency_key) <> ''",
-      name: "fdic_operations_idempotency_key_present_check"
+      name: "fidc_operations_idempotency_key_present_check"
     )
     add_check_constraint(
-      :fdic_operations,
+      :fidc_operations,
       "((anticipation_request_id IS NOT NULL) AND (receivable_payment_settlement_id IS NULL)) OR ((anticipation_request_id IS NULL) AND (receivable_payment_settlement_id IS NOT NULL))",
-      name: "fdic_operations_single_source_reference_check"
+      name: "fidc_operations_single_source_reference_check"
     )
 
     add_index(
-      :fdic_operations,
+      :fidc_operations,
       %i[tenant_id idempotency_key],
       unique: true,
-      name: "index_fdic_operations_on_tenant_idempotency_key"
+      name: "index_fidc_operations_on_tenant_idempotency_key"
     )
     add_index(
-      :fdic_operations,
+      :fidc_operations,
       %i[tenant_id operation_type status requested_at],
-      name: "index_fdic_operations_dispatch_scan"
+      name: "index_fidc_operations_dispatch_scan"
     )
     add_index(
-      :fdic_operations,
+      :fidc_operations,
       %i[tenant_id anticipation_request_id operation_type],
       unique: true,
       where: "anticipation_request_id IS NOT NULL",
-      name: "index_fdic_operations_unique_funding_per_request"
+      name: "index_fidc_operations_unique_funding_per_request"
     )
     add_index(
-      :fdic_operations,
+      :fidc_operations,
       %i[tenant_id receivable_payment_settlement_id operation_type],
       unique: true,
       where: "receivable_payment_settlement_id IS NOT NULL",
-      name: "index_fdic_operations_unique_settlement_per_payment"
+      name: "index_fidc_operations_unique_settlement_per_payment"
     )
 
-    enable_tenant_rls("fdic_operations")
+    enable_tenant_rls("fidc_operations")
   end
 
   def down
-    drop_table :fdic_operations
+    drop_table :fidc_operations
   end
 
   private

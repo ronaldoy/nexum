@@ -1,4 +1,4 @@
-class FdicOperation < ApplicationRecord
+class FidcOperation < ApplicationRecord
   PROVIDERS = %w[MOCK WEBHOOK].freeze
   OPERATION_TYPES = %w[FUNDING_REQUEST SETTLEMENT_REPORT].freeze
   STATUSES = %w[PENDING SENT FAILED].freeze

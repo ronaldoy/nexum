@@ -1,7 +1,7 @@
-require "integrations/fdic/error"
+require "integrations/fidc/error"
 
 module Integrations
-  module Fdic
+  module Fidc
     module Providers
       class Base
         def provider_code

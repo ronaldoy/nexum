@@ -1,6 +1,6 @@
 require "test_helper"
 
-class FdicOperationTest < ActiveSupport::TestCase
+class FidcOperationTest < ActiveSupport::TestCase
   setup do
     @tenant = tenants(:default)
     @actor = users(:one)
@@ -8,14 +8,14 @@ class FdicOperationTest < ActiveSupport::TestCase
 
   test "requires exactly one source reference" do
     with_tenant_db_context(tenant_id: @tenant.id, actor_id: @actor.id, role: "worker") do
-      operation = FdicOperation.new(
+      operation = FidcOperation.new(
         tenant: @tenant,
         provider: "MOCK",
         operation_type: "FUNDING_REQUEST",
         status: "PENDING",
         amount: "10.00",
         currency: "BRL",
-        idempotency_key: "fdic-op-invalid-source",
+        idempotency_key: "fidc-op-invalid-source",
         requested_at: Time.current
       )
 

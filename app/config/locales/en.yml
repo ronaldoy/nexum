@@ -32,7 +32,7 @@ en:
     new:
       eyebrow: "Operations Portal"
       title: "Sign in to Averta"
-      subtitle: "Manage performed receivables, FDIC loans, and settlements in one cockpit."
+      subtitle: "Manage performed receivables, FIDC loans, and settlements in one cockpit."
       fields:
         tenant_slug:
           label: "Organization code"
@@ -53,12 +53,12 @@ en:
           hospital_unit: "Hospital unit"
           supplier: "Supplier"
           physician: "Physician"
-          fdic: "FDIC"
+          fidc: "FIDC"
         users:
           hospital_org: "hospital_org_user@avertacapital.com.br"
           hospital_unit: "hospital_unit_user@avertacapital.com.br"
           supplier: "supplier_user@avertacapital.com.br"
           physician: "physician_user@avertacapital.com.br"
-          fdic: "fdic_manager@avertacapital.com.br"
+          fidc: "fidc_manager@avertacapital.com.br"
         password_hint: "Seed password:"
         privileged_otp_hint: "Current MFA code for privileged profiles:"

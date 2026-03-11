@@ -1,5 +1,5 @@
 module Integrations
-  module Fdic
+  module Fidc
     class Error < StandardError
       attr_reader :code, :details
 

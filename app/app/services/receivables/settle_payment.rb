@@ -2,16 +2,16 @@ require "digest"
 
 module Receivables
   class SettlePayment
-    OPEN_FDIC_STATUSES = Fdic::ExposureCalculator::OPEN_STATUSES
+    OPEN_FIDC_STATUSES = Fidc::ExposureCalculator::OPEN_STATUSES
     TARGET_TYPE = "ReceivablePaymentSettlement".freeze
     PAYLOAD_HASH_METADATA_KEY = "_payment_payload_hash".freeze
     ESCROW_EXCESS_OUTBOX_EVENT_TYPE = "RECEIVABLE_ESCROW_EXCESS_PAYOUT_REQUESTED".freeze
     ESCROW_EXCESS_OUTBOX_IDEMPOTENCY_SUFFIX = "escrow_excess_payout".freeze
-    FDIC_SETTLEMENT_OUTBOX_EVENT_TYPE = "RECEIVABLE_FIDC_SETTLEMENT_REPORTED".freeze
-    FDIC_SETTLEMENT_OUTBOX_IDEMPOTENCY_SUFFIX = "fdic_settlement_report".freeze
+    FIDC_SETTLEMENT_OUTBOX_EVENT_TYPE = "RECEIVABLE_FIDC_SETTLEMENT_REPORTED".freeze
+    FIDC_SETTLEMENT_OUTBOX_IDEMPOTENCY_SUFFIX = "fidc_settlement_report".freeze
     BRL_CURRENCY = "BRL".freeze
     ESCROW_EXCESS_PAYOUT_KIND = "EXCESS".freeze
-    FDIC_SETTLEMENT_OPERATION_KIND = "SETTLEMENT_REPORT".freeze
+    FIDC_SETTLEMENT_OPERATION_KIND = "SETTLEMENT_REPORT".freeze
 
     CallInputs = Struct.new(
       :amount,
@@ -27,10 +27,10 @@ module Receivables
       :cnpj_amount,
       :beneficiary_pool,
       :obligations,
-      :fdic_balance_before,
-      :fdic_amount,
+      :fidc_balance_before,
+      :fidc_amount,
       :beneficiary_amount,
-      :fdic_balance_after,
+      :fidc_balance_after,
       keyword_init: true
     )
 
@@ -147,7 +147,7 @@ module Receivables
       settlement_entries = create_settlement_entries!(
         settlement: settlement,
         obligations: distribution.obligations,
-        fdic_amount: distribution.fdic_amount,
+        fidc_amount: distribution.fidc_amount,
         settled_at: inputs.paid_time
       )
 
@@ -248,21 +248,21 @@ module Receivables
       cnpj_share_rate = resolve_cnpj_share_rate(allocation)
       cnpj_amount = round_money(amount * cnpj_share_rate)
       beneficiary_pool = round_money(amount - cnpj_amount)
-      obligations = open_fdic_obligations(receivable:, allocation:, valuation_time: paid_time)
-      fdic_balance_before = round_money(obligations.sum { |entry| entry[:outstanding] })
-      fdic_amount = round_money([ beneficiary_pool, fdic_balance_before ].min)
-      beneficiary_amount = round_money(beneficiary_pool - fdic_amount)
-      fdic_balance_after = round_money(fdic_balance_before - fdic_amount)
+      obligations = open_fidc_obligations(receivable:, allocation:, valuation_time: paid_time)
+      fidc_balance_before = round_money(obligations.sum { |entry| entry[:outstanding] })
+      fidc_amount = round_money([ beneficiary_pool, fidc_balance_before ].min)
+      beneficiary_amount = round_money(beneficiary_pool - fidc_amount)
+      fidc_balance_after = round_money(fidc_balance_before - fidc_amount)
 
       Distribution.new(
         cnpj_share_rate: cnpj_share_rate,
         cnpj_amount: cnpj_amount,
         beneficiary_pool: beneficiary_pool,
         obligations: obligations,
-        fdic_balance_before: fdic_balance_before,
-        fdic_amount: fdic_amount,
+        fidc_balance_before: fidc_balance_before,
+        fidc_amount: fidc_amount,
         beneficiary_amount: beneficiary_amount,
-        fdic_balance_after: fdic_balance_after
+        fidc_balance_after: fidc_balance_after
       )
     end
 
@@ -273,10 +273,10 @@ module Receivables
         receivable_allocation: allocation,
         paid_amount: inputs.amount,
         cnpj_amount: distribution.cnpj_amount,
-        fdic_amount: distribution.fdic_amount,
+        fidc_amount: distribution.fidc_amount,
         beneficiary_amount: distribution.beneficiary_amount,
-        fdic_balance_before: distribution.fdic_balance_before,
-        fdic_balance_after: distribution.fdic_balance_after,
+        fidc_balance_before: distribution.fidc_balance_before,
+        fidc_balance_after: distribution.fidc_balance_after,
         paid_at: inputs.paid_time,
         payment_reference: inputs.payment_reference,
         idempotency_key: @idempotency_key,
@@ -304,7 +304,7 @@ module Receivables
         receivable: receivable,
         allocation: allocation,
         cnpj_amount: distribution.cnpj_amount,
-        fdic_amount: distribution.fdic_amount,
+        fidc_amount: distribution.fidc_amount,
         beneficiary_amount: distribution.beneficiary_amount,
         paid_at: paid_time
       )
@@ -320,10 +320,10 @@ module Receivables
         receivable: receivable,
         beneficiary_amount: distribution.beneficiary_amount
       )
-      create_fdic_settlement_outbox_event!(
+      create_fidc_settlement_outbox_event!(
         settlement: settlement,
         receivable: receivable,
-        fdic_amount: distribution.fdic_amount
+        fidc_amount: distribution.fidc_amount
       )
       create_action_log!(
         action_type: "RECEIVABLE_PAYMENT_SETTLEMENT_CREATED",
@@ -335,7 +335,7 @@ module Receivables
           idempotency_key: @idempotency_key,
           paid_amount: decimal_as_string(settlement.paid_amount),
           cnpj_amount: decimal_as_string(distribution.cnpj_amount),
-          fdic_amount: decimal_as_string(distribution.fdic_amount),
+          fidc_amount: decimal_as_string(distribution.fidc_amount),
           beneficiary_amount: decimal_as_string(distribution.beneficiary_amount)
         }
       )
@@ -404,18 +404,18 @@ module Receivables
       BigDecimal("0")
     end
 
-    def open_fdic_obligations(receivable:, allocation:, valuation_time:)
-      exposure_calculator = Fdic::ExposureCalculator.new(valuation_time: valuation_time)
+    def open_fidc_obligations(receivable:, allocation:, valuation_time:)
+      exposure_calculator = Fidc::ExposureCalculator.new(valuation_time: valuation_time)
 
       scope = AnticipationRequest.where(
         tenant_id: @tenant_id,
         receivable_id: receivable.id,
-        status: OPEN_FDIC_STATUSES
+        status: OPEN_FIDC_STATUSES
       )
       scope = scope.where(receivable_allocation_id: allocation.id) if allocation
 
       scope.order(requested_at: :asc, created_at: :asc).filter_map do |anticipation_request|
-        build_fdic_obligation(
+        build_fidc_obligation(
           exposure_calculator: exposure_calculator,
           anticipation_request: anticipation_request,
           due_at: receivable.due_at
@@ -423,7 +423,7 @@ module Receivables
       end
     end
 
-    def build_fdic_obligation(exposure_calculator:, anticipation_request:, due_at:)
+    def build_fidc_obligation(exposure_calculator:, anticipation_request:, due_at:)
       exposure_metrics = exposure_calculator.call(
         anticipation_request: anticipation_request,
         due_at: due_at
@@ -437,17 +437,17 @@ module Receivables
       }
     end
 
-    def create_settlement_entries!(settlement:, obligations:, fdic_amount:, settled_at:)
-      remaining_fdic = fdic_amount
+    def create_settlement_entries!(settlement:, obligations:, fidc_amount:, settled_at:)
+      remaining_fidc = fidc_amount
       entries = []
 
       obligations.each do |obligation|
-        break if remaining_fdic <= 0
+        break if remaining_fidc <= 0
 
-        settlement_entry, remaining_fdic = settle_fdic_obligation!(
+        settlement_entry, remaining_fidc = settle_fidc_obligation!(
           settlement: settlement,
           obligation: obligation,
-          remaining_fdic: remaining_fdic,
+          remaining_fidc: remaining_fidc,
           settled_at: settled_at
         )
         entries << settlement_entry if settlement_entry
@@ -456,11 +456,11 @@ module Receivables
       entries
     end
 
-    def settle_fdic_obligation!(settlement:, obligation:, remaining_fdic:, settled_at:)
+    def settle_fidc_obligation!(settlement:, obligation:, remaining_fidc:, settled_at:)
       anticipation_request = obligation[:anticipation_request]
       outstanding = obligation[:outstanding]
-      settled_amount = round_money([ remaining_fdic, outstanding ].min)
-      return [ nil, remaining_fdic ] if settled_amount <= 0
+      settled_amount = round_money([ remaining_fidc, outstanding ].min)
+      return [ nil, remaining_fidc ] if settled_amount <= 0
 
       settlement_entry = AnticipationSettlementEntry.create!(
         tenant_id: @tenant_id,
@@ -474,7 +474,7 @@ module Receivables
         }
       )
 
-      remaining_fdic_after = round_money(remaining_fdic - settled_amount)
+      remaining_fidc_after = round_money(remaining_fidc - settled_amount)
       mark_anticipation_settled_if_fully_paid!(
         anticipation_request: anticipation_request,
         outstanding: outstanding,
@@ -482,7 +482,7 @@ module Receivables
         settled_at: settled_at
       )
 
-      [ settlement_entry, remaining_fdic_after ]
+      [ settlement_entry, remaining_fidc_after ]
     end
 
     def mark_anticipation_settled_if_fully_paid!(anticipation_request:, outstanding:, settled_amount:, settled_at:)
@@ -493,7 +493,7 @@ module Receivables
       anticipation_request.transition_status!("SETTLED", settled_at: settled_at)
     end
 
-    def post_ledger_entries!(settlement:, receivable:, allocation:, cnpj_amount:, fdic_amount:, beneficiary_amount:, paid_at:)
+    def post_ledger_entries!(settlement:, receivable:, allocation:, cnpj_amount:, fidc_amount:, beneficiary_amount:, paid_at:)
       Ledger::PostSettlement.new(
         tenant_id: @tenant_id,
         request_id: @request_id,
@@ -504,7 +504,7 @@ module Receivables
         receivable: receivable,
         allocation: allocation,
         cnpj_amount: cnpj_amount,
-        fdic_amount: fdic_amount,
+        fidc_amount: fidc_amount,
         beneficiary_amount: beneficiary_amount,
         paid_at: paid_at
       )
@@ -606,10 +606,10 @@ module Receivables
         idempotency_key: settlement.idempotency_key,
         paid_amount: decimal_as_string(settlement.paid_amount),
         cnpj_amount: decimal_as_string(settlement.cnpj_amount),
-        fdic_amount: decimal_as_string(settlement.fdic_amount),
+        fidc_amount: decimal_as_string(settlement.fidc_amount),
         beneficiary_amount: decimal_as_string(settlement.beneficiary_amount),
-        fdic_balance_before: decimal_as_string(settlement.fdic_balance_before),
-        fdic_balance_after: decimal_as_string(settlement.fdic_balance_after),
+        fidc_balance_before: decimal_as_string(settlement.fidc_balance_before),
+        fidc_balance_after: decimal_as_string(settlement.fidc_balance_after),
         settlement_entries: settlement_entries.map do |entry|
           {
             id: entry.id,
@@ -686,20 +686,20 @@ module Receivables
       )
     end
 
-    def create_fdic_settlement_outbox_event!(settlement:, receivable:, fdic_amount:)
-      return if fdic_amount.to_d <= 0
+    def create_fidc_settlement_outbox_event!(settlement:, receivable:, fidc_amount:)
+      return if fidc_amount.to_d <= 0
 
-      provider = Integrations::Fdic::ProviderConfig.default_provider(tenant_id: @tenant_id)
-      amount = decimal_as_string(fdic_amount)
-      report_idempotency_key = "#{settlement.id}:#{FDIC_SETTLEMENT_OUTBOX_IDEMPOTENCY_SUFFIX}"
+      provider = Integrations::Fidc::ProviderConfig.default_provider(tenant_id: @tenant_id)
+      amount = decimal_as_string(fidc_amount)
+      report_idempotency_key = "#{settlement.id}:#{FIDC_SETTLEMENT_OUTBOX_IDEMPOTENCY_SUFFIX}"
       receivable_origin = receivable_origin_payload(receivable)
-      payload_hash = fdic_settlement_payload_hash(
+      payload_hash = fidc_settlement_payload_hash(
         settlement: settlement,
         provider: provider,
         amount: amount,
         receivable_origin: receivable_origin
       )
-      payload = build_fdic_settlement_outbox_payload(
+      payload = build_fidc_settlement_outbox_payload(
         settlement: settlement,
         provider: provider,
         amount: amount,
@@ -710,12 +710,12 @@ module Receivables
 
       create_settlement_outbox_event!(
         settlement: settlement,
-        event_type: FDIC_SETTLEMENT_OUTBOX_EVENT_TYPE,
+        event_type: FIDC_SETTLEMENT_OUTBOX_EVENT_TYPE,
         idempotency_key: report_idempotency_key,
         payload: payload,
         payload_hash: payload_hash,
-        conflict_code: "fdic_settlement_idempotency_conflict",
-        conflict_message: "FDIC settlement idempotency key was already used with a different payload."
+        conflict_code: "fidc_settlement_idempotency_conflict",
+        conflict_message: "FIDC settlement idempotency key was already used with a different payload."
       )
     end
 
@@ -800,7 +800,7 @@ module Receivables
       }
     end
 
-    def build_fdic_settlement_outbox_payload(
+    def build_fidc_settlement_outbox_payload(
       settlement:,
       provider:,
       amount:,
@@ -817,12 +817,12 @@ module Receivables
         "amount" => amount,
         "currency" => BRL_CURRENCY,
         "provider" => provider,
-        "operation_kind" => FDIC_SETTLEMENT_OPERATION_KIND,
+        "operation_kind" => FIDC_SETTLEMENT_OPERATION_KIND,
         "operation_idempotency_key" => report_idempotency_key,
         "provider_request_control_key" => report_idempotency_key,
-        "fdic_amount" => amount,
-        "fdic_balance_before" => decimal_as_string(settlement.fdic_balance_before),
-        "fdic_balance_after" => decimal_as_string(settlement.fdic_balance_after),
+        "fidc_amount" => amount,
+        "fidc_balance_before" => decimal_as_string(settlement.fidc_balance_before),
+        "fidc_balance_after" => decimal_as_string(settlement.fidc_balance_after),
         "receivable_origin" => receivable_origin
       }
     end
@@ -910,7 +910,7 @@ module Receivables
       )
     end
 
-    def fdic_settlement_payload_hash(settlement:, provider:, amount:, receivable_origin:)
+    def fidc_settlement_payload_hash(settlement:, provider:, amount:, receivable_origin:)
       payload_hash_for(
         settlement_id: settlement.id,
         receivable_id: settlement.receivable_id,
@@ -919,7 +919,7 @@ module Receivables
         provider: provider,
         amount: amount,
         currency: BRL_CURRENCY,
-        operation_kind: FDIC_SETTLEMENT_OPERATION_KIND,
+        operation_kind: FIDC_SETTLEMENT_OPERATION_KIND,
         receivable_origin: receivable_origin
       )
     end

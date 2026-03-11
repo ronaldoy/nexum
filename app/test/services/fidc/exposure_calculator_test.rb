@@ -1,6 +1,6 @@
 require "test_helper"
 
-module Fdic
+module Fidc
   class ExposureCalculatorTest < ActiveSupport::TestCase
     setup do
       @tenant = tenants(:default)
@@ -9,7 +9,7 @@ module Fdic
 
     test "uses business-day accrual and contractual outstanding for approved anticipation" do
       with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
-        bundle = create_supplier_bundle!("fdic-exp-accrual")
+        bundle = create_supplier_bundle!("fidc-exp-accrual")
         requested_at = Time.zone.parse("2026-02-10 10:00:00")
 
         anticipation = create_anticipation_request!(
@@ -29,7 +29,7 @@ module Fdic
           paid_at: Time.zone.parse("2026-02-12 16:00:00")
         )
 
-        metrics = Fdic::ExposureCalculator.new(valuation_time: Time.zone.parse("2026-02-12 18:00:00")).call(
+        metrics = Fidc::ExposureCalculator.new(valuation_time: Time.zone.parse("2026-02-12 18:00:00")).call(
           anticipation_request: anticipation,
           due_at: bundle[:receivable].due_at
         )
@@ -49,7 +49,7 @@ module Fdic
 
     test "returns zero effective exposure for non-exposed statuses" do
       with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
-        bundle = create_supplier_bundle!("fdic-exp-requested")
+        bundle = create_supplier_bundle!("fidc-exp-requested")
 
         anticipation = create_anticipation_request!(
           bundle: bundle,
@@ -61,7 +61,7 @@ module Fdic
           requested_at: Time.zone.parse("2026-02-10 10:00:00")
         )
 
-        metrics = Fdic::ExposureCalculator.new(valuation_time: Time.zone.parse("2026-02-11 11:00:00")).call(
+        metrics = Fidc::ExposureCalculator.new(valuation_time: Time.zone.parse("2026-02-11 11:00:00")).call(
           anticipation_request: anticipation,
           due_at: bundle[:receivable].due_at
         )
@@ -149,10 +149,10 @@ module Fdic
         receivable_allocation: bundle[:allocation],
         paid_amount: settled_amount,
         cnpj_amount: "0.00",
-        fdic_amount: settled_amount,
+        fidc_amount: settled_amount,
         beneficiary_amount: "0.00",
-        fdic_balance_before: settled_amount,
-        fdic_balance_after: "0.00",
+        fidc_balance_before: settled_amount,
+        fidc_balance_after: "0.00",
         paid_at: paid_at,
         payment_reference: settlement_idempotency,
         idempotency_key: settlement_idempotency

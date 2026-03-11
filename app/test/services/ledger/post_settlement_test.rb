@@ -10,14 +10,14 @@ module Ledger
     test "translates shared cnpj settlement into correct ledger entries" do
       with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
         bundle = create_shared_cnpj_bundle!("ledger-shared-1")
-        settlement = create_settlement!(bundle, paid: "100.00", cnpj: "30.00", fdic: "66.00", beneficiary: "4.00")
+        settlement = create_settlement!(bundle, paid: "100.00", cnpj: "30.00", fidc: "66.00", beneficiary: "4.00")
 
         result = service.call(
           settlement: settlement,
           receivable: bundle[:receivable],
           allocation: bundle[:allocation],
           cnpj_amount: BigDecimal("30.00"),
-          fdic_amount: BigDecimal("66.00"),
+          fidc_amount: BigDecimal("66.00"),
           beneficiary_amount: BigDecimal("4.00"),
           paid_at: Time.current
         )
@@ -42,9 +42,9 @@ module Ledger
         assert_equal 1, cnpj_debits.size
         assert_equal BigDecimal("30.00"), cnpj_debits.first.amount.to_d
 
-        fdic_debits = result.select { |e| e.account_code == "obligations:fdic" && e.entry_side == "DEBIT" }
-        assert_equal 1, fdic_debits.size
-        assert_equal BigDecimal("66.00"), fdic_debits.first.amount.to_d
+        fidc_debits = result.select { |e| e.account_code == "obligations:fidc" && e.entry_side == "DEBIT" }
+        assert_equal 1, fidc_debits.size
+        assert_equal BigDecimal("66.00"), fidc_debits.first.amount.to_d
 
         beneficiary_debits = result.select { |e| e.account_code == "obligations:beneficiary" && e.entry_side == "DEBIT" }
         assert_equal 1, beneficiary_debits.size
@@ -55,19 +55,19 @@ module Ledger
     test "handles supplier with no cnpj leg" do
       with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
         bundle = create_supplier_bundle!("ledger-supplier-1")
-        settlement = create_settlement!(bundle, paid: "100.00", cnpj: "0.00", fdic: "55.00", beneficiary: "45.00")
+        settlement = create_settlement!(bundle, paid: "100.00", cnpj: "0.00", fidc: "55.00", beneficiary: "45.00")
 
         result = service.call(
           settlement: settlement,
           receivable: bundle[:receivable],
           allocation: bundle[:allocation],
           cnpj_amount: BigDecimal("0.00"),
-          fdic_amount: BigDecimal("55.00"),
+          fidc_amount: BigDecimal("55.00"),
           beneficiary_amount: BigDecimal("45.00"),
           paid_at: Time.current
         )
 
-        # No cnpj entries, so: 2 (clearing/hospital) + 2 (fdic) + 2 (beneficiary) = 6
+        # No cnpj entries, so: 2 (clearing/hospital) + 2 (fidc) + 2 (beneficiary) = 6
         assert_equal 6, result.size
         cnpj_entries = result.select { |e| e.account_code == "obligations:cnpj" }
         assert_equal 0, cnpj_entries.size
@@ -78,25 +78,25 @@ module Ledger
       end
     end
 
-    test "handles no anticipation with no fdic leg" do
+    test "handles no anticipation with no fidc leg" do
       with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
         bundle = create_supplier_bundle!("ledger-no-antic-1")
-        settlement = create_settlement!(bundle, paid: "100.00", cnpj: "0.00", fdic: "0.00", beneficiary: "100.00")
+        settlement = create_settlement!(bundle, paid: "100.00", cnpj: "0.00", fidc: "0.00", beneficiary: "100.00")
 
         result = service.call(
           settlement: settlement,
           receivable: bundle[:receivable],
           allocation: bundle[:allocation],
           cnpj_amount: BigDecimal("0.00"),
-          fdic_amount: BigDecimal("0.00"),
+          fidc_amount: BigDecimal("0.00"),
           beneficiary_amount: BigDecimal("100.00"),
           paid_at: Time.current
         )
 
         # 2 (clearing/hospital) + 2 (beneficiary) = 4
         assert_equal 4, result.size
-        fdic_entries = result.select { |e| e.account_code == "obligations:fdic" }
-        assert_equal 0, fdic_entries.size
+        fidc_entries = result.select { |e| e.account_code == "obligations:fidc" }
+        assert_equal 0, fidc_entries.size
 
         debit_sum = result.select { |e| e.entry_side == "DEBIT" }.sum { |e| e.amount.to_d }
         credit_sum = result.select { |e| e.entry_side == "CREDIT" }.sum { |e| e.amount.to_d }
@@ -107,14 +107,14 @@ module Ledger
     test "all entries reference settlement as source" do
       with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
         bundle = create_supplier_bundle!("ledger-source-ref")
-        settlement = create_settlement!(bundle, paid: "100.00", cnpj: "0.00", fdic: "0.00", beneficiary: "100.00")
+        settlement = create_settlement!(bundle, paid: "100.00", cnpj: "0.00", fidc: "0.00", beneficiary: "100.00")
 
         result = service.call(
           settlement: settlement,
           receivable: bundle[:receivable],
           allocation: bundle[:allocation],
           cnpj_amount: BigDecimal("0.00"),
-          fdic_amount: BigDecimal("0.00"),
+          fidc_amount: BigDecimal("0.00"),
           beneficiary_amount: BigDecimal("100.00"),
           paid_at: Time.current
         )
@@ -128,14 +128,14 @@ module Ledger
     test "all entries share same txn_id" do
       with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
         bundle = create_shared_cnpj_bundle!("ledger-txn-id")
-        settlement = create_settlement!(bundle, paid: "100.00", cnpj: "30.00", fdic: "50.00", beneficiary: "20.00")
+        settlement = create_settlement!(bundle, paid: "100.00", cnpj: "30.00", fidc: "50.00", beneficiary: "20.00")
 
         result = service.call(
           settlement: settlement,
           receivable: bundle[:receivable],
           allocation: bundle[:allocation],
           cnpj_amount: BigDecimal("30.00"),
-          fdic_amount: BigDecimal("50.00"),
+          fidc_amount: BigDecimal("50.00"),
           beneficiary_amount: BigDecimal("20.00"),
           paid_at: Time.current
         )
@@ -155,9 +155,9 @@ module Ledger
       hospital = Party.create!(tenant: @tenant, kind: "HOSPITAL", legal_name: "Hospital #{suffix}", document_number: valid_cnpj_from_seed("#{suffix}-hospital"))
       legal_entity = Party.create!(tenant: @tenant, kind: "LEGAL_ENTITY_PJ", legal_name: "Clinica #{suffix}", document_number: valid_cnpj_from_seed("#{suffix}-legal-entity"))
       physician = Party.create!(tenant: @tenant, kind: "PHYSICIAN_PF", legal_name: "Medico #{suffix}", document_number: valid_cpf_from_seed("#{suffix}-physician"))
-      fdic = Party.find_or_create_by!(tenant: @tenant, kind: "FIDC") do |p|
+      fidc = Party.find_or_create_by!(tenant: @tenant, kind: "FIDC") do |p|
         p.legal_name = "FIDC #{suffix}"
-        p.document_number = valid_cnpj_from_seed("#{suffix}-fdic")
+        p.document_number = valid_cnpj_from_seed("#{suffix}-fidc")
       end
 
       kind = ReceivableKind.create!(tenant: @tenant, code: "physician_shift_#{suffix}", name: "Physician Shift #{suffix}", source_family: "PHYSICIAN")
@@ -174,7 +174,7 @@ module Ledger
         gross_amount: "100.00", tax_reserve_amount: "0.00", status: "OPEN"
       )
 
-      { hospital: hospital, legal_entity: legal_entity, physician: physician, fdic: fdic, receivable: receivable, allocation: allocation }
+      { hospital: hospital, legal_entity: legal_entity, physician: physician, fidc: fidc, receivable: receivable, allocation: allocation }
     end
 
     def create_supplier_bundle!(suffix)
@@ -198,17 +198,17 @@ module Ledger
       { debtor: debtor, supplier: supplier, receivable: receivable, allocation: allocation }
     end
 
-    def create_settlement!(bundle, paid:, cnpj:, fdic:, beneficiary:)
+    def create_settlement!(bundle, paid:, cnpj:, fidc:, beneficiary:)
       ReceivablePaymentSettlement.create!(
         tenant: @tenant,
         receivable: bundle[:receivable],
         receivable_allocation: bundle[:allocation],
         paid_amount: paid,
         cnpj_amount: cnpj,
-        fdic_amount: fdic,
+        fidc_amount: fidc,
         beneficiary_amount: beneficiary,
-        fdic_balance_before: fdic,
-        fdic_balance_after: "0.00",
+        fidc_balance_before: fidc,
+        fidc_balance_after: "0.00",
         paid_at: Time.current,
         payment_reference: "ledger-test-#{SecureRandom.hex(4)}",
         idempotency_key: "ledger-idem-#{SecureRandom.hex(8)}",

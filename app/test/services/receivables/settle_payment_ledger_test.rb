@@ -366,7 +366,7 @@ module Receivables
       physician_one = Party.create!(tenant: @tenant, kind: "PHYSICIAN_PF", legal_name: "Medico Um #{suffix}", document_number: valid_cpf_from_seed("#{suffix}-physician-1"))
       Party.find_or_create_by!(tenant: @tenant, kind: "FIDC") do |p|
         p.legal_name = "FIDC #{suffix}"
-        p.document_number = valid_cnpj_from_seed("#{suffix}-fdic")
+        p.document_number = valid_cnpj_from_seed("#{suffix}-fidc")
       end
 
       PhysicianLegalEntityMembership.create!(

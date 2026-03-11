@@ -19,10 +19,10 @@ module AvertaSeeds
       raise "Seed data are disabled in production. Set ALLOW_AVERTA_SEEDS=true to enable intentionally."
     end
 
-    puts "== Averta FDIC operational seed =="
+    puts "== Averta FIDC operational seed =="
 
     tenant = Tenant.find_or_create_by!(slug: "demo-br") do |record|
-      record.name = "Averta FDIC Brasil"
+      record.name = "Averta FIDC Brasil"
       record.active = true
     end
     secondary_tenant = Tenant.find_or_create_by!(slug: "demo-isolado") do |record|
@@ -37,7 +37,7 @@ module AvertaSeeds
     puts "Login Organização Hospitalar: #{seed_email('hospital_org_user')}"
     puts "Login Fornecedor: #{seed_email('supplier_user')}"
     puts "Login Médico: #{seed_email('physician_user')}"
-    puts "Login FDIC: #{seed_email('fdic_manager')}"
+    puts "Login FIDC: #{seed_email('fidc_manager')}"
     puts "Senha para todos: #{PASSWORD}"
   end
 
@@ -201,12 +201,12 @@ module AvertaSeeds
         display_name: "Clínica Plantão Integrado",
         seed_key: "clinic-main"
       ),
-      fdic: upsert_party!(
+      fidc: upsert_party!(
         tenant: tenant,
         kind: "FIDC",
-        legal_name: "FDIC Averta Recebíveis I",
-        display_name: "FDIC Averta",
-        seed_key: "fdic-main"
+        legal_name: "FIDC Averta Recebíveis I",
+        display_name: "FIDC Averta",
+        seed_key: "fidc-main"
       ),
       platform: upsert_party!(
         tenant: tenant,
@@ -313,7 +313,7 @@ module AvertaSeeds
       [ seed_email("hospital_unit_user"), "hospital_admin", parties.fetch(:hospital_main), [ "hospital_unit_user@#{LEGACY_SEED_DOMAIN}" ] ],
       [ seed_email("supplier_user"), "supplier_user", parties.fetch(:supplier_alpha), [ "supplier_user@#{LEGACY_SEED_DOMAIN}" ] ],
       [ seed_email("physician_user"), "physician_pf_user", parties.fetch(:physician_ana), [ "physician_user@#{LEGACY_SEED_DOMAIN}" ] ],
-      [ seed_email("fdic_manager"), "ops_admin", parties.fetch(:fdic), [ "fdic_user@#{LEGACY_SEED_DOMAIN}" ] ]
+      [ seed_email("fidc_manager"), "ops_admin", parties.fetch(:fidc), [ "fidc_user@#{LEGACY_SEED_DOMAIN}" ] ]
     ].each do |email, role, party, legacy_emails|
       user = find_or_prepare_seed_user(
         tenant: tenant,
@@ -577,7 +577,7 @@ module AvertaSeeds
         anticipation: anticipation,
         scenario_code: scenario_code,
         paid_at: existing.paid_at,
-        fdic_amount: existing.fdic_amount
+        fidc_amount: existing.fidc_amount
       )
       return existing
     end
@@ -590,10 +590,10 @@ module AvertaSeeds
     beneficiary_pool = money(paid_amount - cnpj_amount)
 
     obligation = anticipation ? money(anticipation.requested_amount.to_d + anticipation.discount_amount.to_d) : money("0")
-    fdic_before = obligation
-    fdic_amount = money([ beneficiary_pool.to_d, fdic_before.to_d ].min)
-    beneficiary_amount = money(beneficiary_pool.to_d - fdic_amount.to_d)
-    fdic_after = money(fdic_before.to_d - fdic_amount.to_d)
+    fidc_before = obligation
+    fidc_amount = money([ beneficiary_pool.to_d, fidc_before.to_d ].min)
+    beneficiary_amount = money(beneficiary_pool.to_d - fidc_amount.to_d)
+    fidc_after = money(fidc_before.to_d - fidc_amount.to_d)
 
     settlement = ReceivablePaymentSettlement.create!(
       receivable: receivable,
@@ -602,10 +602,10 @@ module AvertaSeeds
       payment_reference: payment_reference,
       paid_amount: money(paid_amount),
       cnpj_amount: cnpj_amount,
-      fdic_amount: fdic_amount,
+      fidc_amount: fidc_amount,
       beneficiary_amount: beneficiary_amount,
-      fdic_balance_before: fdic_before,
-      fdic_balance_after: fdic_after,
+      fidc_balance_before: fidc_before,
+      fidc_balance_after: fidc_after,
       paid_at: paid_at,
       request_id: "seed-settlement-#{scenario_code.downcase}",
       idempotency_key: idempotency_key,
@@ -621,14 +621,14 @@ module AvertaSeeds
       anticipation: anticipation,
       scenario_code: scenario_code,
       paid_at: paid_at,
-      fdic_amount: fdic_amount
+      fidc_amount: fidc_amount
     )
 
     settlement
   end
 
-  def ensure_seed_settlement_entry!(tenant:, settlement:, anticipation:, scenario_code:, paid_at:, fdic_amount:)
-    return unless anticipation && fdic_amount.to_d.positive?
+  def ensure_seed_settlement_entry!(tenant:, settlement:, anticipation:, scenario_code:, paid_at:, fidc_amount:)
+    return unless anticipation && fidc_amount.to_d.positive?
 
     entry_ids = [
       seed_uuid(versioned_seed_key("settlement-entry-#{scenario_code.downcase}")),
@@ -647,7 +647,7 @@ module AvertaSeeds
       tenant: tenant,
       receivable_payment_settlement: settlement,
       anticipation_request: anticipation,
-      settled_amount: fdic_amount,
+      settled_amount: fidc_amount,
       settled_at: paid_at,
       metadata: {
         "seed_scenario" => scenario_code
@@ -670,7 +670,7 @@ module AvertaSeeds
         id: log_id,
         tenant: tenant,
         actor_party_id: anticipation.requester_party_id,
-        action_type: "FDIC_PROFITABILITY_RECORDED",
+        action_type: "FIDC_PROFITABILITY_RECORDED",
         ip_address: "127.0.0.1",
         user_agent: "seed-runner",
         request_id: request_id,
@@ -906,21 +906,7 @@ module AvertaSeeds
   end
 
   def with_tenant_context(tenant_id:, actor_id: nil, role: nil)
-    set_db_context("app.tenant_id", tenant_id)
-    set_db_context("app.actor_id", actor_id)
-    set_db_context("app.role", role)
-    yield
-  ensure
-    set_db_context("app.tenant_id", nil)
-    set_db_context("app.actor_id", nil)
-    set_db_context("app.role", nil)
-  end
-
-  def set_db_context(key, value)
-    connection = ActiveRecord::Base.connection
-    connection.execute(
-      "SELECT set_config(#{connection.quote(key)}, #{connection.quote(value.to_s)}, false)"
-    )
+    DatabaseRequestContext.with(tenant_id: tenant_id, actor_id: actor_id, role: role, local: false) { yield }
   end
 end
 

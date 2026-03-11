@@ -11,10 +11,10 @@ class CreateReceivablePaymentSettlements < ActiveRecord::Migration[8.2]
       t.references :receivable_allocation, type: :uuid, foreign_key: true
       t.decimal :paid_amount, precision: 18, scale: 2, null: false
       t.decimal :cnpj_amount, precision: 18, scale: 2, null: false, default: 0
-      t.decimal :fdic_amount, precision: 18, scale: 2, null: false, default: 0
+      t.decimal :fidc_amount, precision: 18, scale: 2, null: false, default: 0
       t.decimal :beneficiary_amount, precision: 18, scale: 2, null: false, default: 0
-      t.decimal :fdic_balance_before, precision: 18, scale: 2, null: false, default: 0
-      t.decimal :fdic_balance_after, precision: 18, scale: 2, null: false, default: 0
+      t.decimal :fidc_balance_before, precision: 18, scale: 2, null: false, default: 0
+      t.decimal :fidc_balance_after, precision: 18, scale: 2, null: false, default: 0
       t.datetime :paid_at, null: false, default: -> { "CURRENT_TIMESTAMP" }
       t.string :payment_reference
       t.string :request_id
@@ -24,12 +24,12 @@ class CreateReceivablePaymentSettlements < ActiveRecord::Migration[8.2]
 
     add_check_constraint :receivable_payment_settlements, "paid_amount > 0", name: "receivable_payment_settlements_paid_positive_check"
     add_check_constraint :receivable_payment_settlements, "cnpj_amount >= 0", name: "receivable_payment_settlements_cnpj_non_negative_check"
-    add_check_constraint :receivable_payment_settlements, "fdic_amount >= 0", name: "receivable_payment_settlements_fdic_non_negative_check"
+    add_check_constraint :receivable_payment_settlements, "fidc_amount >= 0", name: "receivable_payment_settlements_fidc_non_negative_check"
     add_check_constraint :receivable_payment_settlements, "beneficiary_amount >= 0", name: "receivable_payment_settlements_beneficiary_non_negative_check"
-    add_check_constraint :receivable_payment_settlements, "fdic_balance_before >= 0", name: "receivable_payment_settlements_fdic_before_non_negative_check"
-    add_check_constraint :receivable_payment_settlements, "fdic_balance_after >= 0", name: "receivable_payment_settlements_fdic_after_non_negative_check"
-    add_check_constraint :receivable_payment_settlements, "fdic_balance_before >= fdic_balance_after", name: "receivable_payment_settlements_fdic_balance_flow_check"
-    add_check_constraint :receivable_payment_settlements, "(cnpj_amount + fdic_amount + beneficiary_amount) = paid_amount", name: "receivable_payment_settlements_split_total_check"
+    add_check_constraint :receivable_payment_settlements, "fidc_balance_before >= 0", name: "receivable_payment_settlements_fidc_before_non_negative_check"
+    add_check_constraint :receivable_payment_settlements, "fidc_balance_after >= 0", name: "receivable_payment_settlements_fidc_after_non_negative_check"
+    add_check_constraint :receivable_payment_settlements, "fidc_balance_before >= fidc_balance_after", name: "receivable_payment_settlements_fidc_balance_flow_check"
+    add_check_constraint :receivable_payment_settlements, "(cnpj_amount + fidc_amount + beneficiary_amount) = paid_amount", name: "receivable_payment_settlements_split_total_check"
 
     add_index :receivable_payment_settlements,
       %i[tenant_id receivable_id paid_at],

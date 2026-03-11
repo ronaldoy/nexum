@@ -7,7 +7,7 @@ module Receivables
       @request_id = SecureRandom.uuid
     end
 
-    test "settles shared cnpj payment splitting cnpj, fdic and physician remainder" do
+    test "settles shared cnpj payment splitting cnpj, fidc and physician remainder" do
       result = nil
       anticipation_request = nil
 
@@ -36,10 +36,10 @@ module Receivables
         assert_equal false, result.replayed?
         assert_equal BigDecimal("100.00"), settlement.paid_amount.to_d
         assert_equal BigDecimal("30.00"), settlement.cnpj_amount.to_d
-        assert_equal BigDecimal("66.00"), settlement.fdic_amount.to_d
+        assert_equal BigDecimal("66.00"), settlement.fidc_amount.to_d
         assert_equal BigDecimal("4.00"), settlement.beneficiary_amount.to_d
-        assert_equal BigDecimal("66.00"), settlement.fdic_balance_before.to_d
-        assert_equal BigDecimal("0.00"), settlement.fdic_balance_after.to_d
+        assert_equal BigDecimal("66.00"), settlement.fidc_balance_before.to_d
+        assert_equal BigDecimal("0.00"), settlement.fidc_balance_after.to_d
         assert_equal "hospital-payment-shared-001", settlement.payment_reference
 
         assert_equal 1, result.settlement_entries.size
@@ -82,13 +82,13 @@ module Receivables
 
         settlement = result.settlement
         assert_equal BigDecimal("30.00"), settlement.cnpj_amount.to_d
-        assert_equal BigDecimal("0.00"), settlement.fdic_amount.to_d
+        assert_equal BigDecimal("0.00"), settlement.fidc_amount.to_d
         assert_equal BigDecimal("70.00"), settlement.beneficiary_amount.to_d
         assert_equal 0, result.settlement_entries.size
       end
     end
 
-    test "for supplier allocation routes fdic repayment and supplier remainder without cnpj split" do
+    test "for supplier allocation routes fidc repayment and supplier remainder without cnpj split" do
       with_tenant_db_context(tenant_id: @tenant.id, actor_id: @tenant.id, role: "ops_admin") do
         bundle = create_supplier_bundle!("supplier-settlement-1")
         anticipation_request = create_direct_anticipation_request!(
@@ -111,7 +111,7 @@ module Receivables
 
         settlement = result.settlement
         assert_equal BigDecimal("0.00"), settlement.cnpj_amount.to_d
-        assert_equal BigDecimal("55.00"), settlement.fdic_amount.to_d
+        assert_equal BigDecimal("55.00"), settlement.fidc_amount.to_d
         assert_equal BigDecimal("45.00"), settlement.beneficiary_amount.to_d
         assert_equal 1, result.settlement_entries.size
 
@@ -128,18 +128,18 @@ module Receivables
         assert_equal "EXCESS", escrow_outbox.payload["payout_kind"]
         assert_equal bundle[:receivable].debtor_party_id, escrow_outbox.payload.dig("receivable_origin", "hospital_party_id")
 
-        fdic_outbox = OutboxEvent.find_by!(
+        fidc_outbox = OutboxEvent.find_by!(
           tenant_id: @tenant.id,
           aggregate_type: "ReceivablePaymentSettlement",
           aggregate_id: settlement.id,
           event_type: "RECEIVABLE_FIDC_SETTLEMENT_REPORTED",
-          idempotency_key: "#{settlement.id}:fdic_settlement_report"
+          idempotency_key: "#{settlement.id}:fidc_settlement_report"
         )
-        assert_equal settlement.id, fdic_outbox.payload["settlement_id"]
-        assert_equal bundle[:receivable].id, fdic_outbox.payload["receivable_id"]
-        assert_equal settlement.fdic_amount.to_d, BigDecimal(fdic_outbox.payload["amount"])
-        assert_equal "SETTLEMENT_REPORT", fdic_outbox.payload["operation_kind"]
-        assert_equal bundle[:receivable].debtor_party_id, fdic_outbox.payload.dig("receivable_origin", "hospital_party_id")
+        assert_equal settlement.id, fidc_outbox.payload["settlement_id"]
+        assert_equal bundle[:receivable].id, fidc_outbox.payload["receivable_id"]
+        assert_equal settlement.fidc_amount.to_d, BigDecimal(fidc_outbox.payload["amount"])
+        assert_equal "SETTLEMENT_REPORT", fidc_outbox.payload["operation_kind"]
+        assert_equal bundle[:receivable].debtor_party_id, fidc_outbox.payload.dig("receivable_origin", "hospital_party_id")
 
         anticipation_request.reload
         assert_equal "SETTLED", anticipation_request.status
@@ -168,7 +168,7 @@ module Receivables
         )
 
         settlement = result.settlement
-        assert_equal BigDecimal("100.00"), settlement.fdic_amount.to_d
+        assert_equal BigDecimal("100.00"), settlement.fidc_amount.to_d
         assert_equal BigDecimal("0.00"), settlement.beneficiary_amount.to_d
         assert_equal 0, OutboxEvent.where(
           tenant_id: @tenant.id,
@@ -355,7 +355,7 @@ module Receivables
           payment_reference: "hospital-payment-rounding-edge-001"
         )
         settlement = result.settlement
-        total_split = settlement.cnpj_amount.to_d + settlement.fdic_amount.to_d + settlement.beneficiary_amount.to_d
+        total_split = settlement.cnpj_amount.to_d + settlement.fidc_amount.to_d + settlement.beneficiary_amount.to_d
         assert_equal settlement.paid_amount.to_d, total_split
 
         ledger_entries = LedgerEntry.where(

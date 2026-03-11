@@ -3,9 +3,13 @@ require "securerandom"
 
 module Admin
   class LoansController < BaseController
-    PROFITABILITY_ACTION = Admin::FdicCockpit::PROFITABILITY_ACTION
-    PROFITABILITY_ENTRY_KINDS = Admin::FdicCockpit::PROFITABILITY_ENTRY_KINDS
+    PROFITABILITY_ACTION = Admin::FidcCockpit::PROFITABILITY_ACTION
+    PROFITABILITY_ENTRY_KINDS = Admin::FidcCockpit::PROFITABILITY_ENTRY_KINDS
     LOANS_PER_PAGE = 20
+    IMPORTED_SIGNATURE_METHOD = "ADMIN_IMPORTED_EVIDENCE".freeze
+    IMPORTED_DOCUMENT_EVENT_TYPE = "DOCUMENT_IMPORTED".freeze
+    MAX_IMPORTED_DOCUMENT_BYTES = 25.megabytes
+    IMPORTED_DOCUMENT_CONTENT_TYPES = %w[application/pdf].freeze
 
     before_action :load_loan, only: %i[show approve fund settle record_document record_profitability]
     before_action :load_form_collections, only: %i[index show approve fund settle record_document record_profitability create]
@@ -45,7 +49,7 @@ module Admin
     def approve
       with_loan_action_error_handling do
         ensure_status!(@loan, expected: "REQUESTED")
-        transition_loan!(@loan, to: "APPROVED", event_type: "ANTICIPATION_APPROVED", action_type: "FDIC_LOAN_APPROVED")
+        transition_loan!(@loan, to: "APPROVED", event_type: "ANTICIPATION_APPROVED", action_type: "FIDC_LOAN_APPROVED")
         redirect_to admin_loan_path(@loan), notice: "Empréstimo aprovado."
       end
     end
@@ -69,7 +73,7 @@ module Admin
           event_type: "ANTICIPATION_FUNDED",
           payload: { "anticipation_request_id" => @loan.id, "status" => @loan.status }
         )
-        FdicOperation.create!(
+        FidcOperation.create!(
           tenant: admin_current_tenant,
           anticipation_request: @loan,
           provider: "MOCK",
@@ -86,7 +90,7 @@ module Admin
           }
         )
         log_action!(
-          action_type: "FDIC_LOAN_FUNDED",
+          action_type: "FIDC_LOAN_FUNDED",
           target_type: "AnticipationRequest",
           target_id: @loan.id,
           metadata: { "receivable_id" => @loan.receivable_id, "net_amount" => @loan.net_amount.to_s("F") }
@@ -98,7 +102,7 @@ module Admin
 
     def settle
       with_loan_action_error_handling do
-        ensure_fdic_counterparty_configured!
+        ensure_fidc_counterparty_configured!
 
         Receivables::SettlePayment.new(
           tenant_id: admin_current_tenant.id,
@@ -127,32 +131,36 @@ module Admin
 
     def record_document
       with_loan_action_error_handling do
+        uploaded_artifact = uploaded_document_artifact!
         document = Document.create!(
           tenant: admin_current_tenant,
           receivable: @loan.receivable,
-          actor_party_id: @loan.requester_party_id,
+          actor_party_id: Current.user&.party_id,
           document_type: document_params.fetch(:document_type),
-          signature_method: "OWN_PLATFORM_CONFIRMATION",
+          signature_method: IMPORTED_SIGNATURE_METHOD,
           status: "SIGNED",
-          sha256: document_params.fetch(:sha256),
-          storage_key: document_params.fetch(:storage_key),
+          sha256: uploaded_artifact.fetch(:sha256),
+          storage_key: uploaded_artifact.fetch(:blob).key,
           signed_at: parsed_timestamp(document_params.fetch(:signed_at)),
           metadata: {
             "provider_envelope_id" => document_params[:provider_envelope_id],
-            "source" => "admin_cockpit"
+            "source" => "admin_cockpit_import",
+            "imported_by_party_id" => Current.user&.party_id
           }.compact
         )
+        document.file.attach(uploaded_artifact.fetch(:blob))
         DocumentEvent.create!(
           tenant: admin_current_tenant,
           document: document,
           receivable: @loan.receivable,
           actor_party_id: Current.user&.party_id,
-          event_type: "DOCUMENT_SIGNED",
+          event_type: IMPORTED_DOCUMENT_EVENT_TYPE,
           occurred_at: document.signed_at,
           request_id: request.request_id,
           payload: {
             "document_type" => document.document_type,
-            "provider_envelope_id" => document_params[:provider_envelope_id]
+            "provider_envelope_id" => document_params[:provider_envelope_id],
+            "signature_method" => document.signature_method
           }.compact
         )
         create_receivable_event!(
@@ -161,17 +169,18 @@ module Admin
           payload: {
             "anticipation_request_id" => @loan.id,
             "document_id" => document.id,
-            "document_type" => document.document_type
+            "document_type" => document.document_type,
+            "signature_method" => document.signature_method
           }
         )
         log_action!(
-          action_type: "FDIC_LOAN_DOCUMENT_RECORDED",
+          action_type: "FIDC_LOAN_DOCUMENT_IMPORTED",
           target_type: "Document",
           target_id: document.id,
           metadata: { "anticipation_request_id" => @loan.id, "receivable_id" => @loan.receivable_id }
         )
 
-        redirect_to admin_loan_path(@loan), notice: "Documento assinado registrado."
+        redirect_to admin_loan_path(@loan), notice: "Documento importado com evidência anexada."
       end
     end
 
@@ -210,7 +219,7 @@ module Admin
     private
 
     def cockpit
-      @cockpit ||= Admin::FdicCockpit.new(tenant: admin_current_tenant)
+      @cockpit ||= Admin::FidcCockpit.new(tenant: admin_current_tenant)
     end
 
     def current_page
@@ -219,7 +228,7 @@ module Admin
 
     def current_structure_filter
       candidate = params[:loan_structure].to_s
-      return nil unless Admin::FdicCockpit::LOAN_STRUCTURE_FILTER_KINDS.key?(candidate)
+      return nil unless Admin::FidcCockpit::LOAN_STRUCTURE_FILTER_KINDS.key?(candidate)
 
       candidate
     end
@@ -239,7 +248,7 @@ module Admin
       @hospitals = Party.where(tenant_id: admin_current_tenant.id, kind: "HOSPITAL").order(:legal_name)
       @counterparties = Party.where(tenant_id: admin_current_tenant.id, kind: %w[SUPPLIER LEGAL_ENTITY_PJ PHYSICIAN_PF FIDC]).order(:legal_name)
       @receivable_kinds = ReceivableKind.where(tenant_id: admin_current_tenant.id, active: true).order(:name)
-      @stage_definitions = Admin::FdicCockpit::STAGE_DEFINITIONS
+      @stage_definitions = Admin::FidcCockpit::STAGE_DEFINITIONS
     end
 
     def load_loan
@@ -380,7 +389,7 @@ module Admin
         {
           happened_at: document.signed_at,
           category: "Documento",
-          title: "Contrato assinado",
+          title: document.signature_method == IMPORTED_SIGNATURE_METHOD ? "Documento importado" : "Contrato assinado",
           details: document.document_type
         }
       end
@@ -468,10 +477,10 @@ module Admin
       Time.current
     end
 
-    def ensure_fdic_counterparty_configured!
+    def ensure_fidc_counterparty_configured!
       return if Party.exists?(tenant_id: admin_current_tenant.id, kind: "FIDC")
 
-      @loan.errors.add(:base, "Cadastre a contraparte FDIC antes de liquidar a operação.")
+      @loan.errors.add(:base, "Cadastre a contraparte FIDC antes de liquidar a operação.")
       raise ActiveRecord::RecordInvalid.new(@loan)
     end
 
@@ -496,7 +505,44 @@ module Admin
     end
 
     def document_params
-      params.require(:document).permit(:document_type, :sha256, :storage_key, :provider_envelope_id, :signed_at)
+      params.require(:document).permit(:document_type, :provider_envelope_id, :signed_at, :file)
+    end
+
+    def uploaded_document_artifact!
+      uploaded_file = document_params[:file]
+      if uploaded_file.blank?
+        @loan.errors.add(:base, "Anexe o arquivo do documento.")
+        raise ActiveRecord::RecordInvalid.new(@loan)
+      end
+
+      content_type = uploaded_file.content_type.to_s
+      unless IMPORTED_DOCUMENT_CONTENT_TYPES.include?(content_type)
+        @loan.errors.add(:base, "Envie o documento em PDF.")
+        raise ActiveRecord::RecordInvalid.new(@loan)
+      end
+
+      if uploaded_file.size.to_i <= 0 || uploaded_file.size.to_i > MAX_IMPORTED_DOCUMENT_BYTES
+        @loan.errors.add(:base, "O arquivo do documento deve ter até 25 MB.")
+        raise ActiveRecord::RecordInvalid.new(@loan)
+      end
+
+      checksum = Digest::SHA256.hexdigest(uploaded_file.read.to_s)
+      uploaded_file.rewind
+
+      blob = ActiveStorage::Blob.create_and_upload!(
+        io: uploaded_file,
+        filename: uploaded_file.original_filename.presence || "documento-importado.pdf",
+        content_type: content_type,
+        metadata: {
+          "tenant_id" => admin_current_tenant.id.to_s,
+          "source" => "admin_cockpit_import"
+        }
+      )
+
+      {
+        blob: blob,
+        sha256: checksum
+      }
     end
 
     def profitability_params

@@ -87,7 +87,7 @@ class AssignmentContractTest < ActiveSupport::TestCase
       tenant: @tenant,
       kind: "FIDC",
       legal_name: "FIDC #{suffix}",
-      document_number: valid_cnpj_from_seed("#{suffix}-fdic")
+      document_number: valid_cnpj_from_seed("#{suffix}-fidc")
     )
     receivable_kind = ReceivableKind.create!(
       tenant: @tenant,

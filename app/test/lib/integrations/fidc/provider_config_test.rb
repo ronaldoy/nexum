@@ -1,8 +1,8 @@
 require "test_helper"
-require "integrations/fdic/error"
+require "integrations/fidc/error"
 
 module Integrations
-  module Fdic
+  module Fidc
     class ProviderConfigTest < ActiveSupport::TestCase
       test "falls back to mock provider outside production" do
         provider = with_rails_env("test") do
@@ -21,17 +21,17 @@ module Integrations
       end
 
       test "rejects mock provider in production by default" do
-        error = assert_raises(Integrations::Fdic::UnsupportedProviderError) do
+        error = assert_raises(Integrations::Fidc::UnsupportedProviderError) do
           with_rails_env("production") do
             ProviderConfig.normalize_provider("MOCK")
           end
         end
 
-        assert_equal "fdic_provider_unsafe_for_production", error.code
+        assert_equal "fidc_provider_unsafe_for_production", error.code
       end
 
       test "allows mock provider in production only with explicit override" do
-        provider = with_environment("FDIC_ALLOW_MOCK_IN_PRODUCTION" => "true") do
+        provider = with_environment("FIDC_ALLOW_MOCK_IN_PRODUCTION" => "true") do
           with_rails_env("production") do
             ProviderConfig.normalize_provider("MOCK")
           end

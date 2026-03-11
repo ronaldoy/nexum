@@ -1,9 +1,9 @@
 require "digest"
 
 module Integrations
-  module Fdic
+  module Fidc
     class DispatchOperation
-      TARGET_TYPE = "FdicOperation".freeze
+      TARGET_TYPE = "FidcOperation".freeze
       FUNDING_EVENT_TYPE = "ANTICIPATION_FIDC_FUNDING_REQUESTED".freeze
       SETTLEMENT_EVENT_TYPE = "RECEIVABLE_FIDC_SETTLEMENT_REPORTED".freeze
       PAYLOAD_HASH_METADATA_KEY = "_payload_hash".freeze
@@ -49,8 +49,8 @@ module Integrations
         raise
       rescue KeyError => error
         raise ValidationError.new(
-          code: "fdic_payload_invalid",
-          message: "FDIC payload is missing required fields.",
+          code: "fidc_payload_invalid",
+          message: "FIDC payload is missing required fields.",
           details: { missing_key: error.key }
         )
       rescue ActiveRecord::RecordNotUnique
@@ -125,8 +125,8 @@ module Integrations
         return operation_type if operation_type.present?
 
         raise ValidationError.new(
-          code: "fdic_event_type_not_supported",
-          message: "FDIC dispatcher does not support event type #{event_type.inspect}."
+          code: "fidc_event_type_not_supported",
+          message: "FIDC dispatcher does not support event type #{event_type.inspect}."
         )
       end
 
@@ -139,7 +139,7 @@ module Integrations
       def resolve_operation_idempotency_key(outbox_event:, payload:)
         payload["operation_idempotency_key"].to_s.presence ||
           outbox_event.idempotency_key.to_s.presence ||
-          "#{outbox_event.id}:fdic_operation"
+          "#{outbox_event.id}:fidc_operation"
       end
 
       def resolve_amount!(payload)
@@ -153,11 +153,11 @@ module Integrations
         currency = payload.fetch("currency", "BRL").to_s.upcase
         return currency if currency == "BRL"
 
-        raise ValidationError.new(code: "invalid_currency", message: "FDIC operation currency must be BRL.")
+        raise ValidationError.new(code: "invalid_currency", message: "FIDC operation currency must be BRL.")
       end
 
       def find_or_initialize_operation(tenant_id:, idempotency_key:)
-        FdicOperation.lock.find_or_initialize_by(
+        FidcOperation.lock.find_or_initialize_by(
           tenant_id: tenant_id,
           idempotency_key: idempotency_key
         )
@@ -207,8 +207,8 @@ module Integrations
         return persisted if persisted.status == "SENT"
 
         raise ValidationError.new(
-          code: "fdic_operation_not_sent",
-          message: "FDIC operation did not reach a sent state.",
+          code: "fidc_operation_not_sent",
+          message: "FIDC operation did not reach a sent state.",
           details: { status: persisted.status }
         )
       end
@@ -216,7 +216,7 @@ module Integrations
       def log_dispatch_success!(outbox_event:, operation:)
         create_action_log!(
           outbox_event: outbox_event,
-          action_type: "FDIC_OPERATION_DISPATCHED",
+          action_type: "FIDC_OPERATION_DISPATCHED",
           success: true,
           target_id: operation.id,
           metadata: {
@@ -231,12 +231,12 @@ module Integrations
       end
 
       def resolve_operation_conflict!(tenant_id:, operation_idempotency_key:)
-        existing = FdicOperation.find_by!(tenant_id: tenant_id, idempotency_key: operation_idempotency_key)
+        existing = FidcOperation.find_by!(tenant_id: tenant_id, idempotency_key: operation_idempotency_key)
         return existing if existing.sent?
 
         raise ValidationError.new(
-          code: "fdic_operation_conflict",
-          message: "FDIC operation idempotency conflict."
+          code: "fidc_operation_conflict",
+          message: "FIDC operation idempotency conflict."
         )
       end
 
@@ -278,7 +278,7 @@ module Integrations
         anticipation_request_id = payload["anticipation_request_id"].to_s.presence
         if anticipation_request_id.blank?
           raise ValidationError.new(
-            code: "fdic_payload_source_missing",
+            code: "fidc_payload_source_missing",
             message: "FUNDING_REQUEST payload must include anticipation_request_id."
           )
         end
@@ -291,7 +291,7 @@ module Integrations
         settlement_id = payload["settlement_id"].to_s.presence || payload["receivable_payment_settlement_id"].to_s.presence
         if settlement_id.blank?
           raise ValidationError.new(
-            code: "fdic_payload_source_missing",
+            code: "fidc_payload_source_missing",
             message: "SETTLEMENT_REPORT payload must include settlement_id."
           )
         end
@@ -320,8 +320,8 @@ module Integrations
 
       def invalid_operation_type_error
         ValidationError.new(
-          code: "fdic_operation_type_invalid",
-          message: "FDIC operation type is invalid."
+          code: "fidc_operation_type_invalid",
+          message: "FIDC operation type is invalid."
         )
       end
 
@@ -365,7 +365,7 @@ module Integrations
 
         create_action_log!(
           outbox_event: outbox_event,
-          action_type: "FDIC_OPERATION_DISPATCH_FAILED",
+          action_type: "FIDC_OPERATION_DISPATCH_FAILED",
           success: false,
           target_id: operation.id,
           metadata: {
@@ -378,7 +378,7 @@ module Integrations
         )
       rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique => log_error
         Rails.logger.error(
-          "fdic_operation_failure_persist_error " \
+          "fidc_operation_failure_persist_error " \
           "error_class=#{log_error.class.name} error_message=#{log_error.message} " \
           "original_error_code=#{error.code}"
         )
@@ -389,8 +389,8 @@ module Integrations
         return if stored_hash.blank? || stored_hash == payload_hash
 
         raise ValidationError.new(
-          code: "fdic_operation_idempotency_conflict",
-          message: "FDIC operation idempotency key was already used with a different payload."
+          code: "fidc_operation_idempotency_conflict",
+          message: "FIDC operation idempotency key was already used with a different payload."
         )
       end
 

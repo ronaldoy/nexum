@@ -16,11 +16,11 @@ module Admin
     def ensure_ops_admin!
       return if Current.user&.role == "ops_admin"
 
-      redirect_to root_path, alert: "Acesso restrito ao perfil de gestão FDIC."
+      redirect_to root_path, alert: "Acesso restrito ao perfil de gestão FIDC."
     end
 
     def require_passkey_step_up!
-      require_admin_passkey_step_up!(alert: "Confirme a passkey para acessar o cockpit FDIC.")
+      require_admin_passkey_step_up!(alert: "Confirme a passkey para acessar o cockpit FIDC.")
     end
   end
 end

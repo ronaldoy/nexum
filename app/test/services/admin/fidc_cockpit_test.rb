@@ -1,7 +1,7 @@
 require "test_helper"
 
 module Admin
-  class FdicCockpitTest < ActiveSupport::TestCase
+  class FidcCockpitTest < ActiveSupport::TestCase
     setup do
       @tenant = tenants(:default)
       @user = users(:one)
@@ -51,7 +51,7 @@ module Admin
           paid_at: Time.zone.parse("2026-02-12 17:00:00")
         )
 
-        cockpit = Admin::FdicCockpit.new(tenant: @tenant)
+        cockpit = Admin::FidcCockpit.new(tenant: @tenant)
         requested_row = cockpit.loan_row(requested_request)
         partial_row = cockpit.loan_row(partial_request)
         full_row = cockpit.loan_row(full_request)
@@ -163,10 +163,10 @@ module Admin
         receivable_allocation: bundle[:allocation],
         paid_amount: settled_amount,
         cnpj_amount: "0.00",
-        fdic_amount: settled_amount,
+        fidc_amount: settled_amount,
         beneficiary_amount: "0.00",
-        fdic_balance_before: settled_amount,
-        fdic_balance_after: "0.00",
+        fidc_balance_before: settled_amount,
+        fidc_balance_after: "0.00",
         paid_at: paid_at,
         payment_reference: settlement_idempotency,
         idempotency_key: settlement_idempotency

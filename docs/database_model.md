@@ -729,7 +729,7 @@ Source schema: `app/db/structure.sql`
 - `index_escrow_payouts_on_tenant_settlement_party` (unique): `tenant_id, receivable_payment_settlement_id, party_id` WHERE (receivable_payment_settlement_id IS NOT NULL)
 - `index_escrow_payouts_on_tenant_status_requested_at` (non-unique): `tenant_id, status, requested_at`
 
-## `fdic_operations`
+## `fidc_operations`
 
 - Primary key: `id`
 - RLS enabled: `true`
@@ -737,7 +737,7 @@ Source schema: `app/db/structure.sql`
 - Append-only guard: `false`
 
 - Policies:
-  - `fdic_operations_tenant_policy`
+  - `fidc_operations_tenant_policy`
 
 ### Columns
 
@@ -764,23 +764,23 @@ Source schema: `app/db/structure.sql`
 
 ### Check Constraints
 
-- `fdic_operations_amount_positive_check`: `amount > 0::numeric`
-- `fdic_operations_currency_check`: `currency::text = 'BRL'::text`
-- `fdic_operations_idempotency_key_present_check`: `btrim(idempotency_key::text) <> ''::text`
-- `fdic_operations_operation_type_check`: `operation_type::text = ANY (ARRAY['FUNDING_REQUEST'::character varying, 'SETTLEMENT_REPORT'::character varying]::text[])`
-- `fdic_operations_provider_check`: `provider::text = ANY (ARRAY['MOCK'::character varying, 'WEBHOOK'::character varying]::text[])`
-- `fdic_operations_single_source_reference_check`: `anticipation_request_id IS NOT NULL AND receivable_payment_settlement_id IS NULL OR anticipation_request_id IS NULL AND receivable_payment_settlement_id IS NOT NULL`
-- `fdic_operations_status_check`: `status::text = ANY (ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying]::text[])`
+- `fidc_operations_amount_positive_check`: `amount > 0::numeric`
+- `fidc_operations_currency_check`: `currency::text = 'BRL'::text`
+- `fidc_operations_idempotency_key_present_check`: `btrim(idempotency_key::text) <> ''::text`
+- `fidc_operations_operation_type_check`: `operation_type::text = ANY (ARRAY['FUNDING_REQUEST'::character varying, 'SETTLEMENT_REPORT'::character varying]::text[])`
+- `fidc_operations_provider_check`: `provider::text = ANY (ARRAY['MOCK'::character varying, 'WEBHOOK'::character varying]::text[])`
+- `fidc_operations_single_source_reference_check`: `anticipation_request_id IS NOT NULL AND receivable_payment_settlement_id IS NULL OR anticipation_request_id IS NULL AND receivable_payment_settlement_id IS NOT NULL`
+- `fidc_operations_status_check`: `status::text = ANY (ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying]::text[])`
 
 ### Indexes
 
-- `index_fdic_operations_dispatch_scan` (non-unique): `tenant_id, operation_type, status, requested_at`
-- `index_fdic_operations_on_anticipation_request_id` (non-unique): `anticipation_request_id`
-- `index_fdic_operations_on_receivable_payment_settlement_id` (non-unique): `receivable_payment_settlement_id`
-- `index_fdic_operations_on_tenant_id` (non-unique): `tenant_id`
-- `index_fdic_operations_on_tenant_idempotency_key` (unique): `tenant_id, idempotency_key`
-- `index_fdic_operations_unique_funding_per_request` (unique): `tenant_id, anticipation_request_id, operation_type` WHERE (anticipation_request_id IS NOT NULL)
-- `index_fdic_operations_unique_settlement_per_payment` (unique): `tenant_id, receivable_payment_settlement_id, operation_type` WHERE (receivable_payment_settlement_id IS NOT NULL)
+- `index_fidc_operations_dispatch_scan` (non-unique): `tenant_id, operation_type, status, requested_at`
+- `index_fidc_operations_on_anticipation_request_id` (non-unique): `anticipation_request_id`
+- `index_fidc_operations_on_receivable_payment_settlement_id` (non-unique): `receivable_payment_settlement_id`
+- `index_fidc_operations_on_tenant_id` (non-unique): `tenant_id`
+- `index_fidc_operations_on_tenant_idempotency_key` (unique): `tenant_id, idempotency_key`
+- `index_fidc_operations_unique_funding_per_request` (unique): `tenant_id, anticipation_request_id, operation_type` WHERE (anticipation_request_id IS NOT NULL)
+- `index_fidc_operations_unique_settlement_per_payment` (unique): `tenant_id, receivable_payment_settlement_id, operation_type` WHERE (receivable_payment_settlement_id IS NOT NULL)
 
 ## `hospital_ownerships`
 
@@ -1544,10 +1544,10 @@ Source schema: `app/db/structure.sql`
 | `receivable_allocation_id` | `uuid` | true | `` | `receivable_allocations.id` |
 | `paid_amount` | `numeric(18,2)` | false | `` | - |
 | `cnpj_amount` | `numeric(18,2)` | false | `0.0` | - |
-| `fdic_amount` | `numeric(18,2)` | false | `0.0` | - |
+| `fidc_amount` | `numeric(18,2)` | false | `0.0` | - |
 | `beneficiary_amount` | `numeric(18,2)` | false | `0.0` | - |
-| `fdic_balance_before` | `numeric(18,2)` | false | `0.0` | - |
-| `fdic_balance_after` | `numeric(18,2)` | false | `0.0` | - |
+| `fidc_balance_before` | `numeric(18,2)` | false | `0.0` | - |
+| `fidc_balance_after` | `numeric(18,2)` | false | `0.0` | - |
 | `paid_at` | `timestamp(6) without time zone` | false | `` | - |
 | `payment_reference` | `character varying` | false | `` | - |
 | `request_id` | `character varying` | true | `` | - |
@@ -1560,14 +1560,14 @@ Source schema: `app/db/structure.sql`
 
 - `receivable_payment_settlements_beneficiary_non_negative_check`: `beneficiary_amount >= 0::numeric`
 - `receivable_payment_settlements_cnpj_non_negative_check`: `cnpj_amount >= 0::numeric`
-- `receivable_payment_settlements_fdic_after_non_negative_check`: `fdic_balance_after >= 0::numeric`
-- `receivable_payment_settlements_fdic_balance_flow_check`: `fdic_balance_before >= fdic_balance_after`
-- `receivable_payment_settlements_fdic_before_non_negative_check`: `fdic_balance_before >= 0::numeric`
-- `receivable_payment_settlements_fdic_non_negative_check`: `fdic_amount >= 0::numeric`
+- `receivable_payment_settlements_fidc_after_non_negative_check`: `fidc_balance_after >= 0::numeric`
+- `receivable_payment_settlements_fidc_balance_flow_check`: `fidc_balance_before >= fidc_balance_after`
+- `receivable_payment_settlements_fidc_before_non_negative_check`: `fidc_balance_before >= 0::numeric`
+- `receivable_payment_settlements_fidc_non_negative_check`: `fidc_amount >= 0::numeric`
 - `receivable_payment_settlements_idempotency_key_present_check`: `btrim(idempotency_key::text) <> ''::text`
 - `receivable_payment_settlements_paid_positive_check`: `paid_amount > 0::numeric`
 - `receivable_payment_settlements_payment_reference_present_check`: `btrim(payment_reference::text) <> ''::text`
-- `receivable_payment_settlements_split_total_check`: `(cnpj_amount + fdic_amount + beneficiary_amount) = paid_amount`
+- `receivable_payment_settlements_split_total_check`: `(cnpj_amount + fidc_amount + beneficiary_amount) = paid_amount`
 
 ### Indexes
 

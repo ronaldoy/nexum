@@ -28,7 +28,7 @@ module Admin
     private
 
     def cockpit
-      @cockpit ||= Admin::FdicCockpit.new(tenant: admin_current_tenant)
+      @cockpit ||= Admin::FidcCockpit.new(tenant: admin_current_tenant)
     end
 
     def current_page
@@ -37,7 +37,7 @@ module Admin
 
     def current_structure_filter
       candidate = params[:loan_structure].to_s
-      return nil unless Admin::FdicCockpit::LOAN_STRUCTURE_FILTER_KINDS.key?(candidate)
+      return nil unless Admin::FidcCockpit::LOAN_STRUCTURE_FILTER_KINDS.key?(candidate)
 
       candidate
     end

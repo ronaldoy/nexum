@@ -87,7 +87,7 @@ module Admin
       ActionIpLog.create!(
         tenant: admin_current_tenant,
         actor_party_id: Current.user&.party_id,
-        action_type: "FDIC_COUNTERPARTY_CREATED",
+        action_type: "FIDC_COUNTERPARTY_CREATED",
         ip_address: request.remote_ip,
         user_agent: request.user_agent,
         request_id: request.request_id,

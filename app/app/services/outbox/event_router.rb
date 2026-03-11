@@ -12,8 +12,8 @@ module Outbox
     HANDLERS = {
       "ANTICIPATION_ESCROW_PAYOUT_REQUESTED" => Integrations::Escrow::DispatchPayout,
       "RECEIVABLE_ESCROW_EXCESS_PAYOUT_REQUESTED" => Integrations::Escrow::DispatchPayout,
-      "ANTICIPATION_FIDC_FUNDING_REQUESTED" => Integrations::Fdic::DispatchOperation,
-      "RECEIVABLE_FIDC_SETTLEMENT_REPORTED" => Integrations::Fdic::DispatchOperation
+      "ANTICIPATION_FIDC_FUNDING_REQUESTED" => Integrations::Fidc::DispatchOperation,
+      "RECEIVABLE_FIDC_SETTLEMENT_REPORTED" => Integrations::Fidc::DispatchOperation
     }.freeze
 
     def call(outbox_event:)
@@ -23,7 +23,7 @@ module Outbox
       handler.new.call(outbox_event: outbox_event)
     rescue Integrations::Escrow::Error => error
       raise DeliveryError.new(code: error.code, message: error.message)
-    rescue Integrations::Fdic::Error => error
+    rescue Integrations::Fidc::Error => error
       raise DeliveryError.new(code: error.code, message: error.message)
     end
   end

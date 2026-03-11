@@ -1,6 +1,6 @@
 module Admin
-  class FdicCockpit
-    PROFITABILITY_ACTION = "FDIC_PROFITABILITY_RECORDED".freeze
+  class FidcCockpit
+    PROFITABILITY_ACTION = "FIDC_PROFITABILITY_RECORDED".freeze
     PROFITABILITY_ENTRY_KINDS = %w[INCOME EXPENSE].freeze
     ACTIVE_LOAN_STATUSES = %w[REQUESTED PENDING_REVIEW APPROVED FUNDED].freeze
     LOAN_STRUCTURE_FILTER_KINDS = {
@@ -309,7 +309,7 @@ module Admin
         physician_party: allocation&.physician_party,
         debtor: receivable.debtor_party,
         documents_count: documents_count,
-        fdic_operations_count: fdic_operations_by_request.fetch(anticipation.id.to_s, []).size,
+        fidc_operations_count: fidc_operations_by_request.fetch(anticipation.id.to_s, []).size,
         current_stage: current_stage_for(anticipation:, documents_count:, settlement_total:, fully_liquidated:),
         stages: stage_state_for(anticipation:, documents_count:, settlement_total:, fully_liquidated:),
         due_at: receivable.due_at,
@@ -398,8 +398,8 @@ module Admin
         .group_by { |document| document.receivable_id.to_s }
     end
 
-    def fdic_operations_by_request
-      @fdic_operations_by_request ||= FdicOperation
+    def fidc_operations_by_request
+      @fidc_operations_by_request ||= FidcOperation
         .where(tenant_id: tenant.id)
         .order(requested_at: :desc)
         .group_by { |operation| operation.anticipation_request_id.to_s }
@@ -459,7 +459,7 @@ module Admin
     end
 
     def exposure_calculator
-      @exposure_calculator ||= Fdic::ExposureCalculator.new(valuation_time: Time.current)
+      @exposure_calculator ||= Fidc::ExposureCalculator.new(valuation_time: Time.current)
     end
 
     def decimal_metadata(value)

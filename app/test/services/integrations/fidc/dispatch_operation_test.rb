@@ -1,7 +1,7 @@
 require "test_helper"
 
 module Integrations
-  module Fdic
+  module Fidc
     class DispatchOperationTest < ActiveSupport::TestCase
       setup do
         @tenant = tenants(:default)
@@ -10,18 +10,18 @@ module Integrations
 
       test "dispatches funding request and persists sent operation" do
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "worker") do
-          bundle = create_funding_bundle!("fdic-dispatch-op-funding")
-          outbox_event = create_fdic_funding_outbox_event!(
+          bundle = create_funding_bundle!("fidc-dispatch-op-funding")
+          outbox_event = create_fidc_funding_outbox_event!(
             anticipation_request: bundle[:anticipation_request],
             amount: "45.00",
-            idempotency_key: "fdic-dispatch-op-funding-key"
+            idempotency_key: "fidc-dispatch-op-funding-key"
           )
 
           provider = FakeProviderSuccess.new
           operation = nil
 
           with_stubbed_provider(provider) do
-            operation = Integrations::Fdic::DispatchOperation.new.call(outbox_event: outbox_event)
+            operation = Integrations::Fidc::DispatchOperation.new.call(outbox_event: outbox_event)
           end
 
           assert_equal "FUNDING_REQUEST", operation.operation_type
@@ -34,8 +34,8 @@ module Integrations
 
           assert_equal 1, ActionIpLog.where(
             tenant_id: @tenant.id,
-            action_type: "FDIC_OPERATION_DISPATCHED",
-            target_type: "FdicOperation",
+            action_type: "FIDC_OPERATION_DISPATCHED",
+            target_type: "FidcOperation",
             target_id: operation.id
           ).count
         end
@@ -43,24 +43,24 @@ module Integrations
 
       test "dispatches settlement report and persists sent operation" do
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "worker") do
-          bundle = create_funding_bundle!("fdic-dispatch-op-settlement")
+          bundle = create_funding_bundle!("fidc-dispatch-op-settlement")
           settlement = create_settlement!(
             bundle: bundle,
-            suffix: "fdic-dispatch-op-settlement",
-            fdic_amount: "30.00",
+            suffix: "fidc-dispatch-op-settlement",
+            fidc_amount: "30.00",
             beneficiary_amount: "70.00"
           )
-          outbox_event = create_fdic_settlement_outbox_event!(
+          outbox_event = create_fidc_settlement_outbox_event!(
             settlement: settlement,
             amount: "30.00",
-            idempotency_key: "fdic-dispatch-op-settlement-key"
+            idempotency_key: "fidc-dispatch-op-settlement-key"
           )
 
           provider = FakeProviderSuccess.new
           operation = nil
 
           with_stubbed_provider(provider) do
-            operation = Integrations::Fdic::DispatchOperation.new.call(outbox_event: outbox_event)
+            operation = Integrations::Fidc::DispatchOperation.new.call(outbox_event: outbox_event)
           end
 
           assert_equal "SETTLEMENT_REPORT", operation.operation_type
@@ -72,8 +72,8 @@ module Integrations
 
           assert_equal 1, ActionIpLog.where(
             tenant_id: @tenant.id,
-            action_type: "FDIC_OPERATION_DISPATCHED",
-            target_type: "FdicOperation",
+            action_type: "FIDC_OPERATION_DISPATCHED",
+            target_type: "FidcOperation",
             target_id: operation.id
           ).count
         end
@@ -81,30 +81,30 @@ module Integrations
 
       test "replays existing sent operation without redispatching provider" do
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "worker") do
-          bundle = create_funding_bundle!("fdic-dispatch-op-replay")
-          outbox_event = create_fdic_funding_outbox_event!(
+          bundle = create_funding_bundle!("fidc-dispatch-op-replay")
+          outbox_event = create_fidc_funding_outbox_event!(
             anticipation_request: bundle[:anticipation_request],
             amount: "45.00",
-            idempotency_key: "fdic-dispatch-op-replay-key"
+            idempotency_key: "fidc-dispatch-op-replay-key"
           )
 
           first_operation = nil
           with_stubbed_provider(FakeProviderSuccess.new) do
-            first_operation = Integrations::Fdic::DispatchOperation.new.call(outbox_event: outbox_event)
+            first_operation = Integrations::Fidc::DispatchOperation.new.call(outbox_event: outbox_event)
           end
 
           replayed_operation = nil
           with_stubbed_provider(FakeProviderShouldNotBeCalled.new) do
-            replayed_operation = Integrations::Fdic::DispatchOperation.new.call(outbox_event: outbox_event)
+            replayed_operation = Integrations::Fidc::DispatchOperation.new.call(outbox_event: outbox_event)
           end
 
           assert_equal first_operation.id, replayed_operation.id
           assert_equal "SENT", replayed_operation.status
-          assert_equal 1, FdicOperation.where(tenant_id: @tenant.id, idempotency_key: "fdic-dispatch-op-replay-key").count
+          assert_equal 1, FidcOperation.where(tenant_id: @tenant.id, idempotency_key: "fidc-dispatch-op-replay-key").count
           assert_equal 1, ActionIpLog.where(
             tenant_id: @tenant.id,
-            action_type: "FDIC_OPERATION_DISPATCHED",
-            target_type: "FdicOperation",
+            action_type: "FIDC_OPERATION_DISPATCHED",
+            target_type: "FidcOperation",
             target_id: first_operation.id
           ).count
         end
@@ -112,31 +112,31 @@ module Integrations
 
       test "persists failed operation and logs when provider fails" do
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "worker") do
-          bundle = create_funding_bundle!("fdic-dispatch-op-failure")
-          outbox_event = create_fdic_funding_outbox_event!(
+          bundle = create_funding_bundle!("fidc-dispatch-op-failure")
+          outbox_event = create_fidc_funding_outbox_event!(
             anticipation_request: bundle[:anticipation_request],
             amount: "45.00",
-            idempotency_key: "fdic-dispatch-op-failure-key"
+            idempotency_key: "fidc-dispatch-op-failure-key"
           )
 
           error = nil
           with_stubbed_provider(FakeProviderFailure.new) do
-            error = assert_raises(Integrations::Fdic::RemoteError) do
-              Integrations::Fdic::DispatchOperation.new.call(outbox_event: outbox_event)
+            error = assert_raises(Integrations::Fidc::RemoteError) do
+              Integrations::Fidc::DispatchOperation.new.call(outbox_event: outbox_event)
             end
           end
 
-          assert_equal "fdic_provider_timeout", error.code
+          assert_equal "fidc_provider_timeout", error.code
 
-          operation = FdicOperation.find_by!(tenant_id: @tenant.id, idempotency_key: "fdic-dispatch-op-failure-key")
+          operation = FidcOperation.find_by!(tenant_id: @tenant.id, idempotency_key: "fidc-dispatch-op-failure-key")
           assert_equal "FAILED", operation.status
-          assert_equal "fdic_provider_timeout", operation.last_error_code
-          assert_equal "FDIC provider timeout.", operation.last_error_message
+          assert_equal "fidc_provider_timeout", operation.last_error_code
+          assert_equal "FIDC provider timeout.", operation.last_error_message
 
           assert_equal 1, ActionIpLog.where(
             tenant_id: @tenant.id,
-            action_type: "FDIC_OPERATION_DISPATCH_FAILED",
-            target_type: "FdicOperation",
+            action_type: "FIDC_OPERATION_DISPATCH_FAILED",
+            target_type: "FidcOperation",
             target_id: operation.id
           ).count
         end
@@ -209,17 +209,17 @@ module Integrations
         }
       end
 
-      def create_settlement!(bundle:, suffix:, fdic_amount:, beneficiary_amount:)
+      def create_settlement!(bundle:, suffix:, fidc_amount:, beneficiary_amount:)
         ReceivablePaymentSettlement.create!(
           tenant: @tenant,
           receivable: bundle[:receivable],
           receivable_allocation: bundle[:allocation],
           paid_amount: "100.00",
           cnpj_amount: "0.00",
-          fdic_amount: fdic_amount,
+          fidc_amount: fidc_amount,
           beneficiary_amount: beneficiary_amount,
-          fdic_balance_before: fdic_amount,
-          fdic_balance_after: "0.00",
+          fidc_balance_before: fidc_amount,
+          fidc_balance_after: "0.00",
           paid_at: Time.current,
           payment_reference: "payment-ref-#{suffix}",
           idempotency_key: "settlement-#{suffix}",
@@ -228,7 +228,7 @@ module Integrations
         )
       end
 
-      def create_fdic_funding_outbox_event!(anticipation_request:, amount:, idempotency_key:)
+      def create_fidc_funding_outbox_event!(anticipation_request:, amount:, idempotency_key:)
         OutboxEvent.create!(
           tenant: @tenant,
           aggregate_type: "AnticipationRequest",
@@ -249,7 +249,7 @@ module Integrations
         )
       end
 
-      def create_fdic_settlement_outbox_event!(settlement:, amount:, idempotency_key:)
+      def create_fidc_settlement_outbox_event!(settlement:, amount:, idempotency_key:)
         OutboxEvent.create!(
           tenant: @tenant,
           aggregate_type: "ReceivablePaymentSettlement",
@@ -271,8 +271,8 @@ module Integrations
       end
 
       def with_stubbed_provider(provider)
-        singleton = Integrations::Fdic::ProviderRegistry.singleton_class
-        original_fetch = Integrations::Fdic::ProviderRegistry.method(:fetch)
+        singleton = Integrations::Fidc::ProviderRegistry.singleton_class
+        original_fetch = Integrations::Fidc::ProviderRegistry.method(:fetch)
         singleton.send(:define_method, :fetch) { |provider_code:| provider }
         yield
       ensure
@@ -293,7 +293,7 @@ module Integrations
             anticipation_request_id: anticipation_request.id,
             idempotency_key: idempotency_key
           }
-          Integrations::Fdic::OperationResult.new(
+          Integrations::Fidc::OperationResult.new(
             provider_reference: "provider-funding-123",
             status: "SENT",
             metadata: { "status" => "SENT" }
@@ -306,7 +306,7 @@ module Integrations
             settlement_id: settlement.id,
             idempotency_key: idempotency_key
           }
-          Integrations::Fdic::OperationResult.new(
+          Integrations::Fidc::OperationResult.new(
             provider_reference: "provider-settlement-123",
             status: "SENT",
             metadata: { "status" => "SENT" }
@@ -326,9 +326,9 @@ module Integrations
 
       class FakeProviderFailure < FakeProviderSuccess
         def request_funding!(tenant_id:, anticipation_request:, payload:, idempotency_key:)
-          raise Integrations::Fdic::RemoteError.new(
-            code: "fdic_provider_timeout",
-            message: "FDIC provider timeout.",
+          raise Integrations::Fidc::RemoteError.new(
+            code: "fidc_provider_timeout",
+            message: "FIDC provider timeout.",
             http_status: 504
           )
         end

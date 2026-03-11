@@ -1,5 +1,5 @@
 module Integrations
-  module Fdic
+  module Fidc
     OperationResult = Struct.new(
       :provider_reference,
       :status,

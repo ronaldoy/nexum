@@ -334,10 +334,10 @@ module DemoPhysicianLoanGenerator
             receivable_allocation: allocation,
             paid_amount: settled_amount,
             cnpj_amount: FinancialRounding.money(0),
-            fdic_amount: settled_amount,
+            fidc_amount: settled_amount,
             beneficiary_amount: FinancialRounding.money(0),
-            fdic_balance_before: settled_amount,
-            fdic_balance_after: FinancialRounding.money(0),
+            fidc_balance_before: settled_amount,
+            fidc_balance_after: FinancialRounding.money(0),
             paid_at: requested_at + 2.days,
             payment_reference: "bulk-#{reference.downcase}",
             idempotency_key: SecureRandom.uuid

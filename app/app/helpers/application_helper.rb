@@ -5,7 +5,7 @@ module ApplicationHelper
   ROLE_LABELS = {
     "hospital_admin" => "Hospital",
     "supplier_user" => "Fornecedor",
-    "ops_admin" => "Gestão FDIC",
+    "ops_admin" => "Gestão FIDC",
     "physician_pf_user" => "Médico PF",
     "physician_pj_admin" => "Médico PJ Administrador",
     "physician_pj_member" => "Médico PJ Membro",
@@ -17,7 +17,7 @@ module ApplicationHelper
     "SUPPLIER" => "Fornecedor",
     "PHYSICIAN_PF" => "Médico PF",
     "LEGAL_ENTITY_PJ" => "Pessoa jurídica",
-    "FIDC" => "FDIC",
+    "FIDC" => "FIDC",
     "PLATFORM" => "Plataforma"
   }.freeze
 
@@ -52,7 +52,7 @@ module ApplicationHelper
   end
 
   def role_label(role, party: Current.user&.party)
-    return "FDIC" if party&.kind == "FIDC"
+    return "FIDC" if party&.kind == "FIDC"
     return "Organização Hospitalar" if hospital_organization_party?(party)
     return "Hospital" if party&.kind == "HOSPITAL"
 

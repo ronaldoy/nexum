@@ -19,7 +19,7 @@
 
   <section class="hero-panel hero-panel-brand">
     <div>
-      <p class="hero-kicker">Averta FDIC Manager Cockpit</p>
+      <p class="hero-kicker">Averta FIDC Manager Cockpit</p>
       <h2>Gestão diária da carteira performada</h2>
       <p class="hero-subtitle">
         Cadastre contrapartes, origine operações, acompanhe o estágio de cada empréstimo e registre rentabilidade adicional sem sair do cockpit.
@@ -31,7 +31,7 @@
     <div class="hero-meta">
       <p><strong>Perfil:</strong> <%= role_label(Current.user&.role) %></p>
       <p><strong>Usuário:</strong> <%= Current.user&.email_address %></p>
-      <p><strong>Escopo:</strong> carteira FDIC do tenant atual</p>
+      <p><strong>Escopo:</strong> carteira FIDC do tenant atual</p>
       <div class="hero-actions">
         <%= link_to "Nova contraparte", admin_counterparties_path, class: "button button-primary" %>
         <%= link_to "Originar empréstimo", admin_loans_path(anchor: "loan-origination"), class: "button button-primary" %>

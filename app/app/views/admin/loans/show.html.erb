@@ -125,19 +125,15 @@
       </div>
 
       <div class="mini-stack">
-        <h4>Registrar documento assinado</h4>
+        <h4>Importar documento assinado</h4>
         <%= form_with url: record_document_admin_loan_path(@loan), scope: :document, class: "compact-form" do |form| %>
           <div class="field">
             <%= form.label :document_type, "Tipo do documento" %>
             <%= form.text_field :document_type, value: "ASSIGNMENT_CONTRACT" %>
           </div>
           <div class="field">
-            <%= form.label :sha256, "SHA256" %>
-            <%= form.text_field :sha256, required: true %>
-          </div>
-          <div class="field">
-            <%= form.label :storage_key, "Storage key" %>
-            <%= form.text_field :storage_key, required: true %>
+            <%= form.label :file, "Arquivo PDF" %>
+            <%= form.file_field :file, accept: "application/pdf", required: true %>
           </div>
           <div class="field">
             <%= form.label :provider_envelope_id, "Envelope do provedor" %>
@@ -147,7 +143,7 @@
             <%= form.label :signed_at, "Assinado em" %>
             <%= form.datetime_local_field :signed_at, value: Time.current.strftime("%Y-%m-%dT%H:%M"), required: true %>
           </div>
-          <%= form.submit "Registrar contrato", class: "button button-soft" %>
+          <%= form.submit "Importar documento", class: "button button-soft" %>
         <% end %>
       </div>
 

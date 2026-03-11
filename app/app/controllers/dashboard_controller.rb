@@ -20,7 +20,7 @@ class DashboardController < ApplicationController
     "RECEIVABLE_PAYMENT_SETTLED" => "Pagamento liquidado"
   }.freeze
 
-  helper_method :fdic_persona?, :stage_definitions, :persona_title
+  helper_method :fidc_persona?, :stage_definitions, :persona_title
 
   def show
     return redirect_to admin_dashboard_path if Current.user&.role == "ops_admin"
@@ -30,7 +30,7 @@ class DashboardController < ApplicationController
     load_receivable_relationship_indexes
     build_dashboard_overview
     build_selected_receivable_timeline
-    load_fdic_data
+    load_fidc_data
   end
 
   private
@@ -69,15 +69,15 @@ class DashboardController < ApplicationController
     @timeline_entries = @selected_receivable ? timeline_entries_for(@selected_receivable) : []
   end
 
-  def load_fdic_data
-    return assign_empty_fdic_data unless fdic_persona?
+  def load_fidc_data
+    return assign_empty_fidc_data unless fidc_persona?
 
-    @fdic_anticipation_rows = build_fdic_anticipation_rows
+    @fidc_anticipation_rows = build_fidc_anticipation_rows
     @daily_statistics = load_daily_statistics
   end
 
-  def assign_empty_fdic_data
-    @fdic_anticipation_rows = []
+  def assign_empty_fidc_data
+    @fidc_anticipation_rows = []
     @daily_statistics = []
   end
 
@@ -93,19 +93,19 @@ class DashboardController < ApplicationController
       "Visão do Fornecedor"
     when :physician
       "Visão do Médico"
-    when :fdic
-      "Visão do FDIC"
+    when :fidc
+      "Visão do FIDC"
     else
       "Visão Operacional"
     end
   end
 
-  def fdic_persona?
-    @persona == :fdic
+  def fidc_persona?
+    @persona == :fidc
   end
 
   def resolve_persona
-    return :fdic if Current.user&.party&.kind == "FIDC"
+    return :fidc if Current.user&.party&.kind == "FIDC"
     return :hospital if hospital_actor_party?
 
     case Current.user&.role
@@ -116,7 +116,7 @@ class DashboardController < ApplicationController
     when "physician_pf_user", "physician_pj_admin", "physician_pj_member"
       :physician
     when "ops_admin"
-      :fdic
+      :fidc
     else
       :operations
     end
@@ -372,7 +372,7 @@ class DashboardController < ApplicationController
     totals = headline_totals
 
     case @persona
-    when :fdic
+    when :fidc
       [
         { label: "Carteira performada", value: totals[:gross], kind: :money, footnote: "#{@receivables.size} recebíveis no escopo" },
         { label: "Volume antecipado", value: totals[:requested], kind: :money, footnote: "#{@anticipation_requests.size} solicitações" },
@@ -424,8 +424,8 @@ class DashboardController < ApplicationController
     BigDecimal(settled_requests.to_s) / BigDecimal(@anticipation_requests.size.to_s)
   end
 
-  def build_fdic_anticipation_rows
-    calculator = Fdic::ExposureCalculator.new(valuation_time: Time.current)
+  def build_fidc_anticipation_rows
+    calculator = Fidc::ExposureCalculator.new(valuation_time: Time.current)
 
     @anticipation_requests.map do |anticipation|
       receivable = anticipation.receivable

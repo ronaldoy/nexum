@@ -1,4 +1,4 @@
-module Fdic
+module Fidc
   class ExposureCalculator
     OPEN_STATUSES = %w[APPROVED FUNDED SETTLED].freeze
     ZERO = BigDecimal("0")

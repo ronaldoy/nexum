@@ -1,7 +1,7 @@
 require "digest"
 
 module Integrations
-  module Fdic
+  module Fidc
     module Providers
       class Mock < Base
         def provider_code

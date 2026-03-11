@@ -11,7 +11,7 @@ pt-BR:
     new:
       eyebrow: "Portal de Operações"
       title: "Entrar na Averta"
-      subtitle: "Gerencie recebíveis performados, empréstimos FDIC e liquidações em um único cockpit."
+      subtitle: "Gerencie recebíveis performados, empréstimos FIDC e liquidações em um único cockpit."
       fields:
         tenant_slug:
           label: "Código da organização"
@@ -32,12 +32,12 @@ pt-BR:
           hospital_unit: "Unidade hospitalar"
           supplier: "Fornecedor"
           physician: "Médico"
-          fdic: "FDIC"
+          fidc: "FIDC"
         users:
           hospital_org: "hospital_org_user@avertacapital.com.br"
           hospital_unit: "hospital_unit_user@avertacapital.com.br"
           supplier: "supplier_user@avertacapital.com.br"
           physician: "physician_user@avertacapital.com.br"
-          fdic: "fdic_manager@avertacapital.com.br"
+          fidc: "fidc_manager@avertacapital.com.br"
         password_hint: "Senha configurada para seed:"
         privileged_otp_hint: "Código MFA atual para perfis privilegiados:"

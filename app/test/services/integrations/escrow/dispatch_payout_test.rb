@@ -15,7 +15,7 @@ module Integrations
             bundle: bundle,
             suffix: "dispatch-payout-success",
             cnpj_amount: "0.00",
-            fdic_amount: "5.00",
+            fidc_amount: "5.00",
             beneficiary_amount: "95.00"
           )
           outbox_event = create_escrow_outbox_event!(
@@ -58,7 +58,7 @@ module Integrations
             bundle: bundle,
             suffix: "dispatch-payout-replay",
             cnpj_amount: "0.00",
-            fdic_amount: "5.00",
+            fidc_amount: "5.00",
             beneficiary_amount: "95.00"
           )
 
@@ -120,7 +120,7 @@ module Integrations
             bundle: bundle,
             suffix: "dispatch-payout-failure",
             cnpj_amount: "0.00",
-            fdic_amount: "5.00",
+            fidc_amount: "5.00",
             beneficiary_amount: "95.00"
           )
           outbox_event = create_escrow_outbox_event!(
@@ -159,7 +159,7 @@ module Integrations
             bundle: bundle,
             suffix: "dispatch-payout-mismatch",
             cnpj_amount: "0.00",
-            fdic_amount: "5.00",
+            fidc_amount: "5.00",
             beneficiary_amount: "95.00"
           )
           outbox_event = create_escrow_outbox_event!(
@@ -255,17 +255,17 @@ module Integrations
         }
       end
 
-      def create_settlement!(bundle:, suffix:, cnpj_amount:, fdic_amount:, beneficiary_amount:)
+      def create_settlement!(bundle:, suffix:, cnpj_amount:, fidc_amount:, beneficiary_amount:)
         ReceivablePaymentSettlement.create!(
           tenant: @tenant,
           receivable: bundle[:receivable],
           receivable_allocation: bundle[:allocation],
           paid_amount: "100.00",
           cnpj_amount: cnpj_amount,
-          fdic_amount: fdic_amount,
+          fidc_amount: fidc_amount,
           beneficiary_amount: beneficiary_amount,
-          fdic_balance_before: fdic_amount,
-          fdic_balance_after: "0.00",
+          fidc_balance_before: fidc_amount,
+          fidc_balance_after: "0.00",
           paid_at: Time.current,
           payment_reference: "hospital-payment-#{suffix}",
           idempotency_key: "idem-settlement-#{suffix}",

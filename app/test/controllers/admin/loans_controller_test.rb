@@ -1,3 +1,6 @@
+require "rack/test"
+require "tempfile"
+
 require "test_helper"
 
 module Admin
@@ -23,8 +26,8 @@ module Admin
         Party.create!(
           tenant: @tenant,
           kind: "FIDC",
-          legal_name: "FDIC Pipeline",
-          document_number: valid_cnpj_from_seed("loan-fdic")
+          legal_name: "FIDC Pipeline",
+          document_number: valid_cnpj_from_seed("loan-fidc")
         )
         @receivable_kind = ReceivableKind.create!(
           tenant: @tenant,
@@ -65,11 +68,11 @@ module Admin
       patch fund_admin_loan_path(loan)
       assert_redirected_to admin_loan_path(loan)
 
+      document_content = "loan-doc-content"
       post record_document_admin_loan_path(loan), params: {
         document: {
           document_type: "ASSIGNMENT_CONTRACT",
-          sha256: Digest::SHA256.hexdigest("loan-doc"),
-          storage_key: "contracts/loan-doc.pdf",
+          file: uploaded_pdf(filename: "loan-doc.pdf", content: document_content),
           provider_envelope_id: "env-123",
           signed_at: Time.current.strftime("%Y-%m-%dT%H:%M")
         }
@@ -98,11 +101,18 @@ module Admin
 
       with_tenant_db_context(tenant_id: @tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
         loan.reload
+        document = loan.receivable.documents.order(created_at: :desc).first
 
         assert_equal "SETTLED", loan.status
         assert loan.receivable.documents.exists?
-        assert FdicOperation.where(tenant_id: @tenant.id, anticipation_request_id: loan.id, operation_type: "FUNDING_REQUEST").exists?
-        assert ActionIpLog.where(tenant_id: @tenant.id, action_type: "FDIC_PROFITABILITY_RECORDED", target_id: loan.id).exists?
+        assert_equal "ADMIN_IMPORTED_EVIDENCE", document.signature_method
+        assert_equal @ops_user.party_id, document.actor_party_id
+        assert_equal Digest::SHA256.hexdigest(document_content), document.sha256
+        assert document.file.attached?
+        assert_equal 1, DocumentEvent.where(tenant_id: @tenant.id, document_id: document.id, event_type: "DOCUMENT_IMPORTED").count
+        assert FidcOperation.where(tenant_id: @tenant.id, anticipation_request_id: loan.id, operation_type: "FUNDING_REQUEST").exists?
+        assert ActionIpLog.where(tenant_id: @tenant.id, action_type: "FIDC_LOAN_DOCUMENT_IMPORTED", target_id: document.id).exists?
+        assert ActionIpLog.where(tenant_id: @tenant.id, action_type: "FIDC_PROFITABILITY_RECORDED", target_id: loan.id).exists?
         assert AnticipationSettlementEntry.where(tenant_id: @tenant.id, anticipation_request_id: loan.id).exists?
       end
     end
@@ -237,6 +247,16 @@ module Admin
     end
 
     private
+
+    def uploaded_pdf(filename:, content:)
+      tempfile = Tempfile.new([ File.basename(filename, ".pdf"), ".pdf" ])
+      tempfile.binmode
+      tempfile.write(content)
+      tempfile.rewind
+      (@uploaded_tempfiles ||= []) << tempfile
+
+      Rack::Test::UploadedFile.new(tempfile.path, "application/pdf", original_filename: filename)
+    end
 
     def create_loan!(external_reference:, requester_party:, allocated_party:, physician_party: nil, status: "REQUESTED", requested_at: Time.zone.parse("2026-03-01 09:00:00"))
       receivable = Receivable.create!(

@@ -3,7 +3,7 @@ require "net/http"
 require "uri"
 
 module Integrations
-  module Fdic
+  module Fidc
     module Providers
       class Webhook < Base
         DEFAULT_OPEN_TIMEOUT_SECONDS = 3
@@ -40,7 +40,7 @@ module Integrations
           request = Net::HTTP::Post.new(uri)
           request["Content-Type"] = "application/json"
           request["Idempotency-Key"] = body.fetch("request_control_key")
-          request["Authorization"] = "Bearer #{bearer_token}" if bearer_token.present?
+          request["Authorization"] = "Bearer #{configured_bearer_token}"
           request.body = JSON.generate(body)
 
           response = nil
@@ -58,8 +58,8 @@ module Integrations
           status = map_status(response.code.to_i)
           if status == "FAILED"
             raise RemoteError.new(
-              code: "fdic_webhook_http_error",
-              message: "FDIC webhook provider returned non-success response.",
+              code: "fidc_webhook_http_error",
+              message: "FIDC webhook provider returned non-success response.",
               http_status: response.code.to_i,
               details: {
                 response_code: response.code.to_i,
@@ -78,20 +78,20 @@ module Integrations
           )
         rescue SocketError, SystemCallError, Timeout::Error, IOError => error
           raise RemoteError.new(
-            code: "fdic_webhook_unreachable",
-            message: "FDIC webhook endpoint is unreachable.",
+            code: "fidc_webhook_unreachable",
+            message: "FIDC webhook endpoint is unreachable.",
             http_status: 503,
             details: { error_class: error.class.name, error_message: error.message }
           )
         end
 
         def build_uri(path)
-          base = base_url
-          URI.join("#{base.end_with?("/") ? base : "#{base}/"}", path.sub(%r{^/}, ""))
+          base = base_uri
+          URI.join(base_uri_for_join(base), path.sub(%r{^/}, ""))
         rescue URI::InvalidURIError => error
           raise ConfigurationError.new(
-            code: "fdic_webhook_base_url_invalid",
-            message: "FDIC webhook base URL is invalid.",
+            code: "fidc_webhook_base_url_invalid",
+            message: "FIDC webhook base URL is invalid.",
             details: { error_message: error.message }
           )
         end
@@ -114,36 +114,85 @@ module Integrations
         end
 
         def base_url
-          value = Rails.app.creds.option(:integrations, :fdic, :webhook, :base_url, default: ENV["FDIC_WEBHOOK_BASE_URL"]).to_s.strip
+          value = Rails.app.creds.option(:integrations, :fidc, :webhook, :base_url, default: ENV["FIDC_WEBHOOK_BASE_URL"]).to_s.strip
           if value.blank?
             raise ConfigurationError.new(
-              code: "fdic_webhook_base_url_missing",
-              message: "FDIC webhook base URL is missing."
+              code: "fidc_webhook_base_url_missing",
+              message: "FIDC webhook base URL is missing."
             )
           end
 
           value
         end
 
+        def base_uri
+          @base_uri ||= begin
+            uri = URI.parse(base_url)
+            validate_base_uri!(uri)
+            uri
+          end
+        rescue URI::InvalidURIError => error
+          raise ConfigurationError.new(
+            code: "fidc_webhook_base_url_invalid",
+            message: "FIDC webhook base URL is invalid.",
+            details: { error_message: error.message }
+          )
+        end
+
+        def validate_base_uri!(uri)
+          invalid_reasons = []
+          invalid_reasons << "must use HTTPS" unless uri.is_a?(URI::HTTPS)
+          invalid_reasons << "must include host" if uri.host.to_s.blank?
+          invalid_reasons << "must not include userinfo" if uri.userinfo.present?
+          invalid_reasons << "must not include query parameters" if uri.query.present?
+          invalid_reasons << "must not include fragments" if uri.fragment.present?
+          return if invalid_reasons.empty?
+
+          raise ConfigurationError.new(
+            code: "fidc_webhook_base_url_invalid",
+            message: "FIDC webhook base URL is invalid.",
+            details: { reason: invalid_reasons.join(", ") }
+          )
+        end
+
+        def base_uri_for_join(uri)
+          normalized = uri.dup
+          normalized.path = "/" if normalized.path.to_s.blank?
+          text = normalized.to_s
+          text.end_with?("/") ? text : "#{text}/"
+        end
+
         def funding_path
-          Rails.app.creds.option(:integrations, :fdic, :webhook, :funding_path, default: ENV["FDIC_WEBHOOK_FUNDING_PATH"].presence || "/funding_requests").to_s
+          Rails.app.creds.option(:integrations, :fidc, :webhook, :funding_path, default: ENV["FIDC_WEBHOOK_FUNDING_PATH"].presence || "/funding_requests").to_s
         end
 
         def settlement_path
-          Rails.app.creds.option(:integrations, :fdic, :webhook, :settlement_path, default: ENV["FDIC_WEBHOOK_SETTLEMENT_PATH"].presence || "/settlement_reports").to_s
+          Rails.app.creds.option(:integrations, :fidc, :webhook, :settlement_path, default: ENV["FIDC_WEBHOOK_SETTLEMENT_PATH"].presence || "/settlement_reports").to_s
         end
 
-        def bearer_token
-          Rails.app.creds.option(:integrations, :fdic, :webhook, :bearer_token, default: ENV["FDIC_WEBHOOK_BEARER_TOKEN"]).to_s.strip.presence
+        def configured_bearer_token
+          token = Rails.app.creds.option(
+            :integrations,
+            :fidc,
+            :webhook,
+            :bearer_token,
+            default: ENV["FIDC_WEBHOOK_BEARER_TOKEN"]
+          ).to_s.strip
+          return token if token.present?
+
+          raise ConfigurationError.new(
+            code: "fidc_webhook_bearer_token_missing",
+            message: "FIDC webhook bearer token is missing."
+          )
         end
 
         def open_timeout_seconds
           value = Rails.app.creds.option(
             :integrations,
-            :fdic,
+            :fidc,
             :webhook,
             :open_timeout_seconds,
-            default: ENV["FDIC_WEBHOOK_OPEN_TIMEOUT_SECONDS"]
+            default: ENV["FIDC_WEBHOOK_OPEN_TIMEOUT_SECONDS"]
           )
           Integer(value, exception: false) || DEFAULT_OPEN_TIMEOUT_SECONDS
         end
@@ -151,10 +200,10 @@ module Integrations
         def read_timeout_seconds
           value = Rails.app.creds.option(
             :integrations,
-            :fdic,
+            :fidc,
             :webhook,
             :read_timeout_seconds,
-            default: ENV["FDIC_WEBHOOK_READ_TIMEOUT_SECONDS"]
+            default: ENV["FIDC_WEBHOOK_READ_TIMEOUT_SECONDS"]
           )
           Integer(value, exception: false) || DEFAULT_READ_TIMEOUT_SECONDS
         end

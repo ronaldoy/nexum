@@ -6,7 +6,7 @@ module ChartOfAccounts
   ACCOUNTS = {
     "receivables:hospital" => { type: "ASSET", description: "Money owed by hospitals" },
     "obligations:cnpj" => { type: "LIABILITY", description: "CNPJ tax reserve owed" },
-    "obligations:fdic" => { type: "LIABILITY", description: "Owed to FIDC (anticipation repayment)" },
+    "obligations:fidc" => { type: "LIABILITY", description: "Owed to FIDC (anticipation repayment)" },
     "obligations:beneficiary" => { type: "LIABILITY", description: "Owed to physician/supplier" },
     "clearing:settlement" => { type: "CLEARING", description: "Transitory settlement clearing" },
     "revenue:discount" => { type: "REVENUE", description: "Anticipation discount earned by FIDC" }

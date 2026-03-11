@@ -6,7 +6,7 @@
       <p class="hero-kicker">Cadastro operacional</p>
       <h2>Contrapartes da carteira Averta</h2>
       <p class="hero-subtitle">
-        Mantenha a base do FDIC pronta para operação: hospitais, fornecedores, entidades jurídicas e médicos PF com documento validado no cadastro.
+        Mantenha a base do FIDC pronta para operação: hospitais, fornecedores, entidades jurídicas e médicos PF com documento validado no cadastro.
       </p>
     </div>
     <div class="hero-meta">
@@ -31,14 +31,14 @@
               ["Fornecedor", "SUPPLIER"],
               ["Pessoa jurídica", "LEGAL_ENTITY_PJ"],
               ["Médico PF", "PHYSICIAN_PF"],
-              ["FDIC", "FIDC"]
+              ["FIDC", "FIDC"]
             ]), {}, data: { action: "change->counterparty-document#sync", counterparty_document_target: "kind" } %>
           </div>
           <div class="field">
             <%= form.label :document_number, "CNPJ", data: { counterparty_document_target: "documentLabel" } %>
             <%= form.text_field :document_number, required: true, placeholder: "Somente números do CNPJ", inputmode: "numeric", data: { counterparty_document_target: "documentInput" } %>
             <p class="field-note" data-counterparty-document-target="documentHint">
-              Hospitais, fornecedores, entidades jurídicas e FDIC devem informar um CNPJ válido.
+              Hospitais, fornecedores, entidades jurídicas e FIDC devem informar um CNPJ válido.
             </p>
           </div>
           <div class="field">
