@@ -536,9 +536,9 @@ module AvertaSeeds
   def build_signed_document!(tenant:, receivable:, anticipation:, actor_party:, scenario_code:, signed_at:)
     document_id = seed_uuid(versioned_seed_key("document-#{scenario_code.downcase}"))
     document = Document.find_by(id: document_id)
-    blob = ensure_seed_signed_document_blob!(tenant: tenant, scenario_code: scenario_code)
 
     if document.blank?
+      blob = ensure_seed_signed_document_blob!(tenant: tenant, scenario_code: scenario_code)
       document = Document.create!(
         id: document_id,
         tenant: tenant,
@@ -559,9 +559,10 @@ module AvertaSeeds
           "whatsapp_challenge_id" => seed_uuid("challenge-#{anticipation.id}-whatsapp")
         }
       )
+    elsif !document.file.attached?
+      blob = ensure_seed_signed_document_blob!(tenant: tenant, scenario_code: scenario_code)
+      document.file.attach(blob)
     end
-
-    document.file.attach(blob) unless document.file.attached?
 
     event_id = seed_uuid(versioned_seed_key("document-event-#{scenario_code.downcase}"))
     return if DocumentEvent.exists?(id: event_id)
@@ -584,13 +585,18 @@ module AvertaSeeds
   end
 
   def ensure_seed_signed_document_blob!(tenant:, scenario_code:)
-    key = "contracts/#{versioned_seed_key(scenario_code.downcase)}.pdf"
+    content = seed_signed_document_pdf_content(scenario_code)
+    key = seed_signed_document_blob_key(tenant: tenant, scenario_code: scenario_code)
     existing = ActiveStorage::Blob.find_by(key: key)
-    return existing if existing.present?
+    return existing if seed_signed_document_blob_matches?(existing, tenant: tenant, scenario_code: scenario_code, content: content)
+
+    if existing.present?
+      raise "Seed signed document blob collision for tenant=#{tenant.id} scenario=#{scenario_code}"
+    end
 
     ActiveStorage::Blob.create_and_upload!(
       key: key,
-      io: StringIO.new(seed_signed_document_pdf_content(scenario_code)),
+      io: StringIO.new(content),
       filename: "#{scenario_code.downcase}.pdf",
       content_type: "application/pdf",
       metadata: {
@@ -600,6 +606,20 @@ module AvertaSeeds
         "seed_version" => SEED_VERSION
       }
     )
+  end
+
+  def seed_signed_document_blob_key(tenant:, scenario_code:)
+    "seed/#{tenant.id}/contracts/#{versioned_seed_key(scenario_code.downcase)}.pdf"
+  end
+
+  def seed_signed_document_blob_matches?(blob, tenant:, scenario_code:, content:)
+    return false if blob.blank?
+    return false unless blob.metadata["tenant_id"] == tenant.id.to_s
+    return false unless blob.metadata["seed_scenario"] == scenario_code
+    return false unless blob.metadata["seed_version"] == SEED_VERSION
+    return false unless blob.checksum == Digest::MD5.base64digest(content)
+
+    true
   end
 
   def seed_signed_document_pdf_content(scenario_code)
