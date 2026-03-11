@@ -2,6 +2,7 @@
 
 require "digest"
 require "securerandom"
+require "stringio"
 
 module AvertaSeeds
   module_function
@@ -434,7 +435,14 @@ module AvertaSeeds
         status: scenario.fetch(:anticipation_status)
       )
       build_confirmation_challenges!(tenant: tenant, anticipation: anticipation)
-      build_signed_document!(tenant: tenant, receivable: receivable, actor_party: anticipation.requester_party, scenario_code: code, signed_at: anticipation.requested_at + 45.minutes)
+      build_signed_document!(
+        tenant: tenant,
+        receivable: receivable,
+        anticipation: anticipation,
+        actor_party: anticipation.requester_party,
+        scenario_code: code,
+        signed_at: anticipation.requested_at + 45.minutes
+      )
       build_profitability_entries!(tenant: tenant, anticipation: anticipation, scenario_code: code)
     end
 
@@ -525,26 +533,35 @@ module AvertaSeeds
     end
   end
 
-  def build_signed_document!(tenant:, receivable:, actor_party:, scenario_code:, signed_at:)
+  def build_signed_document!(tenant:, receivable:, anticipation:, actor_party:, scenario_code:, signed_at:)
     document_id = seed_uuid(versioned_seed_key("document-#{scenario_code.downcase}"))
-    document = Document.find_or_initialize_by(id: document_id)
-    document.assign_attributes(
-      tenant: tenant,
-      receivable: receivable,
-      actor_party: actor_party,
-      document_type: "ASSIGNMENT_CONTRACT",
-      signature_method: "OWN_PLATFORM_CONFIRMATION",
-      status: "SIGNED",
-      sha256: Digest::SHA256.hexdigest(versioned_seed_key("document-#{scenario_code.downcase}")),
-      storage_key: "contracts/#{versioned_seed_key(scenario_code.downcase)}.pdf",
-      signed_at: signed_at,
-      metadata: {
-        "seed_scenario" => scenario_code,
-        "language" => "pt-BR",
-        "seed_version" => SEED_VERSION
-      }
-    )
-    document.save!
+    document = Document.find_by(id: document_id)
+    blob = ensure_seed_signed_document_blob!(tenant: tenant, scenario_code: scenario_code)
+
+    if document.blank?
+      document = Document.create!(
+        id: document_id,
+        tenant: tenant,
+        receivable: receivable,
+        actor_party: actor_party,
+        document_type: "ASSIGNMENT_CONTRACT",
+        signature_method: "OWN_PLATFORM_CONFIRMATION",
+        status: "SIGNED",
+        sha256: Digest::SHA256.hexdigest(seed_signed_document_pdf_content(scenario_code)),
+        storage_key: blob.key,
+        signed_at: signed_at,
+        metadata: {
+          "seed_scenario" => scenario_code,
+          "language" => "pt-BR",
+          "seed_version" => SEED_VERSION,
+          "provider_envelope_id" => "seed-envelope-#{versioned_seed_key(scenario_code.downcase)}",
+          "email_challenge_id" => seed_uuid("challenge-#{anticipation.id}-email"),
+          "whatsapp_challenge_id" => seed_uuid("challenge-#{anticipation.id}-whatsapp")
+        }
+      )
+    end
+
+    document.file.attach(blob) unless document.file.attached?
 
     event_id = seed_uuid(versioned_seed_key("document-event-#{scenario_code.downcase}"))
     return if DocumentEvent.exists?(id: event_id)
@@ -564,6 +581,62 @@ module AvertaSeeds
         "seed_version" => SEED_VERSION
       }
     )
+  end
+
+  def ensure_seed_signed_document_blob!(tenant:, scenario_code:)
+    key = "contracts/#{versioned_seed_key(scenario_code.downcase)}.pdf"
+    existing = ActiveStorage::Blob.find_by(key: key)
+    return existing if existing.present?
+
+    ActiveStorage::Blob.create_and_upload!(
+      key: key,
+      io: StringIO.new(seed_signed_document_pdf_content(scenario_code)),
+      filename: "#{scenario_code.downcase}.pdf",
+      content_type: "application/pdf",
+      metadata: {
+        "tenant_id" => tenant.id.to_s,
+        "source" => "seed_signed_document",
+        "seed_scenario" => scenario_code,
+        "seed_version" => SEED_VERSION
+      }
+    )
+  end
+
+  def seed_signed_document_pdf_content(scenario_code)
+    <<~PDF
+      %PDF-1.4
+      1 0 obj
+      << /Type /Catalog /Pages 2 0 R >>
+      endobj
+      2 0 obj
+      << /Type /Pages /Kids [3 0 R] /Count 1 >>
+      endobj
+      3 0 obj
+      << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R >>
+      endobj
+      4 0 obj
+      << /Length 63 >>
+      stream
+      BT
+      /F1 12 Tf
+      24 96 Td
+      (Contrato seed #{scenario_code}) Tj
+      ET
+      endstream
+      endobj
+      xref
+      0 5
+      0000000000 65535 f 
+      0000000010 00000 n 
+      0000000060 00000 n 
+      0000000117 00000 n 
+      0000000204 00000 n 
+      trailer
+      << /Root 1 0 R /Size 5 >>
+      startxref
+      317
+      %%EOF
+    PDF
   end
 
   def build_settlement!(tenant:, receivable:, allocation:, anticipation:, scenario_code:)

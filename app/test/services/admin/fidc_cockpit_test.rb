@@ -28,6 +28,7 @@ module Admin
           status: "FUNDED",
           requested_at: Time.zone.parse("2026-02-10 10:00:00")
         )
+        create_signed_document_for_request!(bundle: partial_bundle, anticipation: partial_request, seed: "cockpit-partial")
         create_settlement_for_request!(
           bundle: partial_bundle,
           anticipation: partial_request,
@@ -44,6 +45,7 @@ module Admin
           status: "FUNDED",
           requested_at: Time.zone.parse("2026-02-10 10:30:00")
         )
+        create_signed_document_for_request!(bundle: full_bundle, anticipation: full_request, seed: "cockpit-full")
         create_settlement_for_request!(
           bundle: full_bundle,
           anticipation: full_request,
@@ -82,6 +84,47 @@ module Admin
         assert_equal 1, highlights.fetch(:fully_liquidated_count)
         assert_equal 2, highlights.fetch(:unsettled_count)
         assert_equal BigDecimal("150.00"), stage_chart.fetch(:settled).fetch(:average_ticket)
+      end
+    end
+
+    test "treats dashboard stages as a waterfall gated by signed documents" do
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "ops_admin") do
+        unsigned_bundle = create_supplier_bundle!("cockpit-unsigned-approved")
+        unsigned_request = create_anticipation_request!(
+          bundle: unsigned_bundle,
+          requested_amount: "180.00",
+          discount_amount: "7.20",
+          net_amount: "172.80",
+          status: "APPROVED",
+          requested_at: Time.zone.parse("2026-02-11 09:30:00")
+        )
+
+        signed_bundle = create_supplier_bundle!("cockpit-signed-approved")
+        signed_request = create_anticipation_request!(
+          bundle: signed_bundle,
+          requested_amount: "210.00",
+          discount_amount: "8.40",
+          net_amount: "201.60",
+          status: "APPROVED",
+          requested_at: Time.zone.parse("2026-02-11 10:00:00")
+        )
+        create_signed_document_for_request!(bundle: signed_bundle, anticipation: signed_request, seed: "cockpit-signed-approved")
+
+        cockpit = Admin::FidcCockpit.new(tenant: @tenant)
+        unsigned_row = cockpit.loan_row(unsigned_request)
+        signed_row = cockpit.loan_row(signed_request)
+        stage_cards = cockpit.stage_cards.index_by { |stage| stage[:label] }
+
+        assert_equal "Solicitado", unsigned_row[:current_stage]
+        assert_equal false, unsigned_row[:stages].fetch(:signed)
+        assert_equal false, unsigned_row[:stages].fetch(:approved)
+
+        assert_equal "Aprovado", signed_row[:current_stage]
+        assert_equal true, signed_row[:stages].fetch(:signed)
+        assert_equal true, signed_row[:stages].fetch(:approved)
+
+        assert_equal 1, stage_cards.fetch("Contrato assinado").fetch(:completed)
+        assert_equal 1, stage_cards.fetch("Aprovado").fetch(:completed)
       end
     end
 
@@ -178,6 +221,25 @@ module Admin
         anticipation_request: anticipation,
         settled_amount: settled_amount,
         settled_at: paid_at
+      )
+    end
+
+    def create_signed_document_for_request!(bundle:, anticipation:, seed:)
+      Document.create!(
+        tenant: @tenant,
+        receivable: bundle[:receivable],
+        actor_party: bundle[:supplier],
+        document_type: "ASSIGNMENT_CONTRACT",
+        signature_method: "OWN_PLATFORM_CONFIRMATION",
+        status: "SIGNED",
+        sha256: Digest::SHA256.hexdigest(seed),
+        storage_key: "contracts/#{seed}.pdf",
+        signed_at: anticipation.requested_at + 45.minutes,
+        metadata: {
+          "provider_envelope_id" => "env-#{seed}",
+          "email_challenge_id" => "email-#{seed}",
+          "whatsapp_challenge_id" => "whatsapp-#{seed}"
+        }
       )
     end
   end

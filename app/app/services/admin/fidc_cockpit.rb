@@ -353,22 +353,34 @@ module Admin
     end
 
     def current_stage_for(anticipation:, documents_count:, settlement_total:, fully_liquidated:)
-      return "Liquidado" if fully_liquidated
-      return "Liquidação parcial" if settlement_total.positive?
-      return "Funded" if anticipation.status == "FUNDED"
-      return "Aprovado" if anticipation.status == "APPROVED"
-      return "Contrato assinado" if documents_count.positive?
+      stage_state = stage_state_for(
+        anticipation: anticipation,
+        documents_count: documents_count,
+        settlement_total: settlement_total,
+        fully_liquidated: fully_liquidated
+      )
+
+      return "Liquidado" if stage_state.fetch(:settled)
+      return "Liquidação parcial" if stage_state.fetch(:funded) && settlement_total.positive?
+      return "Funded" if stage_state.fetch(:funded)
+      return "Aprovado" if stage_state.fetch(:approved)
+      return "Contrato assinado" if stage_state.fetch(:signed)
 
       "Solicitado"
     end
 
     def stage_state_for(anticipation:, documents_count:, settlement_total:, fully_liquidated:)
+      signed = documents_count.positive?
+      approved = signed && anticipation.status.in?(%w[APPROVED FUNDED SETTLED])
+      funded = approved && anticipation.status.in?(%w[FUNDED SETTLED])
+      settled = funded && fully_liquidated
+
       {
         requested: true,
-        signed: documents_count.positive?,
-        approved: anticipation.status.in?(%w[APPROVED FUNDED SETTLED]),
-        funded: anticipation.status.in?(%w[FUNDED SETTLED]),
-        settled: fully_liquidated
+        signed: signed,
+        approved: approved,
+        funded: funded,
+        settled: settled
       }
     end
 
