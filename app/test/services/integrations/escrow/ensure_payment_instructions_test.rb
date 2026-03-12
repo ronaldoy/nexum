@@ -20,7 +20,7 @@ module Integrations
                 tenant_id: @tenant.id,
                 receivable: bundle[:receivable],
                 receivable_allocation: bundle[:allocation],
-                provider_code: "STARKBANK"
+                requested_provider_code: "STARKBANK"
               )
             end
           end
@@ -80,6 +80,40 @@ module Integrations
           end
 
           assert_equal "cached-key", result.payment_instructions.fetch("pix_key")
+          assert_equal 0, provider.open_account_calls.size
+          assert_equal 0, provider.fetch_payment_instructions_calls.size
+        end
+      end
+
+      test "returns not ready in read-only mode without provisioning or provider fetch" do
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "worker") do
+          bundle = create_receivable_bundle!("ensure-payment-instructions-read-only")
+          provider = FakeProvider.new
+
+          error = nil
+
+          with_environment("ESCROW_ENABLE_STARKBANK" => "true") do
+            with_stubbed_provider(provider) do
+              error = assert_raises(ValidationError) do
+                EnsurePaymentInstructions.new.call(
+                  tenant_id: @tenant.id,
+                  receivable: bundle[:receivable],
+                  receivable_allocation: bundle[:allocation],
+                  requested_provider_code: "STARKBANK",
+                  allow_provisioning: false,
+                  allow_provider_fetch: false,
+                  persist_payment_instructions: false
+                )
+              end
+            end
+          end
+
+          assert_equal "payment_instructions_not_ready", error.code
+          assert_equal 0, EscrowAccount.where(
+            tenant_id: @tenant.id,
+            party_id: bundle[:supplier].id,
+            provider: "STARKBANK"
+          ).count
           assert_equal 0, provider.open_account_calls.size
           assert_equal 0, provider.fetch_payment_instructions_calls.size
         end

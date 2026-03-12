@@ -10,29 +10,52 @@ module Integrations
         keyword_init: true
       )
 
-      def call(tenant_id:, receivable:, receivable_allocation: nil, idempotency_key: nil, provider_code: nil)
+      def call(
+        tenant_id:,
+        receivable:,
+        receivable_allocation: nil,
+        idempotency_key: nil,
+        requested_provider_code: nil,
+        allow_provisioning: true,
+        allow_provider_fetch: true,
+        persist_payment_instructions: true
+      )
         allocation = resolve_receivable_allocation!(receivable:, receivable_allocation:)
         operational_party = allocation.allocated_party
-        provider_code = resolve_provider_code(tenant_id:, operational_party:, provider_code:)
+        provider_code = resolve_provider_code(
+          tenant_id:,
+          operational_party: operational_party,
+          requested_provider_code: requested_provider_code
+        )
         provider = ProviderRegistry.fetch(provider_code:, tenant_id:)
 
-        escrow_account = EnsureEscrowAccount.new.call(
-          tenant_id: tenant_id,
-          party: operational_party,
-          provider: provider,
-          idempotency_key: idempotency_key.presence || default_account_idempotency_key(operational_party),
-          metadata: {
-            "receivable_id" => receivable.id,
-            "receivable_allocation_id" => allocation.id,
-            "operational_party_id" => operational_party.id,
-            "purpose" => "inbound_payment_instructions"
-          }
-        )
+        escrow_account = if allow_provisioning
+          EnsureEscrowAccount.new.call(
+            tenant_id: tenant_id,
+            party: operational_party,
+            provider: provider,
+            idempotency_key: idempotency_key.presence || default_account_idempotency_key(operational_party),
+            metadata: {
+              "receivable_id" => receivable.id,
+              "receivable_allocation_id" => allocation.id,
+              "operational_party_id" => operational_party.id,
+              "purpose" => "inbound_payment_instructions"
+            }
+          )
+        else
+          load_existing_escrow_account!(
+            tenant_id: tenant_id,
+            operational_party: operational_party,
+            provider_code: provider_code
+          )
+        end
 
         payment_instructions = load_payment_instructions!(
           tenant_id: tenant_id,
           provider: provider,
-          escrow_account: escrow_account
+          escrow_account: escrow_account,
+          allow_provider_fetch: allow_provider_fetch,
+          persist_payment_instructions: persist_payment_instructions
         )
 
         Result.new(
@@ -66,30 +89,49 @@ module Integrations
         )
       end
 
-      def resolve_provider_code(tenant_id:, operational_party:, provider_code:)
-        normalized = provider_code.to_s.strip.upcase
-        return ProviderConfig.normalize_provider(normalized, tenant_id: tenant_id) if normalized.present?
-
-        existing_provider = EscrowAccount.active.where(
+      def resolve_provider_code(tenant_id:, operational_party:, requested_provider_code:)
+        ResolveOperationalProvider.new.call(
           tenant_id: tenant_id,
-          party_id: operational_party.id
-        ).order(updated_at: :desc).pick(:provider)
-        existing_provider ||= EscrowAccount.where(
-          tenant_id: tenant_id,
-          party_id: operational_party.id
-        ).order(updated_at: :desc).pick(:provider)
-        return ProviderConfig.normalize_provider(existing_provider, tenant_id: tenant_id) if existing_provider.present?
-
-        ProviderConfig.default_provider(tenant_id: tenant_id)
+          party: operational_party,
+          requested_provider_code: requested_provider_code
+        )
       end
 
       def default_account_idempotency_key(operational_party)
         "#{operational_party.id}:escrow_account"
       end
 
-      def load_payment_instructions!(tenant_id:, provider:, escrow_account:)
+      def load_existing_escrow_account!(tenant_id:, operational_party:, provider_code:)
+        account = EscrowAccount.active.find_by(
+          tenant_id: tenant_id,
+          party_id: operational_party.id,
+          provider: provider_code
+        )
+        return account if account.present?
+
+        raise ValidationError.new(
+          code: "payment_instructions_not_ready",
+          message: "PIX payment instructions are not ready yet for this operational account.",
+          details: {
+            party_id: operational_party.id,
+            provider: provider_code
+          }
+        )
+      end
+
+      def load_payment_instructions!(tenant_id:, provider:, escrow_account:, allow_provider_fetch:, persist_payment_instructions:)
         cached_payment_instructions = normalized_hash(escrow_account.metadata&.dig("payment_instructions"))
         return cached_payment_instructions if valid_payment_instructions?(cached_payment_instructions)
+        unless allow_provider_fetch
+          raise ValidationError.new(
+            code: "payment_instructions_not_ready",
+            message: "PIX payment instructions are not ready yet for this operational account.",
+            details: {
+              party_id: escrow_account.party_id,
+              provider: provider.provider_code
+            }
+          )
+        end
 
         unless provider.respond_to?(:fetch_payment_instructions!)
           raise ValidationError.new(
@@ -114,13 +156,15 @@ module Integrations
           )
         end
 
-        escrow_account.with_lock do
-          escrow_account.metadata = merge_metadata(
-            escrow_account.metadata,
-            "payment_instructions" => payment_instructions
-          )
-          escrow_account.last_synced_at = Time.current
-          escrow_account.save!
+        if persist_payment_instructions
+          escrow_account.with_lock do
+            escrow_account.metadata = merge_metadata(
+              escrow_account.metadata,
+              "payment_instructions" => payment_instructions
+            )
+            escrow_account.last_synced_at = Time.current
+            escrow_account.save!
+          end
         end
 
         payment_instructions
@@ -136,7 +180,7 @@ module Integrations
           "bank_code" => payment_instructions["bank_code"],
           "account_type" => payment_instructions["account_type"],
           "beneficiary_name" => payment_instructions["beneficiary_name"].presence || operational_party.legal_name,
-          "beneficiary_document_number" => operational_party.document_number,
+          "beneficiary_document_number_masked" => mask_document_number(payment_instructions["beneficiary_document_number"]),
           "last_synced_at" => payment_instructions["last_synced_at"]
         }.compact
       end
@@ -164,6 +208,24 @@ module Integrations
           value.map { |entry| normalized_hash(entry) }
         else
           value
+        end
+      end
+
+      def mask_document_number(value)
+        raw = value.to_s.strip
+        return nil if raw.blank?
+        return raw if raw.include?("*")
+
+        digits = raw.gsub(/\D+/, "")
+        return nil if digits.blank?
+
+        case digits.length
+        when 11
+          "***.***.***-#{digits[-2, 2]}"
+        when 14
+          "**.***.***/****-#{digits[-2, 2]}"
+        else
+          "#{('*' * [ digits.length - 4, 0 ].max)}#{digits[-4, 4]}"
         end
       end
     end

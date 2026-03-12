@@ -4,6 +4,7 @@ module Receivables
   class Create
     TARGET_TYPE = "Receivable".freeze
     PAYLOAD_HASH_METADATA_KEY = "_create_payload_hash".freeze
+    PAYMENT_INSTRUCTIONS_REFRESH_EVENT_TYPE = "RECEIVABLE_ESCROW_PAYMENT_INSTRUCTIONS_REFRESH_REQUESTED".freeze
     HOSPITAL_PAYMENT_INSTRUCTIONS_EVENT_TYPE = "RECEIVABLE_HOSPITAL_PAYMENT_INSTRUCTIONS_SYNC_REQUESTED".freeze
 
     Result = Struct.new(:receivable, :allocation, :replayed, keyword_init: true) do
@@ -127,6 +128,11 @@ module Receivables
           external_reference: receivable.external_reference,
           receivable_kind_code: context.receivable_kind.code
         }
+      )
+
+      create_payment_instructions_refresh_outbox_event!(
+        receivable: receivable,
+        allocation: allocation
       )
 
       create_hospital_payment_instructions_outbox_event!(
@@ -449,7 +455,7 @@ module Receivables
       hospital_party_id = receivable.debtor_party_id
       return unless Integrations::HospitalApi::Configuration.configured?(tenant_id: @tenant_id, hospital_party_id: hospital_party_id)
 
-      provider_code = Integrations::Escrow::ProviderConfig.default_provider(tenant_id: @tenant_id)
+      provider_code = payment_instructions_provider_code_for(allocation:)
       return unless provider_code == "STARKBANK"
 
       idempotency_key = "#{@idempotency_key}:hospital_payment_instructions_sync"
@@ -461,19 +467,59 @@ module Receivables
         event_type: HOSPITAL_PAYMENT_INSTRUCTIONS_EVENT_TYPE,
         status: "PENDING",
         idempotency_key: idempotency_key,
-        payload: {
-          "receivable_id" => receivable.id,
-          "receivable_allocation_id" => allocation.id,
+        payload: payment_instructions_outbox_payload(
+          receivable: receivable,
+          allocation: allocation,
+          provider_code: provider_code
+        ).merge(
           "hospital_party_id" => hospital_party_id,
-          "operational_party_id" => allocation.allocated_party_id,
-          "provider" => provider_code,
-          "payment_instruction_idempotency_key" => "#{allocation.allocated_party_id}:escrow_account",
           "hospital_sync_idempotency_key" => idempotency_key
-        }
+        )
       )
     rescue ActiveRecord::RecordNotUnique
       existing_outbox = OutboxEvent.find_by(tenant_id: @tenant_id, idempotency_key: idempotency_key)
       raise if existing_outbox.blank?
+    end
+
+    def create_payment_instructions_refresh_outbox_event!(receivable:, allocation:)
+      provider_code = payment_instructions_provider_code_for(allocation:)
+      return unless provider_code == "STARKBANK"
+
+      idempotency_key = "#{@idempotency_key}:escrow_payment_instructions_refresh"
+
+      OutboxEvent.create!(
+        tenant_id: @tenant_id,
+        aggregate_type: TARGET_TYPE,
+        aggregate_id: receivable.id,
+        event_type: PAYMENT_INSTRUCTIONS_REFRESH_EVENT_TYPE,
+        status: "PENDING",
+        idempotency_key: idempotency_key,
+        payload: payment_instructions_outbox_payload(
+          receivable: receivable,
+          allocation: allocation,
+          provider_code: provider_code
+        )
+      )
+    rescue ActiveRecord::RecordNotUnique
+      existing_outbox = OutboxEvent.find_by(tenant_id: @tenant_id, idempotency_key: idempotency_key)
+      raise if existing_outbox.blank?
+    end
+
+    def payment_instructions_provider_code_for(allocation:)
+      Integrations::Escrow::ResolveOperationalProvider.new.call(
+        tenant_id: @tenant_id,
+        party: allocation.allocated_party
+      )
+    end
+
+    def payment_instructions_outbox_payload(receivable:, allocation:, provider_code:)
+      {
+        "receivable_id" => receivable.id,
+        "receivable_allocation_id" => allocation.id,
+        "operational_party_id" => allocation.allocated_party_id,
+        "provider" => provider_code,
+        "payment_instruction_idempotency_key" => "#{allocation.allocated_party_id}:escrow_account"
+      }
     end
 
     def decimal_as_string(value)

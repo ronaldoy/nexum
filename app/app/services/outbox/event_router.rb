@@ -12,6 +12,7 @@ module Outbox
     HANDLERS = {
       "ANTICIPATION_ESCROW_PAYOUT_REQUESTED" => Integrations::Escrow::DispatchPayout,
       "RECEIVABLE_ESCROW_EXCESS_PAYOUT_REQUESTED" => Integrations::Escrow::DispatchPayout,
+      "RECEIVABLE_ESCROW_PAYMENT_INSTRUCTIONS_REFRESH_REQUESTED" => Integrations::Escrow::RefreshPaymentInstructions,
       "ANTICIPATION_FIDC_FUNDING_REQUESTED" => Integrations::Fidc::DispatchOperation,
       "RECEIVABLE_FIDC_SETTLEMENT_REPORTED" => Integrations::Fidc::DispatchOperation,
       "RECEIVABLE_HOSPITAL_PAYMENT_INSTRUCTIONS_SYNC_REQUESTED" => Integrations::HospitalApi::DispatchPaymentInstructions

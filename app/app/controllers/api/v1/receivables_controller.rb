@@ -107,7 +107,9 @@ module Api
           tenant_id: Current.tenant_id,
           receivable: receivable,
           receivable_allocation: allocation,
-          idempotency_key: "receivable:#{receivable.id}:allocation:#{allocation.id}:payment_instructions"
+          allow_provisioning: false,
+          allow_provider_fetch: false,
+          persist_payment_instructions: false
         )
 
         render json: {

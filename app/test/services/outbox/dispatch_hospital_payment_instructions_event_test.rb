@@ -99,6 +99,41 @@ module Outbox
       end
     end
 
+    test "logs hospital payment instructions failure when escrow resolution fails" do
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "worker") do
+        bundle = create_hospital_receivable_bundle!("hospital-payment-instructions-escrow-failure")
+        outbox_event = create_hospital_payment_instructions_outbox_event!(
+          receivable: bundle[:receivable],
+          allocation: bundle[:allocation],
+          hospital_party: bundle[:hospital],
+          provider: "STARKBANK",
+          idempotency_key: "idem-hospital-payment-instructions-escrow-failure"
+        )
+        dispatcher = Outbox::DispatchEvent.new(max_attempts: 1, backoff_strategy: ->(_attempt) { 0 })
+
+        with_environment(
+          "HOSPITAL_API_BASE_URL" => "https://hospital.example.com",
+          "HOSPITAL_API_BEARER_TOKEN" => "hospital-api-token",
+          "ESCROW_ENABLE_STARKBANK" => "true"
+        ) do
+          with_stubbed_escrow_provider(FakeEscrowFailingProvider.new) do
+            with_stubbed_hospital_client(FakeHospitalApiClient.new) do
+              result = dispatcher.call(outbox_event_id: outbox_event.id)
+
+              assert_equal "DEAD_LETTER", result.status
+            end
+          end
+        end
+
+        assert_equal 1, ActionIpLog.where(
+          tenant_id: @tenant.id,
+          action_type: "HOSPITAL_PAYMENT_INSTRUCTIONS_SYNC_FAILED",
+          target_type: "Receivable",
+          target_id: bundle[:receivable].id
+        ).count
+      end
+    end
+
     private
 
     def create_hospital_receivable_bundle!(suffix)
@@ -266,6 +301,15 @@ module Outbox
           code: "hospital_api_unreachable",
           message: "Hospital API endpoint is unreachable.",
           http_status: 503
+        )
+      end
+    end
+
+    class FakeEscrowFailingProvider < FakeEscrowPaymentInstructionsProvider
+      def fetch_payment_instructions!(tenant_id:, escrow_account:)
+        raise Integrations::Escrow::ValidationError.new(
+          code: "payment_instructions_invalid",
+          message: "Escrow provider returned invalid PIX payment instructions."
         )
       end
     end

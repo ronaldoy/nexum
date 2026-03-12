@@ -328,7 +328,7 @@ paths:
                         type: string
                         enum: [QITECH, STARKBANK]
                       operational_party:
-                        $ref: "#/components/schemas/PartyReference"
+                        $ref: "#/components/schemas/MaskedPartyReference"
                       payment_instructions:
                         type: object
                         required: [payment_rail, pix_key]
@@ -350,7 +350,7 @@ paths:
                             type: string
                           beneficiary_name:
                             type: string
-                          beneficiary_document_number:
+                          beneficiary_document_number_masked:
                             type: string
                           last_synced_at:
                             type: string
@@ -961,6 +961,23 @@ components:
         document_number:
           type: string
         external_reference:
+          type: string
+    MaskedPartyReference:
+      type: object
+      required: [id, kind, legal_name, document_type, document_number_masked]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [HOSPITAL, SUPPLIER, PHYSICIAN_PF, LEGAL_ENTITY_PJ, FIDC, PLATFORM]
+        legal_name:
+          type: string
+        document_type:
+          type: string
+          enum: [CPF, CNPJ]
+        document_number_masked:
           type: string
     ReceivableProvenance:
       type: object

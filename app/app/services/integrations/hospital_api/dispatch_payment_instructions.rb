@@ -23,7 +23,7 @@ module Integrations
         )
 
         response
-      rescue Error => error
+      rescue Error, Integrations::Escrow::Error => error
         log_dispatch_failure!(outbox_event: outbox_event, inputs: inputs, error: error) if outbox_event.present?
         raise
       end
@@ -36,7 +36,10 @@ module Integrations
           receivable: inputs.receivable,
           receivable_allocation: inputs.receivable_allocation,
           idempotency_key: inputs.payload["payment_instruction_idempotency_key"].to_s.presence,
-          provider_code: inputs.payload["provider"].to_s.presence
+          requested_provider_code: inputs.payload["provider"].to_s.presence,
+          allow_provisioning: true,
+          allow_provider_fetch: true,
+          persist_payment_instructions: true
         )
 
         client = Client.new(

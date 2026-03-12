@@ -78,7 +78,7 @@ module Api
             receivable_allocation_id: receivable_allocation.id,
             hospital_party_id: receivable.debtor_party_id,
             provider: provider_code,
-            operational_party: party_reference(operational_party),
+            operational_party: payment_instruction_party_reference(operational_party),
             payment_instructions: {
               payment_rail: payment_instructions["payment_rail"],
               pix_key: payment_instructions["pix_key"],
@@ -88,7 +88,7 @@ module Api
               bank_code: payment_instructions["bank_code"],
               account_type: payment_instructions["account_type"],
               beneficiary_name: payment_instructions["beneficiary_name"],
-              beneficiary_document_number: payment_instructions["beneficiary_document_number"],
+              beneficiary_document_number_masked: payment_instructions["beneficiary_document_number_masked"],
               last_synced_at: payment_instructions["last_synced_at"]
             }.compact
           }
@@ -156,6 +156,34 @@ module Api
             document_type: party.document_type,
             document_number: party.document_number
           }
+        end
+
+        def payment_instruction_party_reference(party)
+          {
+            id: party.id,
+            kind: party.kind,
+            legal_name: party.legal_name,
+            document_type: party.document_type,
+            document_number_masked: mask_document_number(party.document_number)
+          }
+        end
+
+        def mask_document_number(value)
+          raw = value.to_s.strip
+          return nil if raw.blank?
+          return raw if raw.include?("*")
+
+          digits = raw.gsub(/\D+/, "")
+          return nil if digits.blank?
+
+          case digits.length
+          when 11
+            "***.***.***-#{digits[-2, 2]}"
+          when 14
+            "**.***.***/****-#{digits[-2, 2]}"
+          else
+            "#{('*' * [ digits.length - 4, 0 ].max)}#{digits[-4, 4]}"
+          end
         end
       end
     end

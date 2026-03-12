@@ -606,6 +606,7 @@ module Api
         provider = FakeEscrowPaymentInstructionsProvider.new
         receivable = nil
         allocation = nil
+        supplier = nil
 
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
           hospital = Party.create!(
@@ -629,6 +630,30 @@ module Api
             beneficiary: supplier
           )
           allocation = receivable.receivable_allocations.order(sequence: :asc).first
+
+          EscrowAccount.create!(
+            tenant: @tenant,
+            party: supplier,
+            provider: "STARKBANK",
+            account_type: "ESCROW",
+            status: "ACTIVE",
+            provider_account_id: "workspace-payment-123",
+            provider_request_id: "workspace-user-123",
+            metadata: {
+              "payment_instructions" => {
+                "payment_rail" => "PIX",
+                "pix_key" => "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+                "pix_key_type" => "EVP",
+                "pix_key_status" => "REGISTERED",
+                "bank_name" => "Stark Bank",
+                "bank_code" => "20018183",
+                "account_type" => "payment",
+                "beneficiary_name" => supplier.legal_name,
+                "beneficiary_document_number" => supplier.document_number,
+                "last_synced_at" => Time.current.utc.iso8601(6)
+              }
+            }
+          )
         end
 
         with_environment("ESCROW_ENABLE_STARKBANK" => "true") do
@@ -649,11 +674,64 @@ module Api
         assert_equal "PIX", body.dig("payment_instructions", "payment_rail")
         assert_equal "f47ac10b-58cc-4372-a567-0e02b2c3d479", body.dig("payment_instructions", "pix_key")
         assert_equal "EVP", body.dig("payment_instructions", "pix_key_type")
+        assert_equal "**.***.***/****-#{supplier.document_number[-2, 2]}", body.dig("operational_party", "document_number_masked")
+        assert_equal "**.***.***/****-#{supplier.document_number[-2, 2]}", body.dig("payment_instructions", "beneficiary_document_number_masked")
+        assert_nil body.dig("operational_party", "document_number")
+        assert_nil body.dig("payment_instructions", "beneficiary_document_number")
+        assert_equal 0, provider.open_account_calls.size
+        assert_equal 0, provider.fetch_payment_instructions_calls.size
       end
 
-      test "creates hospital payment instructions outbox event when hospital API sync is configured" do
+      test "returns payment instructions not ready without provisioning side effects" do
+        provider = FakeEscrowPaymentInstructionsProvider.new
+        receivable = nil
+        allocation = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          hospital = Party.create!(
+            tenant: @tenant,
+            kind: "HOSPITAL",
+            legal_name: "Hospital Pending Payment Instructions",
+            document_number: valid_cnpj_from_seed("hospital-pending-payment-instructions")
+          )
+          supplier = Party.create!(
+            tenant: @tenant,
+            kind: "SUPPLIER",
+            legal_name: "Fornecedor Pending Payment Instructions",
+            document_number: valid_cnpj_from_seed("supplier-pending-payment-instructions")
+          )
+
+          receivable = create_receivable_for_hospital!(
+            tenant: @tenant,
+            suffix: "pending-payment-instructions",
+            hospital: hospital,
+            creditor: supplier,
+            beneficiary: supplier
+          )
+          allocation = receivable.receivable_allocations.order(sequence: :asc).first
+        end
+
+        with_environment("ESCROW_ENABLE_STARKBANK" => "true") do
+          with_stubbed_escrow_provider(provider, default_provider: "STARKBANK") do
+            assert_no_difference("EscrowAccount.count") do
+              get payment_instructions_api_v1_receivable_path(receivable.id),
+                params: { receivable_allocation_id: allocation.id },
+                headers: authorization_headers(@read_token),
+                as: :json
+            end
+          end
+        end
+
+        assert_response :unprocessable_entity
+        assert_equal "payment_instructions_not_ready", response.parsed_body.dig("error", "code")
+        assert_equal 0, provider.open_account_calls.size
+        assert_equal 0, provider.fetch_payment_instructions_calls.size
+      end
+
+      test "creates payment instruction outbox events using the active operational provider" do
         payload = nil
         hospital = nil
+        supplier = nil
 
         with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
           hospital = Party.create!(
@@ -687,6 +765,17 @@ module Api
               due_at: 5.days.from_now.iso8601
             }
           }
+
+          EscrowAccount.create!(
+            tenant: @tenant,
+            party: supplier,
+            provider: "STARKBANK",
+            account_type: "ESCROW",
+            status: "ACTIVE",
+            provider_account_id: "workspace-sync-api-123",
+            provider_request_id: "workspace-user-sync-api-123",
+            metadata: {}
+          )
         end
 
         with_environment(
@@ -696,20 +785,31 @@ module Api
           "STARKBANK_ORGANIZATION_ID" => "organization-123",
           "STARKBANK_ORGANIZATION_PRIVATE_KEY" => "private-key"
         ) do
-          assert_difference("OutboxEvent.where(event_type: 'RECEIVABLE_HOSPITAL_PAYMENT_INSTRUCTIONS_SYNC_REQUESTED').count", 1) do
-            post api_v1_receivables_path,
-              headers: authorization_headers(@write_token, idempotency_key: "idem-hospital-sync-api-001"),
-              params: payload,
-              as: :json
+          with_stubbed_escrow_provider(FakeEscrowPaymentInstructionsProvider.new, default_provider: "QITECH") do
+            assert_difference("OutboxEvent.where(event_type: 'RECEIVABLE_ESCROW_PAYMENT_INSTRUCTIONS_REFRESH_REQUESTED').count", 1) do
+              assert_difference("OutboxEvent.where(event_type: 'RECEIVABLE_HOSPITAL_PAYMENT_INSTRUCTIONS_SYNC_REQUESTED').count", 1) do
+                post api_v1_receivables_path,
+                  headers: authorization_headers(@write_token, idempotency_key: "idem-hospital-sync-api-001"),
+                  params: payload,
+                  as: :json
+              end
+            end
           end
         end
 
         assert_response :created
+        refresh_event = OutboxEvent.find_by!(
+          tenant_id: @tenant.id,
+          event_type: "RECEIVABLE_ESCROW_PAYMENT_INSTRUCTIONS_REFRESH_REQUESTED",
+          idempotency_key: "idem-hospital-sync-api-001:escrow_payment_instructions_refresh"
+        )
         outbox_event = OutboxEvent.find_by!(
           tenant_id: @tenant.id,
           event_type: "RECEIVABLE_HOSPITAL_PAYMENT_INSTRUCTIONS_SYNC_REQUESTED",
           idempotency_key: "idem-hospital-sync-api-001:hospital_payment_instructions_sync"
         )
+        assert_equal supplier.id, refresh_event.payload.fetch("operational_party_id")
+        assert_equal "STARKBANK", refresh_event.payload.fetch("provider")
         assert_equal hospital.id, outbox_event.payload.fetch("hospital_party_id")
         assert_equal "STARKBANK", outbox_event.payload.fetch("provider")
       end
