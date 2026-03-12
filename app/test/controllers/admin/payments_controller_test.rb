@@ -5,6 +5,7 @@ module Admin
     setup do
       @tenant = tenants(:default)
       @ops_user = users(:one)
+      @dead_letter_payment_instruction_event_id = nil
 
       with_tenant_db_context(tenant_id: @tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
         @ops_user.update!(role: "ops_admin")
@@ -28,6 +29,10 @@ module Admin
       assert_includes response.body, "Taxa Stark"
       assert_includes response.body, "R$ 2,50"
       assert_includes response.body, "workspace-default-source"
+      assert_includes response.body, "Eventos de instrução PIX"
+      assert_includes response.body, "Backlog vencido"
+      assert_includes response.body, "Sync hospital API"
+      assert_includes response.body, "Reenfileirar"
     end
 
     test "status filter narrows the payout rows" do
@@ -40,6 +45,33 @@ module Admin
       refute_includes response.body, "Fornecedor Pagamento Pendente"
       assert_includes response.body, "status=failed"
       assert_includes response.body, "Exibindo"
+    end
+
+    test "ops admin can replay a dead-letter payment instruction event" do
+      sign_in_as(@ops_user, admin_webauthn_verified: true)
+
+      assert_difference("OutboxEvent.where(tenant_id: @tenant.id, event_type: 'RECEIVABLE_HOSPITAL_PAYMENT_INSTRUCTIONS_SYNC_REQUESTED').count", 1) do
+        post replay_instruction_event_admin_payments_path, params: { outbox_event_id: @dead_letter_payment_instruction_event_id }
+      end
+
+      assert_redirected_to admin_payments_path(page: 1)
+
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @ops_user.id, role: "ops_admin") do
+        replay_event = OutboxEvent.where(
+          tenant_id: @tenant.id,
+          event_type: "RECEIVABLE_HOSPITAL_PAYMENT_INSTRUCTIONS_SYNC_REQUESTED"
+        ).where("payload ->> 'replayed_from_outbox_event_id' = ?", @dead_letter_payment_instruction_event_id).order(created_at: :desc).first
+
+        assert replay_event.present?
+        assert replay_event.idempotency_key.include?(":replay:")
+        assert_equal @dead_letter_payment_instruction_event_id, replay_event.payload.fetch("replayed_from_outbox_event_id")
+        assert_equal 1, ActionIpLog.where(
+          tenant_id: @tenant.id,
+          action_type: "PAYMENT_INSTRUCTION_EVENT_REPLAY_REQUESTED",
+          target_type: "OutboxEvent",
+          target_id: replay_event.id
+        ).count
+      end
     end
 
     private
@@ -81,6 +113,19 @@ module Admin
         confirmed_at: nil,
         last_error_code: "starkbank_transfer_failed",
         last_error_message: "Stark Bank PIX transfer failed."
+      )
+
+      create_stale_payment_instruction_event!(
+        event_type: "RECEIVABLE_ESCROW_PAYMENT_INSTRUCTIONS_REFRESH_REQUESTED",
+        idempotency_key: "payment-instruction-refresh-stale-001",
+        created_at: Time.zone.parse("2026-03-12 08:00:00")
+      )
+      @dead_letter_payment_instruction_event_id = create_dead_letter_payment_instruction_event!(
+        event_type: "RECEIVABLE_HOSPITAL_PAYMENT_INSTRUCTIONS_SYNC_REQUESTED",
+        idempotency_key: "payment-instruction-hospital-dead-letter-001",
+        created_at: Time.zone.parse("2026-03-12 09:00:00"),
+        error_code: "hospital_api_unreachable",
+        error_message: "Hospital API endpoint is unreachable."
       )
     end
 
@@ -178,6 +223,77 @@ module Admin
         last_error_message: last_error_message,
         metadata: {}
       )
+    end
+
+    def create_stale_payment_instruction_event!(event_type:, idempotency_key:, created_at:)
+      insert_outbox_event!(
+        event_type: event_type,
+        idempotency_key: idempotency_key,
+        created_at: created_at,
+        payload: {
+          "receivable_id" => SecureRandom.uuid,
+          "receivable_allocation_id" => SecureRandom.uuid,
+          "operational_party_id" => SecureRandom.uuid,
+          "provider" => "STARKBANK",
+          "payment_instruction_idempotency_key" => "party-123:escrow_account"
+        }
+      )
+    end
+
+    def create_dead_letter_payment_instruction_event!(event_type:, idempotency_key:, created_at:, error_code:, error_message:)
+      event_id = insert_outbox_event!(
+        event_type: event_type,
+        idempotency_key: idempotency_key,
+        created_at: created_at,
+        payload: {
+          "receivable_id" => SecureRandom.uuid,
+          "receivable_allocation_id" => SecureRandom.uuid,
+          "hospital_party_id" => SecureRandom.uuid,
+          "operational_party_id" => SecureRandom.uuid,
+          "provider" => "STARKBANK",
+          "payment_instruction_idempotency_key" => "party-456:escrow_account",
+          "hospital_sync_idempotency_key" => idempotency_key
+        }
+      )
+
+      OutboxDispatchAttempt.create!(
+        tenant: @tenant,
+        outbox_event_id: event_id,
+        attempt_number: 1,
+        status: "DEAD_LETTER",
+        error_code: error_code,
+        error_message: error_message,
+        occurred_at: created_at + 5.minutes
+      )
+
+      event_id
+    end
+
+    def insert_outbox_event!(event_type:, idempotency_key:, created_at:, payload:)
+      connection = ActiveRecord::Base.connection
+      event_id = SecureRandom.uuid
+      normalized_payload = payload.deep_stringify_keys
+      normalized_payload["payload_hash"] = CanonicalJson.digest(normalized_payload)
+
+      connection.execute(<<~SQL)
+        INSERT INTO outbox_events (
+          id, tenant_id, aggregate_type, aggregate_id, event_type, status, attempts, idempotency_key, payload, created_at, updated_at
+        ) VALUES (
+          #{connection.quote(event_id)},
+          #{connection.quote(@tenant.id)},
+          'Receivable',
+          #{connection.quote(SecureRandom.uuid)},
+          #{connection.quote(event_type)},
+          'PENDING',
+          0,
+          #{connection.quote(idempotency_key)},
+          #{connection.quote(JSON.generate(normalized_payload))}::jsonb,
+          #{connection.quote(created_at)},
+          #{connection.quote(created_at)}
+        )
+      SQL
+
+      event_id
     end
   end
 end

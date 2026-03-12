@@ -284,6 +284,7 @@ paths:
     get:
       tags: [Receivables]
       summary: Fetch PIX payment instructions for the receivable operational account
+      description: Requires the `receivables:payment_instructions:read` scope and access to the debtor hospital party.
       operationId: getReceivablePaymentInstructions
       parameters:
         - $ref: "#/components/parameters/ReceivableId"

@@ -68,16 +68,16 @@ class PartnerApplicationTest < ActiveSupport::TestCase
         created_by_user: @ops_user,
         actor_party: @ops_user.party,
         name: "Partner App",
-        scopes: %w[receivables:read receivables:write]
+        scopes: %w[receivables:payment_instructions:read receivables:read receivables:write]
       )
 
       assert_equal @ops_user.uuid_id, application.created_by_user_uuid_id
 
-      issued = application.issue_access_token!(requested_scopes: "receivables:read")
+      issued = application.issue_access_token!(requested_scopes: "receivables:payment_instructions:read")
       token = issued.fetch(:token)
 
       assert_equal application.issued_token_name, token.name
-      assert_equal [ "receivables:read" ], issued.fetch(:scopes)
+      assert_equal [ "receivables:payment_instructions:read" ], issued.fetch(:scopes)
       assert issued.fetch(:raw_token).present?
       assert application.reload.last_used_at.present?
     end

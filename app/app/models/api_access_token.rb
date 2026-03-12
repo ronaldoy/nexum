@@ -14,6 +14,7 @@ class ApiAccessToken < ApplicationRecord
     physicians:write
     receivables:documents:write
     receivables:history
+    receivables:payment_instructions:read
     receivables:read
     receivables:settle
     receivables:write

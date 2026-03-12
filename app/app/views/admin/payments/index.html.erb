@@ -98,6 +98,86 @@
   </section>
 
   <section class="panel">
+    <header class="panel-header">
+      <h3>Eventos de instrução PIX</h3>
+      <p>Visibilidade operacional do refresh inbound e do sync hospitalar, com backlog vencido e replay manual de dead letters.</p>
+    </header>
+
+    <section class="metric-grid">
+      <% @payment_instruction_monitor_cards.each do |card| %>
+        <article class="metric-card">
+          <p class="metric-label"><%= card[:label] %></p>
+          <p class="metric-value"><%= number_with_delimiter(card[:value].to_i, delimiter: ".") %></p>
+          <p class="metric-footnote"><%= card[:footnote] %></p>
+        </article>
+      <% end %>
+    </section>
+
+    <% if @payment_instruction_event_rows.any? %>
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Evento</th>
+              <th>Recebível</th>
+              <th>Status</th>
+              <th>Erro</th>
+              <th>Idempotência</th>
+              <th>Próxima tentativa</th>
+              <th>Idade</th>
+              <th>Ação</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% @payment_instruction_event_rows.each do |row| %>
+              <% event = row[:event] %>
+              <tr>
+                <td>
+                  <strong><%= row[:event_type_label] %></strong>
+                  <div class="detail-meta"><%= event.id.first(8) %></div>
+                </td>
+                <td><%= event.aggregate_id.to_s.first(8) %></td>
+                <td>
+                  <span class="status-pill"><%= row[:latest_status].humanize %></span>
+                  <% if row[:stale] %>
+                    <div class="detail-meta">Fora do SLA</div>
+                  <% end %>
+                </td>
+                <td>
+                  <%= row[:error_code].presence || "-" %>
+                  <% if row[:error_message].present? %>
+                    <div class="detail-meta"><%= row[:error_message] %></div>
+                  <% end %>
+                </td>
+                <td><code><%= event.idempotency_key %></code></td>
+                <td><%= row[:next_attempt_at].present? ? l(row[:next_attempt_at], format: :short) : "-" %></td>
+                <td><%= row[:age_label] %></td>
+                <td>
+                  <% if row[:replayable] %>
+                    <%= button_to "Reenfileirar",
+                      replay_instruction_event_admin_payments_path,
+                      method: :post,
+                      params: {
+                        outbox_event_id: event.id,
+                        page: @payout_pagination[:page],
+                        status: @active_status
+                      },
+                      class: "button button-outline" %>
+                  <% else %>
+                    <span class="detail-meta">Automático</span>
+                  <% end %>
+                </td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% else %>
+      <p class="empty-state">Nenhum evento de instrução PIX vencido ou em dead letter.</p>
+    <% end %>
+  </section>
+
+  <section class="panel">
       <header class="panel-header">
         <h3>Fila de pagamentos</h3>
         <p>Visão consolidada dos repasses de liquidação e pagamentos operacionais passando pelo pipeline Stark Bank com conta fonte por entidade.</p>

@@ -43,6 +43,12 @@ module Outbox
         assert_equal bundle[:allocation].id, request.dig(:body, "receivable_allocation", "id")
         assert_equal "PIX", request.dig(:body, "payment_instructions", "payment_rail")
         assert_equal "f47ac10b-58cc-4372-a567-0e02b2c3d479", request.dig(:body, "payment_instructions", "pix_key")
+        assert_equal bundle[:hospital].document_type, request.dig(:body, "hospital", "document_type")
+        assert_equal "**.***.***/****-#{bundle[:hospital].document_number[-2, 2]}", request.dig(:body, "hospital", "document_number_masked")
+        assert_nil request.dig(:body, "hospital", "document_number")
+        assert_equal bundle[:supplier].document_type, request.dig(:body, "operational_party", "document_type")
+        assert_equal "**.***.***/****-#{bundle[:supplier].document_number[-2, 2]}", request.dig(:body, "operational_party", "document_number_masked")
+        assert_nil request.dig(:body, "operational_party", "document_number")
 
         assert_equal 1, ActionIpLog.where(
           tenant_id: @tenant.id,
@@ -134,6 +140,52 @@ module Outbox
       end
     end
 
+    test "hospital sync reuses the provisioned account and cached PIX instructions after refresh" do
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "worker") do
+        bundle = create_hospital_receivable_bundle!("hospital-payment-instructions-refresh-sequence")
+        refresh_event = create_payment_instructions_refresh_outbox_event!(
+          receivable: bundle[:receivable],
+          allocation: bundle[:allocation],
+          provider: "STARKBANK",
+          idempotency_key: "idem-payment-instructions-refresh-sequence"
+        )
+        hospital_event = create_hospital_payment_instructions_outbox_event!(
+          receivable: bundle[:receivable],
+          allocation: bundle[:allocation],
+          hospital_party: bundle[:hospital],
+          provider: "STARKBANK",
+          idempotency_key: "idem-hospital-payment-instructions-refresh-sequence"
+        )
+        provider = FakeEscrowPaymentInstructionsProvider.new
+        client = FakeHospitalApiClient.new
+
+        with_environment(
+          "HOSPITAL_API_BASE_URL" => "https://hospital.example.com",
+          "HOSPITAL_API_BEARER_TOKEN" => "hospital-api-token",
+          "ESCROW_ENABLE_STARKBANK" => "true"
+        ) do
+          with_stubbed_escrow_provider(provider) do
+            with_stubbed_hospital_client(client) do
+              refresh_result = Outbox::DispatchEvent.new.call(outbox_event_id: refresh_event.id)
+              hospital_result = Outbox::DispatchEvent.new.call(outbox_event_id: hospital_event.id)
+
+              assert_equal "SENT", refresh_result.status
+              assert_equal "SENT", hospital_result.status
+            end
+          end
+        end
+
+        assert_equal 1, EscrowAccount.where(
+          tenant_id: @tenant.id,
+          party_id: bundle[:supplier].id,
+          provider: "STARKBANK"
+        ).count
+        assert_equal 1, provider.open_account_calls.size
+        assert_equal 1, provider.fetch_payment_instructions_calls.size
+        assert_equal 1, client.requests.size
+      end
+    end
+
     private
 
     def create_hospital_receivable_bundle!(suffix)
@@ -206,6 +258,24 @@ module Outbox
       )
     end
 
+    def create_payment_instructions_refresh_outbox_event!(receivable:, allocation:, provider:, idempotency_key:)
+      OutboxEvent.create!(
+        tenant: @tenant,
+        aggregate_type: "Receivable",
+        aggregate_id: receivable.id,
+        event_type: "RECEIVABLE_ESCROW_PAYMENT_INSTRUCTIONS_REFRESH_REQUESTED",
+        status: "PENDING",
+        idempotency_key: idempotency_key,
+        payload: {
+          "receivable_id" => receivable.id,
+          "receivable_allocation_id" => allocation.id,
+          "operational_party_id" => allocation.allocated_party_id,
+          "provider" => provider,
+          "payment_instruction_idempotency_key" => "#{allocation.allocated_party_id}:escrow_account"
+        }
+      )
+    end
+
     def with_stubbed_escrow_provider(provider)
       registry_singleton = Integrations::Escrow::ProviderRegistry.singleton_class
       original_fetch = Integrations::Escrow::ProviderRegistry.method(:fetch)
@@ -238,6 +308,13 @@ module Outbox
     end
 
     class FakeEscrowPaymentInstructionsProvider
+      attr_reader :open_account_calls, :fetch_payment_instructions_calls
+
+      def initialize
+        @open_account_calls = []
+        @fetch_payment_instructions_calls = []
+      end
+
       def provider_code
         "STARKBANK"
       end
@@ -247,6 +324,11 @@ module Outbox
       end
 
       def open_escrow_account!(tenant_id:, party:, idempotency_key:, metadata:)
+        @open_account_calls << {
+          tenant_id: tenant_id,
+          party_id: party.id,
+          idempotency_key: idempotency_key
+        }
         Integrations::Escrow::AccountProvisionResult.new(
           provider_account_id: "workspace-hospital-api-123",
           provider_request_id: "workspace-user-hospital-api-123",
@@ -261,6 +343,10 @@ module Outbox
       end
 
       def fetch_payment_instructions!(tenant_id:, escrow_account:)
+        @fetch_payment_instructions_calls << {
+          tenant_id: tenant_id,
+          escrow_account_id: escrow_account.id
+        }
         {
           "payment_rail" => "PIX",
           "pix_key" => "f47ac10b-58cc-4372-a567-0e02b2c3d479",
@@ -270,6 +356,7 @@ module Outbox
           "bank_code" => "20018183",
           "account_type" => "payment",
           "beneficiary_name" => "Fornecedor hospital payment instructions",
+          "beneficiary_document_number" => "12345678000195",
           "last_synced_at" => Time.current.utc.iso8601(6)
         }
       end

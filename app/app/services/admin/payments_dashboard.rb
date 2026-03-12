@@ -13,6 +13,7 @@ module Admin
 
     def call(page: 1, per_page: 20, status: nil)
       paginated = paginated_payout_rows(page:, per_page:, status:)
+      payment_instruction_snapshot = payment_instruction_tracker.snapshot(tenant_id: tenant.id)
 
       {
         generated_at: Time.current,
@@ -21,6 +22,8 @@ module Admin
         payout_pagination: paginated.fetch(:pagination),
         batch_rows: batch_rows(limit: 12),
         failure_rows: failure_rows(limit: 8),
+        payment_instruction_monitor_cards: payment_instruction_monitor_cards(payment_instruction_snapshot),
+        payment_instruction_event_rows: payment_instruction_tracker.problematic_rows(tenant_id: tenant.id, limit: 10),
         active_status: status
       }
     end
@@ -131,6 +134,42 @@ module Admin
 
       mapped_status = STATUS_FILTERS[status.to_s]
       mapped_status.present? ? scope.where(status: mapped_status) : scope
+    end
+
+    def payment_instruction_monitor_cards(snapshot)
+      [
+        {
+          label: "Backlog vencido",
+          value: snapshot.fetch(:stale_count),
+          footnote: payment_instruction_oldest_age_label(snapshot)
+        },
+        {
+          label: "Retries agendados",
+          value: snapshot.fetch(:retry_scheduled_count),
+          footnote: "Eventos aguardando nova tentativa automática do outbox"
+        },
+        {
+          label: "Dead letters",
+          value: snapshot.fetch(:dead_letter_count),
+          footnote: "Eventos que exigem replay manual da operação"
+        },
+        {
+          label: "Pendentes recentes",
+          value: snapshot.fetch(:pending_count),
+          footnote: "Eventos ainda dentro da janela operacional normal"
+        }
+      ]
+    end
+
+    def payment_instruction_oldest_age_label(snapshot)
+      oldest_stale_created_at = snapshot.fetch(:oldest_stale_created_at)
+      return "Nenhum evento de instrução PIX fora do SLA" if oldest_stale_created_at.blank?
+
+      "Evento mais antigo há #{ActionController::Base.helpers.distance_of_time_in_words(oldest_stale_created_at, Time.current)}"
+    end
+
+    def payment_instruction_tracker
+      @payment_instruction_tracker ||= Outbox::PaymentInstructionEventTracker.new
     end
 
     def payout_row(payout)

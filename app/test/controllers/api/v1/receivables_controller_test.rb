@@ -10,6 +10,7 @@ module Api
         @user = users(:one)
 
         @read_token = nil
+        @payment_instructions_token = nil
         @write_token = nil
         @settle_token = nil
         @document_token = nil
@@ -26,6 +27,12 @@ module Api
             user: @user,
             name: "Receivables Read API",
             scopes: %w[receivables:read receivables:history]
+          )
+          _, @payment_instructions_token = ApiAccessToken.issue!(
+            tenant: @tenant,
+            user: @user,
+            name: "Receivables Payment Instructions API",
+            scopes: %w[receivables:payment_instructions:read]
           )
           _, @write_token = ApiAccessToken.issue!(
             tenant: @tenant,
@@ -660,7 +667,7 @@ module Api
           with_stubbed_escrow_provider(provider, default_provider: "STARKBANK") do
             get payment_instructions_api_v1_receivable_path(receivable.id),
               params: { receivable_allocation_id: allocation.id },
-              headers: authorization_headers(@read_token),
+              headers: authorization_headers(@payment_instructions_token),
               as: :json
           end
         end
@@ -680,6 +687,91 @@ module Api
         assert_nil body.dig("payment_instructions", "beneficiary_document_number")
         assert_equal 0, provider.open_account_calls.size
         assert_equal 0, provider.fetch_payment_instructions_calls.size
+      end
+
+      test "requires the dedicated payment instructions scope" do
+        get payment_instructions_api_v1_receivable_path(@receivable.id),
+          headers: authorization_headers(@read_token),
+          as: :json
+
+        assert_response :forbidden
+        assert_equal "insufficient_scope", response.parsed_body.dig("error", "code")
+      end
+
+      test "restricts payment instructions to the debtor hospital access path" do
+        provider = FakeEscrowPaymentInstructionsProvider.new
+        supplier_token = nil
+        receivable = nil
+        allocation = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          hospital = Party.create!(
+            tenant: @tenant,
+            kind: "HOSPITAL",
+            legal_name: "Hospital Restricted Payment Instructions",
+            document_number: valid_cnpj_from_seed("hospital-restricted-payment-instructions")
+          )
+          supplier = Party.create!(
+            tenant: @tenant,
+            kind: "SUPPLIER",
+            legal_name: "Fornecedor Restricted Payment Instructions",
+            document_number: valid_cnpj_from_seed("supplier-restricted-payment-instructions")
+          )
+          supplier_user = User.create!(
+            tenant: @tenant,
+            party: supplier,
+            email_address: "supplier-payment-instructions@example.com",
+            password: "password",
+            password_confirmation: "password",
+            role: "supplier_user"
+          )
+          _, supplier_token = ApiAccessToken.issue!(
+            tenant: @tenant,
+            user: supplier_user,
+            name: "Supplier Payment Instructions API",
+            scopes: %w[receivables:payment_instructions:read]
+          )
+
+          receivable = create_receivable_for_hospital!(
+            tenant: @tenant,
+            suffix: "restricted-payment-instructions",
+            hospital: hospital,
+            creditor: supplier,
+            beneficiary: supplier
+          )
+          allocation = receivable.receivable_allocations.order(sequence: :asc).first
+
+          EscrowAccount.create!(
+            tenant: @tenant,
+            party: supplier,
+            provider: "STARKBANK",
+            account_type: "ESCROW",
+            status: "ACTIVE",
+            provider_account_id: "workspace-restricted-123",
+            provider_request_id: "workspace-user-restricted-123",
+            metadata: {
+              "payment_instructions" => {
+                "payment_rail" => "PIX",
+                "pix_key" => "restricted-key",
+                "pix_key_type" => "EVP",
+                "pix_key_status" => "REGISTERED",
+                "beneficiary_name" => supplier.legal_name
+              }
+            }
+          )
+        end
+
+        with_environment("ESCROW_ENABLE_STARKBANK" => "true") do
+          with_stubbed_escrow_provider(provider, default_provider: "STARKBANK") do
+            get payment_instructions_api_v1_receivable_path(receivable.id),
+              params: { receivable_allocation_id: allocation.id },
+              headers: authorization_headers(supplier_token),
+              as: :json
+          end
+        end
+
+        assert_response :forbidden
+        assert_equal "forbidden", response.parsed_body.dig("error", "code")
       end
 
       test "returns payment instructions not ready without provisioning side effects" do
@@ -716,7 +808,7 @@ module Api
             assert_no_difference("EscrowAccount.count") do
               get payment_instructions_api_v1_receivable_path(receivable.id),
                 params: { receivable_allocation_id: allocation.id },
-                headers: authorization_headers(@read_token),
+                headers: authorization_headers(@payment_instructions_token),
                 as: :json
             end
           end

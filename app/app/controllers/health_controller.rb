@@ -54,7 +54,8 @@ class HealthController < ActionController::API
     {
       "database_role" => Security::DatabaseRoleGuard.readiness_status,
       "database_schema" => Security::DatabaseSchemaAudit.readiness_status,
-      "idempotency_conflicts" => Security::IdempotencyConflictMonitor.readiness_status
+      "idempotency_conflicts" => Security::IdempotencyConflictMonitor.readiness_status,
+      "payment_instruction_outbox" => Security::PaymentInstructionsOutboxMonitor.readiness_status
     }
   end
 

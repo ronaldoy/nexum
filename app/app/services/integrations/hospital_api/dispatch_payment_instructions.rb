@@ -114,13 +114,15 @@ module Integrations
           "hospital" => {
             "party_id" => inputs.hospital_party.id,
             "legal_name" => inputs.hospital_party.legal_name,
-            "document_number" => inputs.hospital_party.document_number
+            "document_type" => inputs.hospital_party.document_type,
+            "document_number_masked" => DocumentNumberMasker.mask(inputs.hospital_party.document_number)
           },
           "operational_party" => {
             "party_id" => payment_instruction_result.operational_party.id,
             "kind" => payment_instruction_result.operational_party.kind,
             "legal_name" => payment_instruction_result.operational_party.legal_name,
-            "document_number" => payment_instruction_result.operational_party.document_number
+            "document_type" => payment_instruction_result.operational_party.document_type,
+            "document_number_masked" => DocumentNumberMasker.mask(payment_instruction_result.operational_party.document_number)
           },
           "payment_instructions" => payment_instruction_result.payment_instructions
         }

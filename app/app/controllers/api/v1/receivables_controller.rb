@@ -4,7 +4,7 @@ module Api
       require_api_scopes(
         index: "receivables:read",
         show: "receivables:read",
-        payment_instructions: "receivables:read",
+        payment_instructions: "receivables:payment_instructions:read",
         create: "receivables:write",
         history: "receivables:history",
         settle_payment: "receivables:settle",
@@ -102,6 +102,7 @@ module Api
 
       def payment_instructions
         receivable = load_receivable_with_kind_and_parties(params[:id])
+        authorize_party_access!(receivable.debtor_party_id)
         allocation = payment_instruction_allocation_for(receivable)
         result = ensure_payment_instructions_service.call(
           tenant_id: Current.tenant_id,

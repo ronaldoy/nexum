@@ -15,7 +15,7 @@ class ApiAccessTokenTest < ActiveSupport::TestCase
         tenant: @tenant,
         user: @user,
         name: "Test Integration",
-        scopes: %w[receivables:read receivables:history],
+        scopes: %w[receivables:payment_instructions:read receivables:read receivables:history],
         audit_context: {
           actor_party_id: @user.party_id,
           channel: "API",
@@ -29,7 +29,7 @@ class ApiAccessTokenTest < ActiveSupport::TestCase
     end
 
     assert_equal token_record.id, authenticated.id
-    assert_equal %w[receivables:history receivables:read], token_record.scopes
+    assert_equal %w[receivables:history receivables:payment_instructions:read receivables:read], token_record.scopes
     assert_equal @user.uuid_id, token_record.user_uuid_id
 
     with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do

@@ -42,7 +42,9 @@ Rails.application.routes.draw do
     resources :counterparties, only: %i[index create] do
       post :link_hospital, on: :collection
     end
-    resources :payments, only: %i[index]
+    resources :payments, only: %i[index] do
+      post :replay_instruction_event, on: :collection
+    end
     resources :loans, only: %i[index show create] do
       patch :approve, on: :member
       patch :fund, on: :member

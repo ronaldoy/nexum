@@ -164,26 +164,8 @@ module Api
             kind: party.kind,
             legal_name: party.legal_name,
             document_type: party.document_type,
-            document_number_masked: mask_document_number(party.document_number)
+            document_number_masked: DocumentNumberMasker.mask(party.document_number)
           }
-        end
-
-        def mask_document_number(value)
-          raw = value.to_s.strip
-          return nil if raw.blank?
-          return raw if raw.include?("*")
-
-          digits = raw.gsub(/\D+/, "")
-          return nil if digits.blank?
-
-          case digits.length
-          when 11
-            "***.***.***-#{digits[-2, 2]}"
-          when 14
-            "**.***.***/****-#{digits[-2, 2]}"
-          else
-            "#{('*' * [ digits.length - 4, 0 ].max)}#{digits[-4, 4]}"
-          end
         end
       end
     end

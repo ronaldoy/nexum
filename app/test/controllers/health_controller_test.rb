@@ -4,11 +4,13 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
   setup do
     Rails.cache.clear
     Security::IdempotencyConflictMonitor.reset_for_test!
+    Security::PaymentInstructionsOutboxMonitor.reset_for_test!
   end
 
   teardown do
     Rails.cache.clear
     Security::IdempotencyConflictMonitor.reset_for_test!
+    Security::PaymentInstructionsOutboxMonitor.reset_for_test!
   end
 
   test "health returns liveness response" do
@@ -32,6 +34,7 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert_equal "ok", body.dig("checks", "database_role")
     assert_equal "ok", body.dig("checks", "database_schema")
     assert_equal "ok", body.dig("checks", "idempotency_conflicts")
+    assert_equal "ok", body.dig("checks", "payment_instruction_outbox")
     assert body["timestamp"].present?
   end
 
@@ -85,6 +88,22 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "ready returns service unavailable when payment instruction outbox monitor fails" do
+    original_method = Security::PaymentInstructionsOutboxMonitor.method(:readiness_status)
+    Security::PaymentInstructionsOutboxMonitor.singleton_class.define_method(:readiness_status) { |**| "error" }
+
+    begin
+      get "/ready"
+
+      assert_response :service_unavailable
+      body = response.parsed_body
+      assert_equal "error", body["status"]
+      assert_equal "error", body.dig("checks", "payment_instruction_outbox")
+    ensure
+      Security::PaymentInstructionsOutboxMonitor.singleton_class.define_method(:readiness_status, original_method)
+    end
+  end
+
   test "ready rejects remote probe without token" do
     with_stubbed_ready_probe_local_request(false) do
       get "/ready"
@@ -113,6 +132,7 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     previous.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
     Rails.cache.clear
     Security::IdempotencyConflictMonitor.reset_for_test!
+    Security::PaymentInstructionsOutboxMonitor.reset_for_test!
   end
 
   def with_stubbed_ready_probe_local_request(value)

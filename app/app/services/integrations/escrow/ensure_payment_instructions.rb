@@ -180,7 +180,7 @@ module Integrations
           "bank_code" => payment_instructions["bank_code"],
           "account_type" => payment_instructions["account_type"],
           "beneficiary_name" => payment_instructions["beneficiary_name"].presence || operational_party.legal_name,
-          "beneficiary_document_number_masked" => mask_document_number(payment_instructions["beneficiary_document_number"]),
+          "beneficiary_document_number_masked" => DocumentNumberMasker.mask(payment_instructions["beneficiary_document_number"]),
           "last_synced_at" => payment_instructions["last_synced_at"]
         }.compact
       end
@@ -208,24 +208,6 @@ module Integrations
           value.map { |entry| normalized_hash(entry) }
         else
           value
-        end
-      end
-
-      def mask_document_number(value)
-        raw = value.to_s.strip
-        return nil if raw.blank?
-        return raw if raw.include?("*")
-
-        digits = raw.gsub(/\D+/, "")
-        return nil if digits.blank?
-
-        case digits.length
-        when 11
-          "***.***.***-#{digits[-2, 2]}"
-        when 14
-          "**.***.***/****-#{digits[-2, 2]}"
-        else
-          "#{('*' * [ digits.length - 4, 0 ].max)}#{digits[-4, 4]}"
         end
       end
     end
