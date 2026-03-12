@@ -4,6 +4,7 @@ module Receivables
   class Create
     TARGET_TYPE = "Receivable".freeze
     PAYLOAD_HASH_METADATA_KEY = "_create_payload_hash".freeze
+    HOSPITAL_PAYMENT_INSTRUCTIONS_EVENT_TYPE = "RECEIVABLE_HOSPITAL_PAYMENT_INSTRUCTIONS_SYNC_REQUESTED".freeze
 
     Result = Struct.new(:receivable, :allocation, :replayed, keyword_init: true) do
       def replayed?
@@ -126,6 +127,11 @@ module Receivables
           external_reference: receivable.external_reference,
           receivable_kind_code: context.receivable_kind.code
         }
+      )
+
+      create_hospital_payment_instructions_outbox_event!(
+        receivable: receivable,
+        allocation: allocation
       )
 
       Result.new(receivable: receivable, allocation: allocation, replayed: false)
@@ -437,6 +443,37 @@ module Receivables
         "error_class=#{log_error.class.name} error_message=#{log_error.message} request_id=#{@request_id}"
       )
       nil
+    end
+
+    def create_hospital_payment_instructions_outbox_event!(receivable:, allocation:)
+      hospital_party_id = receivable.debtor_party_id
+      return unless Integrations::HospitalApi::Configuration.configured?(tenant_id: @tenant_id, hospital_party_id: hospital_party_id)
+
+      provider_code = Integrations::Escrow::ProviderConfig.default_provider(tenant_id: @tenant_id)
+      return unless provider_code == "STARKBANK"
+
+      idempotency_key = "#{@idempotency_key}:hospital_payment_instructions_sync"
+
+      OutboxEvent.create!(
+        tenant_id: @tenant_id,
+        aggregate_type: TARGET_TYPE,
+        aggregate_id: receivable.id,
+        event_type: HOSPITAL_PAYMENT_INSTRUCTIONS_EVENT_TYPE,
+        status: "PENDING",
+        idempotency_key: idempotency_key,
+        payload: {
+          "receivable_id" => receivable.id,
+          "receivable_allocation_id" => allocation.id,
+          "hospital_party_id" => hospital_party_id,
+          "operational_party_id" => allocation.allocated_party_id,
+          "provider" => provider_code,
+          "payment_instruction_idempotency_key" => "#{allocation.allocated_party_id}:escrow_account",
+          "hospital_sync_idempotency_key" => idempotency_key
+        }
+      )
+    rescue ActiveRecord::RecordNotUnique
+      existing_outbox = OutboxEvent.find_by(tenant_id: @tenant_id, idempotency_key: idempotency_key)
+      raise if existing_outbox.blank?
     end
 
     def decimal_as_string(value)

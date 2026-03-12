@@ -4,6 +4,7 @@ module Api
       require_api_scopes(
         index: "receivables:read",
         show: "receivables:read",
+        payment_instructions: "receivables:read",
         create: "receivables:write",
         history: "receivables:history",
         settle_payment: "receivables:settle",
@@ -99,6 +100,33 @@ module Api
         render_history_response(load_receivable_with_kind_and_parties(params[:id]))
       end
 
+      def payment_instructions
+        receivable = load_receivable_with_kind_and_parties(params[:id])
+        allocation = payment_instruction_allocation_for(receivable)
+        result = ensure_payment_instructions_service.call(
+          tenant_id: Current.tenant_id,
+          receivable: receivable,
+          receivable_allocation: allocation,
+          idempotency_key: "receivable:#{receivable.id}:allocation:#{allocation.id}:payment_instructions"
+        )
+
+        render json: {
+          data: payload_presenter.payment_instructions(
+            receivable: receivable,
+            receivable_allocation: allocation,
+            operational_party: result.operational_party,
+            provider_code: result.provider_code,
+            payment_instructions: result.payment_instructions
+          )
+        }
+      rescue ::Integrations::Escrow::ConfigurationError => error
+        render_api_error(code: error.code, message: error.message, status: :service_unavailable)
+      rescue ::Integrations::Escrow::RemoteError => error
+        render_api_error(code: error.code, message: error.message, status: :bad_gateway)
+      rescue ::Integrations::Escrow::ValidationError => error
+        render_api_error(code: error.code, message: error.message, status: :unprocessable_entity)
+      end
+
       def settle_payment
         return unless enforce_string_payload_type!(settlement_params, :paid_amount)
 
@@ -125,6 +153,10 @@ module Api
         @payload_presenter ||= Api::V1::Receivables::PayloadPresenter.new(
           provenance_resolver: method(:receivable_provenance_payload)
         )
+      end
+
+      def ensure_payment_instructions_service
+        @ensure_payment_instructions_service ||= Integrations::Escrow::EnsurePaymentInstructions.new
       end
 
       def index_limit
@@ -259,6 +291,13 @@ module Api
           payment_reference: settlement_payload[:payment_reference].presence || Current.idempotency_key,
           metadata: settlement_payload[:metadata] || {}
         }
+      end
+
+      def payment_instruction_allocation_for(receivable)
+        allocation_id = params[:receivable_allocation_id].to_s.strip.presence
+        return receivable.receivable_allocations.order(sequence: :asc).first if allocation_id.blank?
+
+        receivable.receivable_allocations.find(allocation_id)
       end
 
       def render_settle_payment_response(result)

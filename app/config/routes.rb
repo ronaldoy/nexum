@@ -16,6 +16,7 @@ Rails.application.routes.draw do
       resources :physicians, only: %i[create show]
       resources :receivables, only: %i[index show create] do
         get :history, on: :member
+        get :payment_instructions, on: :member
         post :settle_payment, on: :member
         post :attach_document, on: :member
       end

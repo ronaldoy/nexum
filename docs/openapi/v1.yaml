@@ -280,6 +280,91 @@ paths:
           $ref: "#/components/responses/ForbiddenError"
         "404":
           $ref: "#/components/responses/NotFoundError"
+  /api/v1/receivables/{id}/payment_instructions:
+    get:
+      tags: [Receivables]
+      summary: Fetch PIX payment instructions for the receivable operational account
+      operationId: getReceivablePaymentInstructions
+      parameters:
+        - $ref: "#/components/parameters/ReceivableId"
+        - name: receivable_allocation_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Optional allocation id when the receivable has multiple operational allocations.
+      responses:
+        "200":
+          description: PIX payment instructions resolved for the operational account.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required:
+                      - receivable_id
+                      - receivable_allocation_id
+                      - hospital_party_id
+                      - provider
+                      - operational_party
+                      - payment_instructions
+                    properties:
+                      receivable_id:
+                        type: string
+                        format: uuid
+                      receivable_external_reference:
+                        type: string
+                      receivable_allocation_id:
+                        type: string
+                        format: uuid
+                      hospital_party_id:
+                        type: string
+                        format: uuid
+                      provider:
+                        type: string
+                        enum: [QITECH, STARKBANK]
+                      operational_party:
+                        $ref: "#/components/schemas/PartyReference"
+                      payment_instructions:
+                        type: object
+                        required: [payment_rail, pix_key]
+                        properties:
+                          payment_rail:
+                            type: string
+                            enum: [PIX]
+                          pix_key:
+                            type: string
+                          pix_key_type:
+                            type: string
+                          pix_key_status:
+                            type: string
+                          bank_name:
+                            type: string
+                          bank_code:
+                            type: string
+                          account_type:
+                            type: string
+                          beneficiary_name:
+                            type: string
+                          beneficiary_document_number:
+                            type: string
+                          last_synced_at:
+                            type: string
+                            format: date-time
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailableError"
   /api/v1/receivables/{id}/history:
     get:
       tags: [Receivables]
@@ -668,6 +753,12 @@ components:
             $ref: "#/components/schemas/ErrorEnvelope"
     ValidationError:
       description: Business validation error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ServiceUnavailableError:
+      description: A required downstream service is temporarily unavailable.
       content:
         application/json:
           schema:

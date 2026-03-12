@@ -71,6 +71,29 @@ module Api
           }
         end
 
+        def payment_instructions(receivable:, receivable_allocation:, operational_party:, provider_code:, payment_instructions:)
+          {
+            receivable_id: receivable.id,
+            receivable_external_reference: receivable.external_reference,
+            receivable_allocation_id: receivable_allocation.id,
+            hospital_party_id: receivable.debtor_party_id,
+            provider: provider_code,
+            operational_party: party_reference(operational_party),
+            payment_instructions: {
+              payment_rail: payment_instructions["payment_rail"],
+              pix_key: payment_instructions["pix_key"],
+              pix_key_type: payment_instructions["pix_key_type"],
+              pix_key_status: payment_instructions["pix_key_status"],
+              bank_name: payment_instructions["bank_name"],
+              bank_code: payment_instructions["bank_code"],
+              account_type: payment_instructions["account_type"],
+              beneficiary_name: payment_instructions["beneficiary_name"],
+              beneficiary_document_number: payment_instructions["beneficiary_document_number"],
+              last_synced_at: payment_instructions["last_synced_at"]
+            }.compact
+          }
+        end
+
         def settlement_entry(entry)
           {
             id: entry.id,
@@ -123,6 +146,16 @@ module Api
 
           allowed_keys = normalized.keys.reject { |key| CONTROL_PLANE_KEYS.include?(key.to_s) }
           MetadataSanitizer.sanitize(normalized, allowed_keys: allowed_keys)
+        end
+
+        def party_reference(party)
+          {
+            id: party.id,
+            kind: party.kind,
+            legal_name: party.legal_name,
+            document_type: party.document_type,
+            document_number: party.document_number
+          }
         end
       end
     end

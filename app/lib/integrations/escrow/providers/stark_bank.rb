@@ -40,15 +40,40 @@ module Integrations
 
           workspace = existing_workspace_for(tenant_slug:, party:)
           workspace ||= create_workspace!(tenant_slug:, party:, idempotency_key:)
+          payment_instructions = load_inbound_payment_instructions_safe(
+            tenant_id: tenant_id,
+            tenant_slug: tenant_slug,
+            workspace_id: workspace.fetch("id")
+          )
+
+          account_metadata = {
+            "workspace" => workspace,
+            "request_metadata" => normalized_hash(metadata)
+          }
+          account_metadata["payment_instructions"] = payment_instructions if payment_instructions.present?
 
           AccountProvisionResult.new(
             provider_account_id: workspace.fetch("id"),
             provider_request_id: workspace["username"],
             status: map_workspace_status(workspace["status"]),
-            metadata: {
-              "workspace" => workspace,
-              "request_metadata" => normalized_hash(metadata)
-            }
+            metadata: account_metadata
+          )
+        end
+
+        def fetch_payment_instructions!(tenant_id:, escrow_account:)
+          tenant_slug = tenant_slug_for(tenant_id)
+          workspace_id = escrow_account.provider_account_id.to_s
+          if workspace_id.blank?
+            raise ValidationError.new(
+              code: "starkbank_workspace_missing",
+              message: "Stark Bank workspace id is missing for the operational account."
+            )
+          end
+
+          load_inbound_payment_instructions!(
+            tenant_id: tenant_id,
+            tenant_slug: tenant_slug,
+            workspace_id: workspace_id
           )
         end
 
@@ -200,6 +225,98 @@ module Integrations
 
         def workspace_name_for(party)
           "Nexum #{party.legal_name}".truncate(80)
+        end
+
+        def load_inbound_payment_instructions_safe(tenant_id:, tenant_slug:, workspace_id:)
+          load_inbound_payment_instructions!(tenant_id:, tenant_slug:, workspace_id:)
+        rescue Error => error
+          Rails.logger.warn(
+            "starkbank_inbound_payment_instructions_sync_failed " \
+            "tenant_id=#{tenant_id} workspace_id=#{workspace_id} " \
+            "error_code=#{error.code} error_message=#{error.message}"
+          )
+          nil
+        end
+
+        def load_inbound_payment_instructions!(tenant_id:, tenant_slug:, workspace_id:)
+          dict_key = preferred_inbound_pix_key(
+            workspace_id: workspace_id,
+            tenant_id: tenant_id,
+            tenant_slug: tenant_slug
+          )
+          if dict_key.blank?
+            raise ValidationError.new(
+              code: "starkbank_inbound_pix_key_missing",
+              message: "No active inbound PIX key was found for the Stark Bank workspace.",
+              details: { workspace_id: workspace_id }
+            )
+          end
+
+          {
+            "payment_rail" => "PIX",
+            "pix_key" => dict_key.id,
+            "pix_key_type" => dict_key.type.to_s.upcase,
+            "pix_key_status" => dict_key.status.to_s.upcase,
+            "bank_name" => dict_key.bank_name,
+            "bank_code" => dict_key.ispb,
+            "account_type" => dict_key.account_type,
+            "beneficiary_name" => dict_key.name,
+            "beneficiary_document_number" => dict_key.tax_id,
+            "workspace_id" => workspace_id,
+            "source" => "starkbank_dict_key",
+            "last_synced_at" => Time.current.utc.iso8601(6)
+          }.compact
+        rescue ::StarkCore::Error::InputErrors => error
+          raise_input_error!(error)
+        rescue ::StarkCore::Error::StarkCoreError => error
+          raise RemoteError.new(
+            code: "starkbank_inbound_pix_key_lookup_failed",
+            message: error.message,
+            http_status: 502,
+            details: {
+              error_class: error.class.name,
+              workspace_id: workspace_id
+            }
+          )
+        end
+
+        def preferred_inbound_pix_key(workspace_id:, tenant_id:, tenant_slug:)
+          user = StarkBankConfiguration.workspace_user(workspace_id:, tenant_id:, tenant_slug:)
+
+          keys = ::StarkBank::DictKey.query(limit: 100, user: user).to_a
+          select_preferred_dict_key(keys)
+        end
+
+        def select_preferred_dict_key(keys)
+          candidates = Array(keys).compact
+          active_keys = candidates.select { |key| key_active?(key) }
+          prioritized = active_keys.presence || candidates
+          prioritized.min_by do |key|
+            [
+              dict_key_type_priority(key),
+              dict_key_status_priority(key),
+              key.id.to_s
+            ]
+          end
+        end
+
+        def key_active?(dict_key)
+          dict_key.status.to_s.downcase.in?(%w[registered created])
+        end
+
+        def dict_key_type_priority(dict_key)
+          dict_key.type.to_s.downcase == "evp" ? 0 : 1
+        end
+
+        def dict_key_status_priority(dict_key)
+          case dict_key.status.to_s.downcase
+          when "registered"
+            0
+          when "created"
+            1
+          else
+            2
+          end
         end
 
         def map_workspace_status(raw_status)

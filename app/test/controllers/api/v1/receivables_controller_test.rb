@@ -602,6 +602,118 @@ module Api
         assert_equal "RECEIVABLE_IMPORTED", response.parsed_body.dig("data", "events", 0, "event_type")
       end
 
+      test "returns PIX payment instructions for the operational allocation account" do
+        provider = FakeEscrowPaymentInstructionsProvider.new
+        receivable = nil
+        allocation = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          hospital = Party.create!(
+            tenant: @tenant,
+            kind: "HOSPITAL",
+            legal_name: "Hospital Payment Instructions",
+            document_number: valid_cnpj_from_seed("hospital-payment-instructions")
+          )
+          supplier = Party.create!(
+            tenant: @tenant,
+            kind: "SUPPLIER",
+            legal_name: "Fornecedor Payment Instructions",
+            document_number: valid_cnpj_from_seed("supplier-payment-instructions")
+          )
+
+          receivable = create_receivable_for_hospital!(
+            tenant: @tenant,
+            suffix: "payment-instructions",
+            hospital: hospital,
+            creditor: supplier,
+            beneficiary: supplier
+          )
+          allocation = receivable.receivable_allocations.order(sequence: :asc).first
+        end
+
+        with_environment("ESCROW_ENABLE_STARKBANK" => "true") do
+          with_stubbed_escrow_provider(provider, default_provider: "STARKBANK") do
+            get payment_instructions_api_v1_receivable_path(receivable.id),
+              params: { receivable_allocation_id: allocation.id },
+              headers: authorization_headers(@read_token),
+              as: :json
+          end
+        end
+
+        assert_response :success
+        body = response.parsed_body.fetch("data")
+        assert_equal receivable.id, body.fetch("receivable_id")
+        assert_equal allocation.id, body.fetch("receivable_allocation_id")
+        assert_equal "STARKBANK", body.fetch("provider")
+        assert_equal allocation.allocated_party_id, body.dig("operational_party", "id")
+        assert_equal "PIX", body.dig("payment_instructions", "payment_rail")
+        assert_equal "f47ac10b-58cc-4372-a567-0e02b2c3d479", body.dig("payment_instructions", "pix_key")
+        assert_equal "EVP", body.dig("payment_instructions", "pix_key_type")
+      end
+
+      test "creates hospital payment instructions outbox event when hospital API sync is configured" do
+        payload = nil
+        hospital = nil
+
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: @user.role) do
+          hospital = Party.create!(
+            tenant: @tenant,
+            kind: "HOSPITAL",
+            legal_name: "Hospital Sync API",
+            document_number: valid_cnpj_from_seed("hospital-sync-api")
+          )
+          supplier = Party.create!(
+            tenant: @tenant,
+            kind: "SUPPLIER",
+            legal_name: "Supplier Sync API",
+            document_number: valid_cnpj_from_seed("supplier-sync-api")
+          )
+          kind = ReceivableKind.create!(
+            tenant: @tenant,
+            code: "supplier_invoice_hospital_sync_api",
+            name: "Supplier Invoice Hospital Sync API",
+            source_family: "SUPPLIER"
+          )
+
+          payload = {
+            receivable: {
+              external_reference: "external-hospital-sync-api-001",
+              receivable_kind_code: kind.code,
+              debtor_party_id: hospital.id,
+              creditor_party_id: supplier.id,
+              beneficiary_party_id: supplier.id,
+              gross_amount: "150.00",
+              currency: "BRL",
+              due_at: 5.days.from_now.iso8601
+            }
+          }
+        end
+
+        with_environment(
+          "HOSPITAL_API_BASE_URL" => "https://hospital.example.com",
+          "HOSPITAL_API_BEARER_TOKEN" => "hospital-secret-token",
+          "ESCROW_ENABLE_STARKBANK" => "true",
+          "STARKBANK_ORGANIZATION_ID" => "organization-123",
+          "STARKBANK_ORGANIZATION_PRIVATE_KEY" => "private-key"
+        ) do
+          assert_difference("OutboxEvent.where(event_type: 'RECEIVABLE_HOSPITAL_PAYMENT_INSTRUCTIONS_SYNC_REQUESTED').count", 1) do
+            post api_v1_receivables_path,
+              headers: authorization_headers(@write_token, idempotency_key: "idem-hospital-sync-api-001"),
+              params: payload,
+              as: :json
+          end
+        end
+
+        assert_response :created
+        outbox_event = OutboxEvent.find_by!(
+          tenant_id: @tenant.id,
+          event_type: "RECEIVABLE_HOSPITAL_PAYMENT_INSTRUCTIONS_SYNC_REQUESTED",
+          idempotency_key: "idem-hospital-sync-api-001:hospital_payment_instructions_sync"
+        )
+        assert_equal hospital.id, outbox_event.payload.fetch("hospital_party_id")
+        assert_equal "STARKBANK", outbox_event.payload.fetch("provider")
+      end
+
       test "denies receivable access for non-privileged actor outside party scope" do
         restricted_token = nil
 
@@ -1445,6 +1557,87 @@ module Api
             #{connection.quote(timestamp)}
           )
         SQL
+      end
+
+      def with_stubbed_escrow_provider(provider, default_provider: provider.provider_code)
+        registry_singleton = Integrations::Escrow::ProviderRegistry.singleton_class
+        provider_singleton = Integrations::Escrow::ProviderConfig.singleton_class
+        original_fetch = Integrations::Escrow::ProviderRegistry.method(:fetch)
+        original_default_provider = Integrations::Escrow::ProviderConfig.method(:default_provider)
+
+        registry_singleton.send(:define_method, :fetch) { |provider_code:, tenant_id: nil, tenant_slug: nil| provider }
+        provider_singleton.send(:define_method, :default_provider) { |tenant_id:| default_provider }
+        yield
+      ensure
+        registry_singleton.send(:define_method, :fetch, original_fetch)
+        provider_singleton.send(:define_method, :default_provider, original_default_provider)
+      end
+
+      def with_environment(overrides)
+        previous = {}
+        overrides.each do |key, value|
+          previous[key] = ENV[key]
+          value.nil? ? ENV.delete(key) : ENV[key] = value
+        end
+        yield
+      ensure
+        previous.each do |key, value|
+          value.nil? ? ENV.delete(key) : ENV[key] = value
+        end
+      end
+
+      class FakeEscrowPaymentInstructionsProvider
+        attr_reader :open_account_calls, :fetch_payment_instructions_calls
+
+        def initialize
+          @open_account_calls = []
+          @fetch_payment_instructions_calls = []
+        end
+
+        def provider_code
+          "STARKBANK"
+        end
+
+        def account_from_party_metadata(party:)
+          nil
+        end
+
+        def open_escrow_account!(tenant_id:, party:, idempotency_key:, metadata:)
+          @open_account_calls << {
+            tenant_id: tenant_id,
+            party_id: party.id,
+            idempotency_key: idempotency_key
+          }
+          Integrations::Escrow::AccountProvisionResult.new(
+            provider_account_id: "workspace-payment-123",
+            provider_request_id: "workspace-user-123",
+            status: "ACTIVE",
+            metadata: {
+              "workspace" => {
+                "id" => "workspace-payment-123",
+                "username" => "workspace-user-123"
+              }
+            }
+          )
+        end
+
+        def fetch_payment_instructions!(tenant_id:, escrow_account:)
+          @fetch_payment_instructions_calls << {
+            tenant_id: tenant_id,
+            escrow_account_id: escrow_account.id
+          }
+          {
+            "payment_rail" => "PIX",
+            "pix_key" => "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+            "pix_key_type" => "EVP",
+            "pix_key_status" => "REGISTERED",
+            "bank_name" => "Stark Bank",
+            "bank_code" => "20018183",
+            "account_type" => "payment",
+            "beneficiary_name" => "Fornecedor Payment Instructions",
+            "last_synced_at" => Time.current.utc.iso8601(6)
+          }
+        end
       end
     end
   end
