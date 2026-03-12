@@ -2,6 +2,7 @@
   <%= link_to "Cockpit", admin_dashboard_path, class: (request.path == admin_dashboard_path ? "page-nav-link page-nav-link-active" : "page-nav-link") %>
   <%= link_to "Contrapartes", admin_counterparties_path, class: (request.path.start_with?(admin_counterparties_path) ? "page-nav-link page-nav-link-active" : "page-nav-link") %>
   <%= link_to "Empréstimos", admin_loans_path, class: (request.path.start_with?(admin_loans_path) ? "page-nav-link page-nav-link-active" : "page-nav-link") %>
+  <%= link_to "Pagamentos", admin_payments_path, class: (request.path.start_with?(admin_payments_path) ? "page-nav-link page-nav-link-active" : "page-nav-link") %>
   <%= link_to "Risco", admin_anticipation_risk_rules_path, class: (request.path.start_with?(admin_anticipation_risk_rules_path) ? "page-nav-link page-nav-link-active" : "page-nav-link") %>
   <%= link_to "Revisões", admin_anticipation_reviews_path, class: (request.path.start_with?(admin_anticipation_reviews_path) ? "page-nav-link page-nav-link-active" : "page-nav-link") %>
 </nav>

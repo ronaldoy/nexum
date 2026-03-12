@@ -85,11 +85,15 @@ module Webhooks
     end
 
     def build_webhook_context
-      provider = Integrations::Escrow::ProviderConfig.normalize_provider(params[:provider])
+      provider = Integrations::Escrow::ProviderConfig.normalize_provider(
+        params[:provider],
+        tenant_slug: params[:tenant_slug]
+      )
       raw_body = request.raw_post.to_s
-      payload = parse_payload!(raw_body)
+      parsed_payload = parse_payload!(raw_body)
       payload_sha256 = Digest::SHA256.hexdigest(raw_body)
-      signature = authenticate_signature!(provider:, raw_body:)
+      authentication = authenticate_signature!(provider:, raw_body:)
+      payload = normalized_payload(provider:, parsed_payload:, authentication:)
       provider_event_id = resolve_provider_event_id(payload:, payload_sha256:)
 
       WebhookContext.new(
@@ -97,7 +101,7 @@ module Webhooks
         raw_body: raw_body,
         payload: payload,
         payload_sha256: payload_sha256,
-        signature: signature,
+        signature: authentication.signature,
         provider_event_id: provider_event_id
       )
     end
@@ -330,6 +334,59 @@ module Webhooks
       )
     end
 
+    def normalized_payload(provider:, parsed_payload:, authentication:)
+      return normalize_starkbank_payload(authentication.event) if provider == "STARKBANK"
+
+      parsed_payload
+    end
+
+    def normalize_starkbank_payload(event)
+      log = event&.log
+      transfer = log&.transfer
+      external_id = transfer&.external_id.to_s
+      fee_amount = (BigDecimal(transfer&.fee.to_i.to_s) / 100).round(2)
+      provider_end_to_end_id = Array(transfer&.transaction_ids).presence&.last
+
+      {
+        "event_id" => event&.id,
+        "subscription" => event&.subscription,
+        "workspace_id" => event&.workspace_id,
+        "log_id" => log&.id,
+        "log_type" => log&.type,
+        "provider_transfer_id" => transfer&.id,
+        "provider_end_to_end_id" => provider_end_to_end_id,
+        "request_control_key" => external_id.delete_suffix(":pix"),
+        "provider_request_control_key" => external_id.presence,
+        "status" => transfer&.status.to_s,
+        "fee" => fee_amount.to_s("F"),
+        "pix_transfer" => {
+          "id" => transfer&.id,
+          "status" => transfer&.status,
+          "fee" => fee_amount.to_s("F"),
+          "external_id" => external_id,
+          "end_to_end_id" => provider_end_to_end_id,
+          "transaction_ids" => transfer&.transaction_ids,
+          "tags" => transfer&.tags
+        }.compact,
+        "error" => normalize_starkbank_log_error(log)
+      }.compact
+    end
+
+    def normalize_starkbank_log_error(log)
+      errors = Array(log&.errors)
+      first_error = errors.first
+      return nil if first_error.blank?
+
+      if first_error.is_a?(Hash)
+        {
+          "code" => first_error["code"] || first_error[:code],
+          "message" => first_error["message"] || first_error[:message]
+        }.compact
+      else
+        { "message" => first_error.to_s }
+      end
+    end
+
     def resolve_provider_event_id(payload:, payload_sha256:)
       header_value = EVENT_ID_HEADER_CANDIDATES.lazy.map { |name| request.headers[name].to_s.strip.presence }.find(&:present?)
       payload_value = [
@@ -394,6 +451,7 @@ module Webhooks
         "x_request_id" => request.headers["X-Request-Id"].to_s,
         "x_qitech_signature_present" => request.headers["X-QITECH-Signature"].present?,
         "x_starkbank_signature_present" => request.headers["X-STARKBANK-Signature"].present?,
+        "digital_signature_present" => request.headers["Digital-Signature"].present?,
         "authorization_present" => request.authorization.present?,
         "content_type" => request.content_type.to_s
       }

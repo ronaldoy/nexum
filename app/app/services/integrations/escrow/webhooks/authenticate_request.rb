@@ -1,4 +1,6 @@
 require "openssl"
+require "integrations/escrow/providers/stark_bank_configuration"
+require "starkbank"
 
 module Integrations
   module Escrow
@@ -14,9 +16,11 @@ module Integrations
           end
         end
 
+        Result = Struct.new(:signature, :event, keyword_init: true)
+
         HMAC_HEADER_CANDIDATES = {
           "QITECH" => %w[X-QITECH-Signature X-Qitech-Signature X-Webhook-Signature],
-          "STARKBANK" => %w[X-STARKBANK-Signature X-Starkbank-Signature X-Webhook-Signature]
+          "STARKBANK" => %w[Digital-Signature]
         }.freeze
 
         TOKEN_HEADER_CANDIDATES = {
@@ -39,7 +43,9 @@ module Integrations
         }.freeze
 
         def call(provider:, request:, raw_body:, tenant_slug: nil, tenant_id: nil)
-          provider_code = normalized_provider(provider)
+          provider_code = normalized_provider(provider, tenant_slug:, tenant_id:)
+          return authenticate_starkbank(provider_code:, request:, raw_body:, tenant_slug:, tenant_id:) if provider_code == "STARKBANK"
+
           normalized_tenant_slug = normalize_tenant_slug(tenant_slug, tenant_id)
           secret = webhook_secret_for(provider_code, tenant_slug: normalized_tenant_slug)
           token = webhook_token_for(provider_code, tenant_slug: normalized_tenant_slug)
@@ -52,8 +58,8 @@ module Integrations
 
         private
 
-        def normalized_provider(provider)
-          ProviderConfig.normalize_provider(provider)
+        def normalized_provider(provider, tenant_slug:, tenant_id:)
+          ProviderConfig.normalize_provider(provider, tenant_id:, tenant_slug:)
         end
 
         def authenticate_with_signature(provider_code:, secret:, request:, raw_body:)
@@ -61,7 +67,7 @@ module Integrations
           raise Error.new(code: "webhook_signature_missing", message: "Webhook signature header is missing.") if signature.blank?
 
           verify_hmac_signature!(signature:, secret:, raw_body:)
-          signature
+          Result.new(signature: signature)
         end
 
         def authenticate_with_token(provider_code:, token:, request:)
@@ -69,7 +75,20 @@ module Integrations
           raise Error.new(code: "webhook_token_missing", message: "Webhook token is missing.") if provided_token.blank?
           raise Error.new(code: "webhook_token_invalid", message: "Webhook token is invalid.") unless secure_compare(provided_token, token)
 
-          "bearer"
+          Result.new(signature: "bearer")
+        end
+
+        def authenticate_starkbank(provider_code:, request:, raw_body:, tenant_slug:, tenant_id:)
+          signature = extract_header(request:, candidates: hmac_header_candidates(provider_code))
+          raise Error.new(code: "webhook_signature_missing", message: "Webhook signature header is missing.") if signature.blank?
+
+          normalized_tenant_slug = normalize_tenant_slug(tenant_slug, tenant_id)
+          user = Providers::StarkBankConfiguration.organization_user(tenant_slug: normalized_tenant_slug, workspace_id: nil)
+          event = ::StarkBank::Event.parse(content: raw_body, signature: signature, user: user)
+
+          Result.new(signature: signature, event: event)
+        rescue ::StarkCore::Error::InvalidSignatureError
+          raise Error.new(code: "webhook_signature_invalid", message: "Webhook signature is invalid.")
         end
 
         def raise_webhook_auth_not_configured!(provider_code)

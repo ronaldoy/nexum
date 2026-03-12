@@ -1,6 +1,7 @@
 Rails.application.routes.draw do
   resource :session, only: [ :new, :create, :destroy ]
   resources :passwords, param: :token, only: [ :new, :create, :edit, :update ]
+  resource :receiving_account, only: %i[create]
   get "health" => "health#health"
   get "ready" => "health#ready"
   post "security/csp_reports" => "csp_reports#create"
@@ -40,6 +41,7 @@ Rails.application.routes.draw do
     resources :counterparties, only: %i[index create] do
       post :link_hospital, on: :collection
     end
+    resources :payments, only: %i[index]
     resources :loans, only: %i[index show create] do
       patch :approve, on: :member
       patch :fund, on: :member

@@ -18,6 +18,13 @@ CREATE SCHEMA app;
 
 
 --
+-- Name: public; Type: SCHEMA; Schema: -; Owner: -
+--
+
+-- *not* creating schema, since initdb creates it
+
+
+--
 -- Name: citext; Type: EXTENSION; Schema: -; Owner: -
 --
 
@@ -649,7 +656,7 @@ CREATE TABLE public.anticipation_requests (
     CONSTRAINT anticipation_requests_net_amount_breakdown_check CHECK ((net_amount = (requested_amount - discount_amount))),
     CONSTRAINT anticipation_requests_net_amount_positive_check CHECK ((net_amount > (0)::numeric)),
     CONSTRAINT anticipation_requests_requested_amount_positive_check CHECK ((requested_amount > (0)::numeric)),
-    CONSTRAINT anticipation_requests_status_check CHECK (((status)::text = ANY ((ARRAY['REQUESTED'::character varying, 'PENDING_REVIEW'::character varying, 'APPROVED'::character varying, 'FUNDED'::character varying, 'SETTLED'::character varying, 'CANCELLED'::character varying, 'REJECTED'::character varying])::text[])))
+    CONSTRAINT anticipation_requests_status_check CHECK (((status)::text = ANY (ARRAY[('REQUESTED'::character varying)::text, ('PENDING_REVIEW'::character varying)::text, ('APPROVED'::character varying)::text, ('FUNDED'::character varying)::text, ('SETTLED'::character varying)::text, ('CANCELLED'::character varying)::text, ('REJECTED'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.anticipation_requests FORCE ROW LEVEL SECURITY;
@@ -681,10 +688,10 @@ CREATE TABLE public.anticipation_risk_decisions (
     details jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT anticipation_risk_decisions_action_check CHECK (((decision_action)::text = ANY ((ARRAY['ALLOW'::character varying, 'REVIEW'::character varying, 'BLOCK'::character varying])::text[]))),
+    CONSTRAINT anticipation_risk_decisions_action_check CHECK (((decision_action)::text = ANY (ARRAY[('ALLOW'::character varying)::text, ('REVIEW'::character varying)::text, ('BLOCK'::character varying)::text]))),
     CONSTRAINT anticipation_risk_decisions_net_amount_positive_check CHECK ((net_amount > (0)::numeric)),
     CONSTRAINT anticipation_risk_decisions_requested_amount_positive_check CHECK ((requested_amount > (0)::numeric)),
-    CONSTRAINT anticipation_risk_decisions_stage_check CHECK (((stage)::text = ANY ((ARRAY['CREATE'::character varying, 'CONFIRM'::character varying])::text[])))
+    CONSTRAINT anticipation_risk_decisions_stage_check CHECK (((stage)::text = ANY (ARRAY[('CREATE'::character varying)::text, ('CONFIRM'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.anticipation_risk_decisions FORCE ROW LEVEL SECURITY;
@@ -709,7 +716,7 @@ CREATE TABLE public.anticipation_risk_rule_events (
     payload jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    CONSTRAINT anticipation_risk_rule_events_event_type_check CHECK (((event_type)::text = ANY ((ARRAY['RULE_CREATED'::character varying, 'RULE_UPDATED'::character varying, 'RULE_ACTIVATED'::character varying, 'RULE_DEACTIVATED'::character varying])::text[])))
+    CONSTRAINT anticipation_risk_rule_events_event_type_check CHECK (((event_type)::text = ANY (ARRAY[('RULE_CREATED'::character varying)::text, ('RULE_UPDATED'::character varying)::text, ('RULE_ACTIVATED'::character varying)::text, ('RULE_DEACTIVATED'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.anticipation_risk_rule_events FORCE ROW LEVEL SECURITY;
@@ -744,7 +751,7 @@ CREATE TABLE public.anticipation_risk_rules (
     near_limit_attempts_max_count integer,
     near_limit_ratio numeric(8,6),
     CONSTRAINT anticipation_risk_rules_daily_amount_positive_check CHECK (((max_daily_requested_amount IS NULL) OR (max_daily_requested_amount > (0)::numeric))),
-    CONSTRAINT anticipation_risk_rules_decision_check CHECK (((decision)::text = ANY ((ARRAY['ALLOW'::character varying, 'REVIEW'::character varying, 'BLOCK'::character varying])::text[]))),
+    CONSTRAINT anticipation_risk_rules_decision_check CHECK (((decision)::text = ANY (ARRAY[('ALLOW'::character varying)::text, ('REVIEW'::character varying)::text, ('BLOCK'::character varying)::text]))),
     CONSTRAINT anticipation_risk_rules_effective_window_check CHECK (((effective_until IS NULL) OR (effective_from IS NULL) OR (effective_until >= effective_from))),
     CONSTRAINT anticipation_risk_rules_near_limit_count_positive_check CHECK (((near_limit_attempts_max_count IS NULL) OR (near_limit_attempts_max_count > 0))),
     CONSTRAINT anticipation_risk_rules_near_limit_ratio_check CHECK (((near_limit_ratio IS NULL) OR ((near_limit_ratio > (0)::numeric) AND (near_limit_ratio <= (1)::numeric)))),
@@ -759,7 +766,7 @@ CREATE TABLE public.anticipation_risk_rules (
     CONSTRAINT anticipation_risk_rules_requests_per_minute_positive_check CHECK (((max_requests_per_minute IS NULL) OR (max_requests_per_minute > 0))),
     CONSTRAINT anticipation_risk_rules_requires_any_limit_check CHECK (((max_single_request_amount IS NOT NULL) OR (max_daily_requested_amount IS NOT NULL) OR (max_outstanding_exposure_amount IS NOT NULL) OR (max_open_requests_count IS NOT NULL) OR (max_requests_per_minute IS NOT NULL) OR (max_requests_per_hour IS NOT NULL) OR (pair_spike_multiplier IS NOT NULL) OR (near_limit_attempts_window_minutes IS NOT NULL))),
     CONSTRAINT anticipation_risk_rules_scope_party_check CHECK (((((scope_type)::text = 'TENANT_DEFAULT'::text) AND (scope_party_id IS NULL)) OR (((scope_type)::text <> 'TENANT_DEFAULT'::text) AND (scope_party_id IS NOT NULL)))),
-    CONSTRAINT anticipation_risk_rules_scope_type_check CHECK (((scope_type)::text = ANY ((ARRAY['TENANT_DEFAULT'::character varying, 'PHYSICIAN_PARTY'::character varying, 'CNPJ_PARTY'::character varying, 'HOSPITAL_PARTY'::character varying])::text[]))),
+    CONSTRAINT anticipation_risk_rules_scope_type_check CHECK (((scope_type)::text = ANY (ARRAY[('TENANT_DEFAULT'::character varying)::text, ('PHYSICIAN_PARTY'::character varying)::text, ('CNPJ_PARTY'::character varying)::text, ('HOSPITAL_PARTY'::character varying)::text]))),
     CONSTRAINT anticipation_risk_rules_single_amount_positive_check CHECK (((max_single_request_amount IS NULL) OR (max_single_request_amount > (0)::numeric)))
 );
 
@@ -936,7 +943,7 @@ CREATE TABLE public.documents (
     CONSTRAINT documents_admin_import_metadata_check CHECK ((((signature_method)::text <> 'ADMIN_IMPORTED_EVIDENCE'::text) OR (NULLIF(btrim(COALESCE((metadata ->> 'imported_by_party_id'::text), ''::text)), ''::text) IS NOT NULL))),
     CONSTRAINT documents_own_platform_confirmation_metadata_check CHECK ((((signature_method)::text <> 'OWN_PLATFORM_CONFIRMATION'::text) OR ((NULLIF(btrim(COALESCE((metadata ->> 'provider_envelope_id'::text), ''::text)), ''::text) IS NOT NULL) AND (NULLIF(btrim(COALESCE((metadata ->> 'email_challenge_id'::text), ''::text)), ''::text) IS NOT NULL) AND (NULLIF(btrim(COALESCE((metadata ->> 'whatsapp_challenge_id'::text), ''::text)), ''::text) IS NOT NULL)))),
     CONSTRAINT documents_sha256_format_check CHECK (((sha256)::text ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT documents_signature_method_check CHECK (((signature_method)::text = ANY ((ARRAY['OWN_PLATFORM_CONFIRMATION'::character varying, 'ADMIN_IMPORTED_EVIDENCE'::character varying])::text[]))),
+    CONSTRAINT documents_signature_method_check CHECK (((signature_method)::text = ANY (ARRAY[('OWN_PLATFORM_CONFIRMATION'::character varying)::text, ('ADMIN_IMPORTED_EVIDENCE'::character varying)::text]))),
     CONSTRAINT documents_status_check CHECK (((status)::text = ANY (ARRAY[('SIGNED'::character varying)::text, ('REVOKED'::character varying)::text, ('SUPERSEDED'::character varying)::text]))),
     CONSTRAINT documents_storage_key_present_check CHECK ((btrim((storage_key)::text) <> ''::text))
 );
@@ -962,11 +969,42 @@ CREATE TABLE public.escrow_accounts (
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
     CONSTRAINT escrow_accounts_account_type_check CHECK (((account_type)::text = 'ESCROW'::text)),
-    CONSTRAINT escrow_accounts_provider_check CHECK (((provider)::text = ANY ((ARRAY['QITECH'::character varying, 'STARKBANK'::character varying])::text[]))),
-    CONSTRAINT escrow_accounts_status_check CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'ACTIVE'::character varying, 'REJECTED'::character varying, 'FAILED'::character varying, 'CLOSED'::character varying])::text[])))
+    CONSTRAINT escrow_accounts_provider_check CHECK (((provider)::text = ANY (ARRAY[('QITECH'::character varying)::text, ('STARKBANK'::character varying)::text]))),
+    CONSTRAINT escrow_accounts_status_check CHECK (((status)::text = ANY (ARRAY[('PENDING'::character varying)::text, ('ACTIVE'::character varying)::text, ('REJECTED'::character varying)::text, ('FAILED'::character varying)::text, ('CLOSED'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.escrow_accounts FORCE ROW LEVEL SECURITY;
+
+
+--
+-- Name: escrow_payout_batches; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.escrow_payout_batches (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    provider character varying NOT NULL,
+    status character varying DEFAULT 'OPEN'::character varying NOT NULL,
+    source_provider_account_id character varying NOT NULL,
+    risk_limit_amount numeric(18,2) NOT NULL,
+    balance_snapshot_amount numeric(18,2) NOT NULL,
+    reserved_amount numeric(18,2) DEFAULT 0.0 NOT NULL,
+    dispatched_amount numeric(18,2) DEFAULT 0.0 NOT NULL,
+    fee_amount numeric(18,2) DEFAULT 0.0 NOT NULL,
+    started_at timestamp(6) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    closed_at timestamp(6) without time zone,
+    last_polled_at timestamp(6) without time zone,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT escrow_payout_batches_dispatch_limit_check CHECK (((reserved_amount <= risk_limit_amount) AND (dispatched_amount <= risk_limit_amount))),
+    CONSTRAINT escrow_payout_batches_non_negative_amounts_check CHECK (((balance_snapshot_amount >= (0)::numeric) AND (reserved_amount >= (0)::numeric) AND (dispatched_amount >= (0)::numeric) AND (fee_amount >= (0)::numeric))),
+    CONSTRAINT escrow_payout_batches_provider_check CHECK (((provider)::text = ANY ((ARRAY['QITECH'::character varying, 'STARKBANK'::character varying])::text[]))),
+    CONSTRAINT escrow_payout_batches_risk_limit_positive_check CHECK ((risk_limit_amount > (0)::numeric)),
+    CONSTRAINT escrow_payout_batches_status_check CHECK (((status)::text = ANY ((ARRAY['OPEN'::character varying, 'CLOSED'::character varying, 'FAILED'::character varying])::text[])))
+);
+
+ALTER TABLE ONLY public.escrow_payout_batches FORCE ROW LEVEL SECURITY;
 
 
 --
@@ -993,12 +1031,22 @@ CREATE TABLE public.escrow_payouts (
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
     receivable_payment_settlement_id uuid,
+    escrow_payout_batch_id uuid,
+    provider_status character varying,
+    provider_fee_amount numeric(18,2) DEFAULT 0.0 NOT NULL,
+    provider_fee_currency character varying(3) DEFAULT 'BRL'::character varying NOT NULL,
+    provider_source_account_id character varying,
+    provider_destination_account_id character varying,
+    provider_end_to_end_id character varying,
+    confirmed_at timestamp(6) without time zone,
     CONSTRAINT escrow_payouts_amount_positive_check CHECK ((amount > (0)::numeric)),
     CONSTRAINT escrow_payouts_currency_brl_check CHECK (((currency)::text = 'BRL'::text)),
     CONSTRAINT escrow_payouts_idempotency_key_present_check CHECK ((btrim((idempotency_key)::text) <> ''::text)),
-    CONSTRAINT escrow_payouts_provider_check CHECK (((provider)::text = ANY ((ARRAY['QITECH'::character varying, 'STARKBANK'::character varying])::text[]))),
+    CONSTRAINT escrow_payouts_provider_check CHECK (((provider)::text = ANY (ARRAY[('QITECH'::character varying)::text, ('STARKBANK'::character varying)::text]))),
+    CONSTRAINT escrow_payouts_provider_fee_amount_non_negative_check CHECK ((provider_fee_amount >= (0)::numeric)),
+    CONSTRAINT escrow_payouts_provider_fee_currency_brl_check CHECK (((provider_fee_currency)::text = 'BRL'::text)),
     CONSTRAINT escrow_payouts_source_reference_check CHECK (((anticipation_request_id IS NOT NULL) OR (receivable_payment_settlement_id IS NOT NULL))),
-    CONSTRAINT escrow_payouts_status_check CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying])::text[])))
+    CONSTRAINT escrow_payouts_status_check CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'PROCESSING'::character varying, 'SENT'::character varying, 'FAILED'::character varying])::text[])))
 );
 
 ALTER TABLE ONLY public.escrow_payouts FORCE ROW LEVEL SECURITY;
@@ -1030,10 +1078,10 @@ CREATE TABLE public.fidc_operations (
     CONSTRAINT fidc_operations_amount_positive_check CHECK ((amount > (0)::numeric)),
     CONSTRAINT fidc_operations_currency_check CHECK (((currency)::text = 'BRL'::text)),
     CONSTRAINT fidc_operations_idempotency_key_present_check CHECK ((btrim((idempotency_key)::text) <> ''::text)),
-    CONSTRAINT fidc_operations_operation_type_check CHECK (((operation_type)::text = ANY ((ARRAY['FUNDING_REQUEST'::character varying, 'SETTLEMENT_REPORT'::character varying])::text[]))),
-    CONSTRAINT fidc_operations_provider_check CHECK (((provider)::text = ANY ((ARRAY['MOCK'::character varying, 'WEBHOOK'::character varying])::text[]))),
+    CONSTRAINT fidc_operations_operation_type_check CHECK (((operation_type)::text = ANY (ARRAY[('FUNDING_REQUEST'::character varying)::text, ('SETTLEMENT_REPORT'::character varying)::text]))),
+    CONSTRAINT fidc_operations_provider_check CHECK (((provider)::text = ANY (ARRAY[('MOCK'::character varying)::text, ('WEBHOOK'::character varying)::text]))),
     CONSTRAINT fidc_operations_single_source_reference_check CHECK ((((anticipation_request_id IS NOT NULL) AND (receivable_payment_settlement_id IS NULL)) OR ((anticipation_request_id IS NULL) AND (receivable_payment_settlement_id IS NOT NULL)))),
-    CONSTRAINT fidc_operations_status_check CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying])::text[])))
+    CONSTRAINT fidc_operations_status_check CHECK (((status)::text = ANY (ARRAY[('PENDING'::character varying)::text, ('SENT'::character varying)::text, ('FAILED'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.fidc_operations FORCE ROW LEVEL SECURITY;
@@ -1220,7 +1268,7 @@ CREATE TABLE public.outbox_dispatch_attempts (
     created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
     CONSTRAINT outbox_dispatch_attempts_attempt_number_check CHECK ((attempt_number > 0)),
-    CONSTRAINT outbox_dispatch_attempts_status_check CHECK (((status)::text = ANY ((ARRAY['SENT'::character varying, 'RETRY_SCHEDULED'::character varying, 'DEAD_LETTER'::character varying])::text[])))
+    CONSTRAINT outbox_dispatch_attempts_status_check CHECK (((status)::text = ANY (ARRAY[('SENT'::character varying)::text, ('RETRY_SCHEDULED'::character varying)::text, ('DEAD_LETTER'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.outbox_dispatch_attempts FORCE ROW LEVEL SECURITY;
@@ -1427,8 +1475,8 @@ CREATE TABLE public.provider_webhook_receipts (
     CONSTRAINT provider_webhook_receipts_event_id_present_check CHECK ((btrim((provider_event_id)::text) <> ''::text)),
     CONSTRAINT provider_webhook_receipts_failed_error_details_check CHECK ((((status)::text <> 'FAILED'::text) OR ((NULLIF(btrim((COALESCE(error_code, ''::character varying))::text), ''::text) IS NOT NULL) AND (NULLIF(btrim((COALESCE(error_message, ''::character varying))::text), ''::text) IS NOT NULL)))),
     CONSTRAINT provider_webhook_receipts_payload_sha256_check CHECK (((payload_sha256)::text ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT provider_webhook_receipts_provider_check CHECK (((provider)::text = ANY ((ARRAY['QITECH'::character varying, 'STARKBANK'::character varying])::text[]))),
-    CONSTRAINT provider_webhook_receipts_status_check CHECK (((status)::text = ANY ((ARRAY['PROCESSED'::character varying, 'IGNORED'::character varying, 'FAILED'::character varying])::text[])))
+    CONSTRAINT provider_webhook_receipts_provider_check CHECK (((provider)::text = ANY (ARRAY[('QITECH'::character varying)::text, ('STARKBANK'::character varying)::text]))),
+    CONSTRAINT provider_webhook_receipts_status_check CHECK (((status)::text = ANY (ARRAY[('PROCESSED'::character varying)::text, ('IGNORED'::character varying)::text, ('FAILED'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.provider_webhook_receipts FORCE ROW LEVEL SECURITY;
@@ -1599,6 +1647,37 @@ ALTER TABLE ONLY public.receivables FORCE ROW LEVEL SECURITY;
 
 
 --
+-- Name: receiving_accounts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.receiving_accounts (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid NOT NULL,
+    party_id uuid NOT NULL,
+    payment_rail character varying DEFAULT 'PIX'::character varying NOT NULL,
+    status character varying DEFAULT 'ACTIVE'::character varying NOT NULL,
+    "primary" boolean DEFAULT true NOT NULL,
+    bank_code character varying NOT NULL,
+    branch_code character varying NOT NULL,
+    account_number character varying NOT NULL,
+    account_type character varying DEFAULT 'checking'::character varying NOT NULL,
+    holder_name character varying NOT NULL,
+    holder_document_number character varying NOT NULL,
+    account_fingerprint character varying NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT receiving_accounts_account_type_check CHECK (((account_type)::text = ANY ((ARRAY['checking'::character varying, 'savings'::character varying, 'salary'::character varying, 'payment'::character varying])::text[]))),
+    CONSTRAINT receiving_accounts_bank_code_ispb_check CHECK (((bank_code)::text ~ '^[0-9]{8}$'::text)),
+    CONSTRAINT receiving_accounts_fingerprint_check CHECK (((account_fingerprint)::text ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT receiving_accounts_payment_rail_pix_check CHECK (((payment_rail)::text = 'PIX'::text)),
+    CONSTRAINT receiving_accounts_status_check CHECK (((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'INACTIVE'::character varying])::text[])))
+);
+
+ALTER TABLE ONLY public.receiving_accounts FORCE ROW LEVEL SECURITY;
+
+
+--
 -- Name: reconciliation_exceptions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1626,9 +1705,9 @@ CREATE TABLE public.reconciliation_exceptions (
     CONSTRAINT reconciliation_exceptions_message_present_check CHECK ((btrim((message)::text) <> ''::text)),
     CONSTRAINT reconciliation_exceptions_occurrences_count_positive_check CHECK ((occurrences_count > 0)),
     CONSTRAINT reconciliation_exceptions_payload_sha256_check CHECK (((payload_sha256 IS NULL) OR ((payload_sha256)::text ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT reconciliation_exceptions_provider_check CHECK (((provider)::text = ANY ((ARRAY['QITECH'::character varying, 'STARKBANK'::character varying])::text[]))),
+    CONSTRAINT reconciliation_exceptions_provider_check CHECK (((provider)::text = ANY (ARRAY[('QITECH'::character varying)::text, ('STARKBANK'::character varying)::text]))),
     CONSTRAINT reconciliation_exceptions_source_check CHECK (((source)::text = 'ESCROW_WEBHOOK'::text)),
-    CONSTRAINT reconciliation_exceptions_status_check CHECK (((status)::text = ANY ((ARRAY['OPEN'::character varying, 'RESOLVED'::character varying])::text[])))
+    CONSTRAINT reconciliation_exceptions_status_check CHECK (((status)::text = ANY (ARRAY[('OPEN'::character varying)::text, ('RESOLVED'::character varying)::text])))
 );
 
 ALTER TABLE ONLY public.reconciliation_exceptions FORCE ROW LEVEL SECURITY;
@@ -1943,6 +2022,14 @@ ALTER TABLE ONLY public.escrow_accounts
 
 
 --
+-- Name: escrow_payout_batches escrow_payout_batches_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.escrow_payout_batches
+    ADD CONSTRAINT escrow_payout_batches_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: escrow_payouts escrow_payouts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2127,6 +2214,14 @@ ALTER TABLE ONLY public.receivables
 
 
 --
+-- Name: receiving_accounts receiving_accounts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.receiving_accounts
+    ADD CONSTRAINT receiving_accounts_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: reconciliation_exceptions reconciliation_exceptions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2215,7 +2310,7 @@ CREATE UNIQUE INDEX idx_ase_unique_request_per_payment ON public.anticipation_se
 -- Name: idx_auth_challenges_active_uniqueness_lookup; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX idx_auth_challenges_active_uniqueness_lookup ON public.auth_challenges USING btree (tenant_id, actor_party_id, purpose, delivery_channel, target_type, target_id) WHERE ((consumed_at IS NULL) AND ((status)::text = ANY ((ARRAY['PENDING'::character varying, 'VERIFIED'::character varying])::text[])));
+CREATE UNIQUE INDEX idx_auth_challenges_active_uniqueness_lookup ON public.auth_challenges USING btree (tenant_id, actor_party_id, purpose, delivery_channel, target_type, target_id) WHERE ((consumed_at IS NULL) AND ((status)::text = ANY (ARRAY[('PENDING'::character varying)::text, ('VERIFIED'::character varying)::text])));
 
 
 --
@@ -2223,6 +2318,27 @@ CREATE UNIQUE INDEX idx_auth_challenges_active_uniqueness_lookup ON public.auth_
 --
 
 CREATE UNIQUE INDEX idx_documents_tenant_id_id ON public.documents USING btree (tenant_id, id);
+
+
+--
+-- Name: idx_ep_batches_tenant_provider_source_started; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ep_batches_tenant_provider_source_started ON public.escrow_payout_batches USING btree (tenant_id, provider, source_provider_account_id, started_at);
+
+
+--
+-- Name: idx_ep_batches_tenant_provider_status_started; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ep_batches_tenant_provider_status_started ON public.escrow_payout_batches USING btree (tenant_id, provider, status, started_at);
+
+
+--
+-- Name: idx_escrow_payout_batches_tenant_id_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_escrow_payout_batches_tenant_id_id ON public.escrow_payout_batches USING btree (tenant_id, id);
 
 
 --
@@ -2412,6 +2528,13 @@ CREATE UNIQUE INDEX idx_receivable_allocations_tenant_id_id ON public.receivable
 --
 
 CREATE UNIQUE INDEX idx_receivables_tenant_id_id ON public.receivables USING btree (tenant_id, id);
+
+
+--
+-- Name: idx_receiving_accounts_tenant_id_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_receiving_accounts_tenant_id_id ON public.receiving_accounts USING btree (tenant_id, id);
 
 
 --
@@ -2919,6 +3042,13 @@ CREATE INDEX index_escrow_accounts_on_tenant_status ON public.escrow_accounts US
 
 
 --
+-- Name: index_escrow_payout_batches_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_escrow_payout_batches_on_tenant_id ON public.escrow_payout_batches USING btree (tenant_id);
+
+
+--
 -- Name: index_escrow_payouts_on_anticipation_request_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2930,6 +3060,13 @@ CREATE INDEX index_escrow_payouts_on_anticipation_request_id ON public.escrow_pa
 --
 
 CREATE INDEX index_escrow_payouts_on_escrow_account_id ON public.escrow_payouts USING btree (escrow_account_id);
+
+
+--
+-- Name: index_escrow_payouts_on_escrow_payout_batch_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_escrow_payouts_on_escrow_payout_batch_id ON public.escrow_payouts USING btree (escrow_payout_batch_id);
 
 
 --
@@ -2968,6 +3105,20 @@ CREATE UNIQUE INDEX index_escrow_payouts_on_tenant_idempotency_key ON public.esc
 
 
 --
+-- Name: index_escrow_payouts_on_tenant_provider_end_to_end; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_escrow_payouts_on_tenant_provider_end_to_end ON public.escrow_payouts USING btree (tenant_id, provider, provider_end_to_end_id) WHERE (provider_end_to_end_id IS NOT NULL);
+
+
+--
+-- Name: index_escrow_payouts_on_tenant_provider_provider_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_escrow_payouts_on_tenant_provider_provider_status ON public.escrow_payouts USING btree (tenant_id, provider, provider_status);
+
+
+--
 -- Name: index_escrow_payouts_on_tenant_provider_transfer; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2979,6 +3130,13 @@ CREATE UNIQUE INDEX index_escrow_payouts_on_tenant_provider_transfer ON public.e
 --
 
 CREATE UNIQUE INDEX index_escrow_payouts_on_tenant_settlement_party ON public.escrow_payouts USING btree (tenant_id, receivable_payment_settlement_id, party_id) WHERE (receivable_payment_settlement_id IS NOT NULL);
+
+
+--
+-- Name: index_escrow_payouts_on_tenant_status_confirmed_requested_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_escrow_payouts_on_tenant_status_confirmed_requested_at ON public.escrow_payouts USING btree (tenant_id, status, confirmed_at, requested_at);
 
 
 --
@@ -3584,6 +3742,41 @@ CREATE INDEX index_receivables_on_tenant_status_due_at ON public.receivables USI
 
 
 --
+-- Name: index_receiving_accounts_on_party_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_receiving_accounts_on_party_id ON public.receiving_accounts USING btree (party_id);
+
+
+--
+-- Name: index_receiving_accounts_on_tenant_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_receiving_accounts_on_tenant_id ON public.receiving_accounts USING btree (tenant_id);
+
+
+--
+-- Name: index_receiving_accounts_on_tenant_party_fingerprint; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_receiving_accounts_on_tenant_party_fingerprint ON public.receiving_accounts USING btree (tenant_id, party_id, account_fingerprint);
+
+
+--
+-- Name: index_receiving_accounts_on_tenant_party_primary_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_receiving_accounts_on_tenant_party_primary_active ON public.receiving_accounts USING btree (tenant_id, party_id) WHERE (((status)::text = 'ACTIVE'::text) AND ("primary" = true));
+
+
+--
+-- Name: index_receiving_accounts_on_tenant_status_updated_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_receiving_accounts_on_tenant_status_updated_at ON public.receiving_accounts USING btree (tenant_id, status, updated_at);
+
+
+--
 -- Name: index_reconciliation_exceptions_on_resolved_by_party_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3965,6 +4158,14 @@ ALTER TABLE ONLY public.documents
 
 
 --
+-- Name: escrow_payouts fk_escrow_payouts_tenant_batch; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.escrow_payouts
+    ADD CONSTRAINT fk_escrow_payouts_tenant_batch FOREIGN KEY (tenant_id, escrow_payout_batch_id) REFERENCES public.escrow_payout_batches(tenant_id, id);
+
+
+--
 -- Name: ledger_entries fk_ledger_entries_ledger_transactions; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4186,6 +4387,14 @@ ALTER TABLE ONLY public.kyc_events
 
 ALTER TABLE ONLY public.anticipation_request_events
     ADD CONSTRAINT fk_rails_273612e857 FOREIGN KEY (actor_party_id) REFERENCES public.parties(id);
+
+
+--
+-- Name: receiving_accounts fk_rails_2a7ce4ab36; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.receiving_accounts
+    ADD CONSTRAINT fk_rails_2a7ce4ab36 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 
 --
@@ -4517,6 +4726,14 @@ ALTER TABLE ONLY public.physicians
 
 
 --
+-- Name: receiving_accounts fk_rails_8e1507fc14; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.receiving_accounts
+    ADD CONSTRAINT fk_rails_8e1507fc14 FOREIGN KEY (party_id) REFERENCES public.parties(id);
+
+
+--
 -- Name: outbox_dispatch_attempts fk_rails_8f3b2f527d; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4586,6 +4803,14 @@ ALTER TABLE ONLY public.webauthn_credentials
 
 ALTER TABLE ONLY public.active_storage_variant_records
     ADD CONSTRAINT fk_rails_993965df05 FOREIGN KEY (blob_id) REFERENCES public.active_storage_blobs(id);
+
+
+--
+-- Name: escrow_payout_batches fk_rails_9a9a401f90; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.escrow_payout_batches
+    ADD CONSTRAINT fk_rails_9a9a401f90 FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 
 --
@@ -5013,6 +5238,14 @@ ALTER TABLE ONLY public.receivable_payment_settlements
 
 
 --
+-- Name: receiving_accounts fk_receiving_accounts_tenant_party; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.receiving_accounts
+    ADD CONSTRAINT fk_receiving_accounts_tenant_party FOREIGN KEY (tenant_id, party_id) REFERENCES public.parties(tenant_id, id);
+
+
+--
 -- Name: action_ip_logs; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -5226,6 +5459,19 @@ ALTER TABLE public.escrow_accounts ENABLE ROW LEVEL SECURITY;
 --
 
 CREATE POLICY escrow_accounts_tenant_policy ON public.escrow_accounts USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
+-- Name: escrow_payout_batches; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.escrow_payout_batches ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: escrow_payout_batches escrow_payout_batches_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY escrow_payout_batches_tenant_policy ON public.escrow_payout_batches USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
 
 
 --
@@ -5528,6 +5774,19 @@ CREATE POLICY receivables_tenant_policy ON public.receivables USING ((tenant_id 
 
 
 --
+-- Name: receiving_accounts; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.receiving_accounts ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: receiving_accounts receiving_accounts_tenant_policy; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY receiving_accounts_tenant_policy ON public.receiving_accounts USING ((tenant_id = public.app_current_tenant_id())) WITH CHECK ((tenant_id = public.app_current_tenant_id()));
+
+
+--
 -- Name: reconciliation_exceptions; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -5639,6 +5898,7 @@ CREATE POLICY webauthn_credentials_tenant_policy ON public.webauthn_credentials 
 SET search_path TO "$user", public;
 
 INSERT INTO "schema_migrations" (version) VALUES
+('20260312100000'),
 ('20260311143000'),
 ('20260311130000'),
 ('20260311124000'),

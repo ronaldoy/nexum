@@ -4,6 +4,7 @@ module Integrations
       EVENT_TYPE = "ANTICIPATION_ESCROW_PAYOUT_REQUESTED".freeze
       TARGET_TYPE = "EscrowPayout".freeze
       PAYABLE_PARTY_KINDS = %w[SUPPLIER PHYSICIAN_PF LEGAL_ENTITY_PJ].freeze
+      PENDING_RETRY_ERROR_CODES = %w[starkbank_insufficient_dispatch_budget].freeze
       DispatchInputs = Struct.new(
         :payload,
         :source,
@@ -27,7 +28,7 @@ module Integrations
           tenant_id: outbox_event.tenant_id,
           payout_idempotency_key: inputs.payout_idempotency_key
         )
-        return payout if payout_sent?(payout)
+        return payout if payout_dispatched?(payout)
 
         dispatch_payout!(
           outbox_event: outbox_event,
@@ -92,7 +93,8 @@ module Integrations
           payout_result: payout_result,
         )
 
-        ensure_payout_sent!(persisted)
+        ensure_payout_dispatched!(persisted)
+        schedule_status_sync!(payout: persisted) if persisted.status == "PROCESSING"
         log_dispatch_success!(
           outbox_event: outbox_event,
           payout: persisted,
@@ -165,11 +167,12 @@ module Integrations
 
       def resolve_provider_context(tenant_id:, payload:)
         provider_code = ProviderConfig.normalize_provider(
-          payload["provider"].presence || ProviderConfig.default_provider(tenant_id: tenant_id)
+          payload["provider"].presence || ProviderConfig.default_provider(tenant_id: tenant_id),
+          tenant_id: tenant_id
         )
         {
           provider_code: provider_code,
-          provider: ProviderRegistry.fetch(provider_code: provider_code)
+          provider: ProviderRegistry.fetch(provider_code: provider_code, tenant_id: tenant_id)
         }
       end
 
@@ -188,8 +191,8 @@ module Integrations
         )
       end
 
-      def payout_sent?(payout)
-        payout.persisted? && payout.status == "SENT"
+      def payout_dispatched?(payout)
+        payout.persisted? && payout.status.in?(%w[PROCESSING SENT])
       end
 
       def persist_pending_payout!(payout:, outbox_event:, inputs:, escrow_account:)
@@ -220,12 +223,12 @@ module Integrations
         payload["provider_request_control_key"].to_s.presence || payout_idempotency_key
       end
 
-      def ensure_payout_sent!(payout)
-        return if payout.status == "SENT"
+      def ensure_payout_dispatched!(payout)
+        return if payout.status.in?(%w[PROCESSING SENT])
 
         raise ValidationError.new(
           code: "escrow_payout_not_sent",
-          message: "Escrow payout did not reach a sent state.",
+          message: "Escrow payout did not reach a dispatched state.",
           details: { status: payout.status }
         )
       end
@@ -244,6 +247,9 @@ module Integrations
             "amount" => inputs.amount.to_s("F"),
             "currency" => "BRL",
             "provider_transfer_id" => payout.provider_transfer_id,
+            "provider_status" => payout.provider_status,
+            "provider_fee_amount" => payout.provider_fee_amount.to_d.to_s("F"),
+            "batch_id" => payout.escrow_payout_batch_id,
             "idempotency_key" => payout.idempotency_key
           }
         )
@@ -253,7 +259,7 @@ module Integrations
         raise ValidationError.new(code: "escrow_payout_conflict", message: "Escrow payout idempotency conflict.") if payout_idempotency_key.blank?
 
         existing = EscrowPayout.find_by!(tenant_id: tenant_id, idempotency_key: payout_idempotency_key)
-        return existing if existing.status == "SENT"
+        return existing if existing.status.in?(%w[PROCESSING SENT])
 
         raise ValidationError.new(
           code: "escrow_payout_conflict",
@@ -346,6 +352,7 @@ module Integrations
 
       def persist_payout_success!(payout:, outbox_event:, inputs:, escrow_account:, payout_result:)
         now = Time.current
+        normalized_status = payout_result.status.to_s.upcase
 
         payout.assign_attributes(
           source_reference_attributes(
@@ -355,13 +362,21 @@ module Integrations
             tenant_id: outbox_event.tenant_id,
             party_id: inputs.recipient_party.id,
             escrow_account_id: escrow_account.id,
+            escrow_payout_batch_id: payout_result.batch_id,
             provider: inputs.provider_code,
-            status: payout_result.status.to_s.upcase,
+            status: normalized_status,
             amount: inputs.amount,
             currency: "BRL",
             requested_at: payout.requested_at || now,
-            processed_at: payout_result.status.to_s.upcase == "SENT" ? now : nil,
+            processed_at: normalized_status.in?(%w[SENT FAILED]) ? now : payout.processed_at,
             provider_transfer_id: payout_result.provider_transfer_id,
+            provider_status: payout_result.provider_status.to_s.presence,
+            provider_fee_amount: payout_result.provider_fee_amount.to_d,
+            provider_fee_currency: payout_result.provider_fee_currency.to_s.presence || "BRL",
+            provider_source_account_id: payout_result.provider_source_account_id,
+            provider_destination_account_id: payout_result.provider_destination_account_id,
+            provider_end_to_end_id: payout_result.provider_end_to_end_id,
+            confirmed_at: payout_result.confirmed_at,
             last_error_code: nil,
             last_error_message: nil,
             metadata: merged_payout_metadata(
@@ -384,6 +399,7 @@ module Integrations
         provider_code = inputs&.provider_code
         amount = inputs&.amount || BigDecimal("0")
         payload = inputs&.payload || {}
+        pending_retry = retryable_pending_failure?(error)
 
         payout.assign_attributes(
           source_reference_attributes(
@@ -395,7 +411,7 @@ module Integrations
             provider: provider_code.to_s.presence || payout.provider || ProviderConfig::DEFAULT_PROVIDER,
             amount: amount.to_d.positive? ? amount : payout.amount,
             currency: "BRL",
-            status: "FAILED",
+            status: pending_retry ? "PENDING" : "FAILED",
             requested_at: payout.requested_at || Time.current,
             last_error_code: error.code,
             last_error_message: error.message.to_s.truncate(500),
@@ -458,6 +474,16 @@ module Integrations
           "outbox_event_id" => outbox_event.id,
           "payload" => payload
         }.merge(extra))
+      end
+
+      def retryable_pending_failure?(error)
+        PENDING_RETRY_ERROR_CODES.include?(error.code.to_s)
+      end
+
+      def schedule_status_sync!(payout:)
+        Integrations::Escrow::SyncPayoutStatusJob
+          .set(wait: 20.seconds)
+          .perform_later(tenant_id: payout.tenant_id, payout_id: payout.id)
       end
 
       def ensure_party_payable!(party)

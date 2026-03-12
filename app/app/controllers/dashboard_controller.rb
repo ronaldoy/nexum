@@ -36,6 +36,7 @@ class DashboardController < ApplicationController
   private
 
   def load_dashboard_collections
+    @receiving_account = current_receiving_account
     @receivables = scoped_receivables
       .includes(:receivable_kind, :debtor_party, :creditor_party, :beneficiary_party)
       .order(performed_at: :desc)
@@ -128,6 +129,15 @@ class DashboardController < ApplicationController
 
   def current_party_id
     Current.user&.party_id
+  end
+
+  def current_receiving_account
+    return nil if current_party_id.blank?
+
+    ReceivingAccount
+      .active
+      .primary_account
+      .find_by(tenant_id: current_tenant_id, party_id: current_party_id)
   end
 
   def scoped_receivables

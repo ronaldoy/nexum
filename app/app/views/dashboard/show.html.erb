@@ -38,6 +38,81 @@
     <% end %>
   </section>
 
+  <% if Current.user&.party.present? %>
+    <section class="two-column">
+      <article class="panel">
+        <header class="panel-header">
+          <h3>Conta recebedora PIX</h3>
+          <p>Os repasses operacionais e de liquidação sairão somente por PIX para a conta cadastrada da sua entidade.</p>
+        </header>
+
+        <div class="detail-grid">
+          <article class="detail-card">
+            <p class="detail-label">Titular</p>
+            <h4><%= Current.user.party.legal_name %></h4>
+            <p class="detail-meta"><%= Current.user.party.document_number %></p>
+          </article>
+          <article class="detail-card">
+            <p class="detail-label">Conta atual</p>
+            <h4><%= receiving_account_label(@receiving_account) %></h4>
+            <p class="detail-meta"><%= @receiving_account.present? ? status_label(@receiving_account.status) : "Atualize abaixo para habilitar os pagamentos." %></p>
+          </article>
+        </div>
+
+        <%= form_with url: receiving_account_path, scope: :receiving_account, class: "compact-form" do |form| %>
+          <div class="form-grid form-grid-2">
+            <div class="field">
+              <%= form.label :bank_code, "ISPB do banco" %>
+              <%= form.text_field :bank_code, value: @receiving_account&.bank_code, required: true, maxlength: 8, inputmode: "numeric", placeholder: "8 dígitos" %>
+              <p class="field-note">Use o ISPB de 8 dígitos para forçar o envio por PIX manual.</p>
+            </div>
+            <div class="field">
+              <%= form.label :account_type, "Tipo de conta" %>
+              <%= form.select :account_type, options_for_select([
+                ["Conta corrente", "checking"],
+                ["Conta poupança", "savings"],
+                ["Conta salário", "salary"],
+                ["Conta de pagamento", "payment"]
+              ], @receiving_account&.account_type || "checking"), {}, required: true %>
+            </div>
+            <div class="field">
+              <%= form.label :branch_code, "Agência" %>
+              <%= form.text_field :branch_code, value: @receiving_account&.branch_code, required: true, placeholder: "0001 ou 0001-9" %>
+            </div>
+            <div class="field">
+              <%= form.label :account_number, "Conta" %>
+              <%= form.text_field :account_number, value: @receiving_account&.account_number, required: true, placeholder: "123456-7" %>
+            </div>
+          </div>
+
+          <%= form.submit "Salvar conta PIX", class: "button button-primary" %>
+        <% end %>
+      </article>
+
+      <article class="panel">
+        <header class="panel-header">
+          <h3>Regras do fluxo de pagamento</h3>
+          <p>Os pagamentos respeitam limite operacional por lote, funding disponível e confirmação final do PIX.</p>
+        </header>
+
+        <ul class="activity-list">
+          <li class="activity-item">
+            <p class="activity-title"><strong>Rail único</strong></p>
+            <p class="activity-body">Todo repasse sai por PIX com idempotência de ponta a ponta.</p>
+          </li>
+          <li class="activity-item">
+            <p class="activity-title"><strong>Conta por entidade</strong></p>
+            <p class="activity-body">Cada entidade opera com workspace dedicado na Stark e recebe o PIX final na conta bancária acima.</p>
+          </li>
+          <li class="activity-item">
+            <p class="activity-title"><strong>Confirmação e custo</strong></p>
+            <p class="activity-body">O sistema acompanha status de processamento, confirmação do PIX e taxa cobrada pelo provedor.</p>
+          </li>
+        </ul>
+      </article>
+    </section>
+  <% end %>
+
   <section class="panel">
     <header class="panel-header">
       <h3>Estágios documentados da operação</h3>

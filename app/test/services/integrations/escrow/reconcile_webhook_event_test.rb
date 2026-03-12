@@ -106,9 +106,52 @@ module Integrations
         end
       end
 
+      test "reconciles starkbank payout in processing state with fee and end-to-end id" do
+        with_environment(
+          "ESCROW_ENABLE_STARKBANK" => nil,
+          "STARKBANK_ORGANIZATION_ID" => nil,
+          "STARKBANK_ORGANIZATION_PRIVATE_KEY" => nil,
+          "STARKBANK_ORGANIZATION_ID__DEFAULT" => "organization-tenant",
+          "STARKBANK_ORGANIZATION_PRIVATE_KEY__DEFAULT" => "tenant-private-key"
+        ) do
+          with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "worker") do
+            bundle = create_payout_bundle!(suffix: "reconcile-stark", provider: "STARKBANK")
+            payout = bundle.fetch(:payout)
+
+            result = ReconcileWebhookEvent.new(
+              tenant_id: @tenant.id,
+              provider: "STARKBANK",
+              payload: {
+                "event_id" => "evt-reconcile-stark",
+                "request_control_key" => payout.idempotency_key,
+                "provider_end_to_end_id" => "E2E-STARK-123",
+                "status" => "PROCESSING",
+                "fee" => "2.45"
+              },
+              provider_event_id: "evt-reconcile-stark",
+              request_id: SecureRandom.uuid,
+              request_ip: "127.0.0.1",
+              user_agent: "test-suite",
+              endpoint_path: "/webhooks/escrow/starkbank/#{@tenant.slug}",
+              http_method: "POST"
+            ).call
+
+            payout.reload
+            assert_equal "PROCESSED", result.status
+            assert_equal payout.id, result.target_id
+            assert_equal "PROCESSING", payout.status
+            assert_equal "processing", payout.provider_status
+            assert_equal BigDecimal("2.45"), payout.provider_fee_amount.to_d
+            assert_equal "E2E-STARK-123", payout.provider_end_to_end_id
+            assert_nil payout.processed_at
+            assert_equal "evt-reconcile-stark", payout.metadata.dig("webhook_reconciliation", "provider_event_id")
+          end
+        end
+      end
+
       private
 
-      def create_payout_bundle!(suffix:)
+      def create_payout_bundle!(suffix:, provider: "QITECH")
         hospital = Party.create!(
           tenant: @tenant,
           kind: "HOSPITAL",
@@ -168,7 +211,7 @@ module Integrations
         escrow_account = EscrowAccount.create!(
           tenant: @tenant,
           party: supplier,
-          provider: "QITECH",
+          provider: provider,
           account_type: "ESCROW",
           status: "ACTIVE",
           provider_account_id: "account-#{suffix}",
@@ -180,7 +223,7 @@ module Integrations
           receivable_payment_settlement: settlement,
           party: supplier,
           escrow_account: escrow_account,
-          provider: "QITECH",
+          provider: provider,
           status: "PENDING",
           amount: "95.00",
           currency: "BRL",
@@ -199,6 +242,19 @@ module Integrations
           supplier: supplier,
           escrow_account: escrow_account
         }
+      end
+
+      def with_environment(overrides)
+        previous = {}
+        overrides.each do |key, value|
+          previous[key] = ENV[key]
+          value.nil? ? ENV.delete(key) : ENV[key] = value
+        end
+        yield
+      ensure
+        previous.each do |key, value|
+          value.nil? ? ENV.delete(key) : ENV[key] = value
+        end
       end
     end
   end

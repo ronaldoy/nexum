@@ -22,7 +22,8 @@ module Integrations
               tenant_slug: TENANT_SLUG
             )
 
-            assert_equal signature, result
+            assert_equal signature, result.signature
+            assert_nil result.event
           end
         end
 
@@ -58,7 +59,8 @@ module Integrations
               tenant_slug: TENANT_SLUG
             )
 
-            assert_equal "bearer", result
+            assert_equal "bearer", result.signature
+            assert_nil result.event
           end
         end
 
@@ -77,12 +79,84 @@ module Integrations
               tenant_slug: TENANT_SLUG
             )
 
-            assert_equal "bearer", result
+            assert_equal "bearer", result.signature
+            assert_nil result.event
+          end
+        end
+
+        test "accepts valid starkbank digital signature" do
+          event = Struct.new(:id).new("evt-stark-1")
+          organization_user = Object.new
+          parse_arguments = nil
+
+          with_environment(
+            starkbank_organization_id_env => "organization-123",
+            starkbank_organization_private_key_env => "private-key"
+          ) do
+            request = RequestDouble.new(headers: { "Digital-Signature" => "stark-signature" }, authorization: nil)
+
+            with_singleton_method_stub(Integrations::Escrow::Providers::StarkBankConfiguration, :organization_user, ->(**) { organization_user }) do
+              with_singleton_method_stub(::StarkBank::Event, :parse, ->(content:, signature:, user:) {
+                parse_arguments = { content: content, signature: signature, user: user }
+                event
+              }) do
+                result = AuthenticateRequest.new.call(
+                  provider: "STARKBANK",
+                  request: request,
+                  raw_body: '{"event_id":"evt-stark-1"}',
+                  tenant_slug: TENANT_SLUG
+                )
+
+                assert_equal "stark-signature", result.signature
+                assert_same event, result.event
+              end
+            end
+          end
+
+          assert_equal(
+            {
+              content: '{"event_id":"evt-stark-1"}',
+              signature: "stark-signature",
+              user: organization_user
+            },
+            parse_arguments
+          )
+        end
+
+        test "rejects invalid starkbank digital signature" do
+          invalid_signature_error = ::StarkCore::Error::InvalidSignatureError.new("invalid signature")
+
+          with_environment(
+            starkbank_organization_id_env => "organization-123",
+            starkbank_organization_private_key_env => "private-key"
+          ) do
+            request = RequestDouble.new(headers: { "Digital-Signature" => "bad-signature" }, authorization: nil)
+
+            with_singleton_method_stub(Integrations::Escrow::Providers::StarkBankConfiguration, :organization_user, ->(**) { Object.new }) do
+              with_singleton_method_stub(::StarkBank::Event, :parse, ->(content:, signature:, user:) {
+                raise invalid_signature_error
+              }) do
+                error = assert_raises(AuthenticateRequest::Error) do
+                  AuthenticateRequest.new.call(
+                    provider: "STARKBANK",
+                    request: request,
+                    raw_body: '{"event_id":"evt-stark-1"}',
+                    tenant_slug: TENANT_SLUG
+                  )
+                end
+
+                assert_equal "webhook_signature_invalid", error.code
+              end
+            end
           end
         end
 
         test "rejects starkbank while provider is disabled for v1" do
-          with_environment("ESCROW_ENABLE_STARKBANK" => "false") do
+          with_environment(
+            "ESCROW_ENABLE_STARKBANK" => "false",
+            starkbank_organization_id_env => nil,
+            starkbank_organization_private_key_env => nil
+          ) do
             request = RequestDouble.new(headers: {}, authorization: nil)
 
             error = assert_raises(Integrations::Escrow::UnsupportedProviderError) do
@@ -186,6 +260,14 @@ module Integrations
           "QITECH_WEBHOOK_ALLOW_INSECURE_TOKEN_AUTH__#{TENANT_SLUG.upcase}"
         end
 
+        def starkbank_organization_id_env
+          "STARKBANK_ORGANIZATION_ID__#{TENANT_SLUG.upcase}"
+        end
+
+        def starkbank_organization_private_key_env
+          "STARKBANK_ORGANIZATION_PRIVATE_KEY__#{TENANT_SLUG.upcase}"
+        end
+
         def with_environment(overrides)
           previous = {}
           overrides.each_key { |key| previous[key] = ENV[key] }
@@ -207,6 +289,17 @@ module Integrations
               ENV[key] = value
             end
           end
+        end
+
+        def with_singleton_method_stub(object, method_name, implementation)
+          singleton_class = class << object
+            self
+          end
+          original_method = singleton_class.instance_method(method_name)
+          singleton_class.define_method(method_name, implementation)
+          yield
+        ensure
+          singleton_class.define_method(method_name, original_method) if original_method
         end
       end
     end

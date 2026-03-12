@@ -5,8 +5,8 @@ module Integrations
     module ProviderRegistry
       module_function
 
-      def fetch(provider_code:)
-        normalized = ProviderConfig.normalize_provider(provider_code)
+      def fetch(provider_code:, tenant_id: nil, tenant_slug: nil)
+        normalized = ProviderConfig.normalize_provider(provider_code, tenant_id:, tenant_slug:)
 
         case normalized
         when "QITECH"

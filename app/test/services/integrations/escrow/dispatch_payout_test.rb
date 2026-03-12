@@ -3,9 +3,13 @@ require "test_helper"
 module Integrations
   module Escrow
     class DispatchPayoutTest < ActiveSupport::TestCase
+      include ActiveJob::TestHelper
+
       setup do
         @tenant = tenants(:default)
         @user = users(:one)
+        clear_enqueued_jobs
+        clear_performed_jobs
       end
 
       test "dispatches payout and persists escrow account and sent payout" do
@@ -178,9 +182,101 @@ module Integrations
         end
       end
 
+      test "persists processing payout and schedules a status sync" do
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "worker") do
+          bundle = create_supplier_bundle!("dispatch-payout-processing")
+          settlement = create_settlement!(
+            bundle: bundle,
+            suffix: "dispatch-payout-processing",
+            cnpj_amount: "0.00",
+            fidc_amount: "5.00",
+            beneficiary_amount: "95.00"
+          )
+          outbox_event = create_escrow_outbox_event!(
+            settlement: settlement,
+            recipient_party: bundle[:supplier],
+            idempotency_key: "idem-dispatch-payout-processing",
+            provider: "STARKBANK"
+          )
+
+          payout = nil
+          batch = EscrowPayoutBatch.create!(
+            tenant: @tenant,
+            provider: "STARKBANK",
+            status: "OPEN",
+            source_provider_account_id: "source-workspace-123",
+            risk_limit_amount: "100000.00",
+            balance_snapshot_amount: "100000.00",
+            reserved_amount: "0.00",
+            dispatched_amount: "0.00",
+            fee_amount: "0.00",
+            started_at: Time.current,
+            last_polled_at: Time.current,
+            metadata: {}
+          )
+
+          with_environment("ESCROW_ENABLE_STARKBANK" => "true") do
+            with_stubbed_provider(FakeProviderProcessing.new(batch_id: batch.id)) do
+              assert_difference("enqueued_jobs.size", 1) do
+                payout = Integrations::Escrow::DispatchPayout.new.call(outbox_event: outbox_event)
+              end
+            end
+          end
+
+          assert_equal "PROCESSING", payout.status
+          assert_equal "created", payout.provider_status
+          assert_equal BigDecimal("1.25"), payout.provider_fee_amount.to_d
+          assert_equal "source-workspace-123", payout.provider_source_account_id
+          assert_equal "destination-workspace-123", payout.provider_destination_account_id
+          assert_equal batch.id, payout.escrow_payout_batch_id
+          assert_nil payout.processed_at
+
+          enqueued_job = enqueued_jobs.last
+          assert_equal Integrations::Escrow::SyncPayoutStatusJob, enqueued_job[:job]
+          assert_equal @tenant.id, enqueued_job[:args].first["tenant_id"]
+          assert_equal payout.id, enqueued_job[:args].first["payout_id"]
+        end
+      end
+
+      test "keeps payout pending when starkbank dispatch budget is exhausted" do
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "worker") do
+          bundle = create_supplier_bundle!("dispatch-payout-budget")
+          settlement = create_settlement!(
+            bundle: bundle,
+            suffix: "dispatch-payout-budget",
+            cnpj_amount: "0.00",
+            fidc_amount: "5.00",
+            beneficiary_amount: "95.00"
+          )
+          outbox_event = create_escrow_outbox_event!(
+            settlement: settlement,
+            recipient_party: bundle[:supplier],
+            idempotency_key: "idem-dispatch-payout-budget",
+            provider: "STARKBANK"
+          )
+
+          error = nil
+
+          with_environment("ESCROW_ENABLE_STARKBANK" => "true") do
+            with_stubbed_provider(FakeProviderInsufficientBudget.new) do
+              error = assert_raises(Integrations::Escrow::ValidationError) do
+                Integrations::Escrow::DispatchPayout.new.call(outbox_event: outbox_event)
+              end
+            end
+          end
+
+          assert_equal "starkbank_insufficient_dispatch_budget", error.code
+
+          payout = EscrowPayout.find_by!(tenant_id: @tenant.id, idempotency_key: "idem-dispatch-payout-budget")
+          assert_equal "PENDING", payout.status
+          assert_equal "starkbank_insufficient_dispatch_budget", payout.last_error_code
+          assert_equal "Dispatch budget exhausted.", payout.last_error_message
+        end
+      end
+
       private
 
-      def create_escrow_outbox_event!(settlement:, recipient_party:, idempotency_key:, amount: nil)
+      def create_escrow_outbox_event!(settlement:, recipient_party:, idempotency_key:, amount: nil, provider: "QITECH")
         payload_amount = amount || settlement.beneficiary_amount.to_d.to_s("F")
 
         OutboxEvent.create!(
@@ -196,7 +292,7 @@ module Integrations
             "recipient_party_id" => recipient_party.id,
             "amount" => payload_amount,
             "currency" => "BRL",
-            "provider" => "QITECH",
+            "provider" => provider,
             "payout_kind" => "EXCESS",
             "payout_idempotency_key" => idempotency_key,
             "account_idempotency_key" => "#{recipient_party.id}:escrow_account",
@@ -277,7 +373,7 @@ module Integrations
       def with_stubbed_provider(provider)
         singleton = Integrations::Escrow::ProviderRegistry.singleton_class
         original_fetch = Integrations::Escrow::ProviderRegistry.method(:fetch)
-        singleton.send(:define_method, :fetch) { |provider_code:| provider }
+        singleton.send(:define_method, :fetch) { |provider_code:, tenant_id: nil, tenant_slug: nil| provider }
         yield
       ensure
         singleton.send(:define_method, :fetch, original_fetch)
@@ -354,6 +450,65 @@ module Integrations
             message: "Provider timeout.",
             http_status: 504
           )
+        end
+      end
+
+      class FakeProviderProcessing < FakeProviderSuccess
+        def initialize(batch_id:)
+          super()
+          @batch_id = batch_id
+        end
+
+        def provider_code
+          "STARKBANK"
+        end
+
+        def create_payout!(tenant_id:, escrow_account:, recipient_party:, amount:, currency:, idempotency_key:, metadata:)
+          @create_payout_calls << {
+            tenant_id: tenant_id,
+            escrow_account_id: escrow_account.id,
+            recipient_party_id: recipient_party.id,
+            amount: amount,
+            currency: currency,
+            idempotency_key: idempotency_key
+          }
+          Integrations::Escrow::PayoutResult.new(
+            provider_transfer_id: "provider-transfer-processing",
+            status: "PROCESSING",
+            provider_status: "created",
+            provider_fee_amount: BigDecimal("1.25"),
+            provider_fee_currency: "BRL",
+            provider_source_account_id: "source-workspace-123",
+            provider_destination_account_id: "destination-workspace-123",
+            batch_id: @batch_id,
+            metadata: { "status" => "created" }
+          )
+        end
+      end
+
+      class FakeProviderInsufficientBudget < FakeProviderProcessing
+        def initialize
+          super(batch_id: nil)
+        end
+
+        def create_payout!(tenant_id:, escrow_account:, recipient_party:, amount:, currency:, idempotency_key:, metadata:)
+          raise Integrations::Escrow::ValidationError.new(
+            code: "starkbank_insufficient_dispatch_budget",
+            message: "Dispatch budget exhausted."
+          )
+        end
+      end
+
+      def with_environment(overrides)
+        previous = {}
+        overrides.each do |key, value|
+          previous[key] = ENV[key]
+          value.nil? ? ENV.delete(key) : ENV[key] = value
+        end
+        yield
+      ensure
+        previous.each do |key, value|
+          value.nil? ? ENV.delete(key) : ENV[key] = value
         end
       end
     end

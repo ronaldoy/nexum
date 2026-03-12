@@ -42,6 +42,8 @@ module ApplicationHelper
     "submitted" => "Enviado",
     "verified" => "Verificado",
     "active" => "Ativo",
+    "processing" => "Processando",
+    "sent" => "Confirmado",
     "inactive" => "Inativo",
     "signed" => "Assinado",
     "revoked" => "Revogado"
@@ -90,6 +92,12 @@ module ApplicationHelper
 
   def party_display_name(party)
     party&.display_name.presence || party&.legal_name || "-"
+  end
+
+  def receiving_account_label(account)
+    return "Conta PIX não cadastrada" if account.blank?
+
+    "ISPB #{account.bank_code} · ag. #{account.branch_code} · conta #{account.masked_account_number}"
   end
 
   def loan_structure_label(anticipation_request, allocation: anticipation_request&.receivable_allocation)

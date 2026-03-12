@@ -242,6 +242,64 @@ module Webhooks
       end
     end
 
+    test "reconciles starkbank webhook using tenant-scoped credentials and normalized transfer payload" do
+      payout = nil
+      event = nil
+
+      with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "worker") do
+        payout = create_payout_bundle!(suffix: "webhook-stark", provider: "STARKBANK")[:payout]
+      end
+
+      transfer = Struct.new(:id, :external_id, :status, :fee, :transaction_ids, :tags).new(
+        "stark-transfer-123",
+        "#{payout.idempotency_key}:pix",
+        "success",
+        245,
+        [ "txn-123" ],
+        [ "nexum", "escrow-payout" ]
+      )
+      log = Struct.new(:id, :type, :transfer, :errors).new("stark-log-123", "transfer", transfer, [])
+      event = Struct.new(:id, :subscription, :workspace_id, :log).new(
+        "evt-webhook-stark",
+        "transfer",
+        "workspace-stark",
+        log
+      )
+
+      with_environment(
+        starkbank_org_id_env(@tenant.slug) => "organization-tenant",
+        starkbank_org_key_env(@tenant.slug) => "tenant-private-key"
+      ) do
+        with_singleton_method_stub(Integrations::Escrow::Providers::StarkBankConfiguration, :organization_user, ->(**) { Object.new }) do
+          with_singleton_method_stub(::StarkBank::Event, :parse, ->(content:, signature:, user:) { event }) do
+            post webhooks_escrow_path(provider: "STARKBANK", tenant_slug: @tenant.slug),
+              params: JSON.generate({ "ignored" => true }),
+              headers: stark_webhook_headers(signature: "digital-signature")
+
+            assert_response :accepted
+            assert_equal "processed", response.parsed_body.dig("data", "status")
+
+            with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "worker") do
+              payout.reload
+              assert_equal "SENT", payout.status
+              assert_equal "stark-transfer-123", payout.provider_transfer_id
+              assert_equal "txn-123", payout.provider_end_to_end_id
+              assert_equal BigDecimal("2.45"), payout.provider_fee_amount.to_d
+
+              receipt = ProviderWebhookReceipt.find_by!(
+                tenant_id: @tenant.id,
+                provider: "STARKBANK",
+                provider_event_id: "evt-webhook-stark"
+              )
+              assert_equal "PROCESSED", receipt.status
+              assert_equal true, receipt.request_headers["digital_signature_present"]
+              assert_equal false, receipt.request_headers["x_starkbank_signature_present"]
+            end
+          end
+        end
+      end
+    end
+
     private
 
     def qitech_secret_env(tenant_slug)
@@ -256,8 +314,25 @@ module Webhooks
       }
     end
 
+    def stark_webhook_headers(signature:)
+      {
+        "CONTENT_TYPE" => "application/json",
+        "Digital-Signature" => signature
+      }
+    end
+
     def hmac_signature(body:, secret:)
       OpenSSL::HMAC.hexdigest("SHA256", secret, body)
+    end
+
+    def starkbank_org_id_env(tenant_slug)
+      normalized_slug = tenant_slug.to_s.upcase.gsub(/[^A-Z0-9]+/, "_")
+      "STARKBANK_ORGANIZATION_ID__#{normalized_slug}"
+    end
+
+    def starkbank_org_key_env(tenant_slug)
+      normalized_slug = tenant_slug.to_s.upcase.gsub(/[^A-Z0-9]+/, "_")
+      "STARKBANK_ORGANIZATION_PRIVATE_KEY__#{normalized_slug}"
     end
 
     def with_environment(overrides)
@@ -283,7 +358,7 @@ module Webhooks
       end
     end
 
-    def create_payout_bundle!(suffix:)
+    def create_payout_bundle!(suffix:, provider: "QITECH")
       hospital = Party.create!(
         tenant: @tenant,
         kind: "HOSPITAL",
@@ -343,7 +418,7 @@ module Webhooks
       escrow_account = EscrowAccount.create!(
         tenant: @tenant,
         party: supplier,
-        provider: "QITECH",
+        provider: provider,
         account_type: "ESCROW",
         status: "ACTIVE",
         provider_account_id: "account-#{suffix}",
@@ -363,7 +438,7 @@ module Webhooks
         receivable_payment_settlement: settlement,
         party: supplier,
         escrow_account: escrow_account,
-        provider: "QITECH",
+        provider: provider,
         status: "PENDING",
         amount: "95.00",
         currency: "BRL",
@@ -382,6 +457,17 @@ module Webhooks
         supplier: supplier,
         escrow_account: escrow_account
       }
+    end
+
+    def with_singleton_method_stub(object, method_name, implementation)
+      singleton_class = class << object
+        self
+      end
+      original_method = singleton_class.instance_method(method_name)
+      singleton_class.define_method(method_name, implementation)
+      yield
+    ensure
+      singleton_class.define_method(method_name, original_method) if original_method
     end
   end
 end

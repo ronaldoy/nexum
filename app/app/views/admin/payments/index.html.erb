@@ -1,0 +1,171 @@
+<main class="dashboard-shell">
+  <%= render "admin/shared/cockpit_nav" %>
+
+  <section class="hero-panel hero-panel-brand">
+    <div>
+      <p class="hero-kicker">Operação Stark Bank</p>
+      <h2>Painel de pagamentos</h2>
+      <p class="hero-subtitle">
+        Monitore fila pendente, confirmações PIX, custos do provedor e lotes de dispatch limitados por funding.
+      </p>
+    </div>
+    <div class="hero-meta">
+      <p><strong>Tenant:</strong> <%= admin_current_tenant.slug %></p>
+      <p><strong>Atualizado em:</strong> <%= l(@generated_at, format: :short) %></p>
+    </div>
+  </section>
+
+  <section class="metric-grid">
+    <% @headline_cards.each do |card| %>
+      <article class="metric-card">
+        <p class="metric-label"><%= card[:label] %></p>
+        <p class="metric-value">
+          <% if card[:kind] == :money %>
+            <%= format_brl(card[:value]) %>
+          <% else %>
+            <%= number_with_delimiter(card[:value].to_i, delimiter: ".") %>
+          <% end %>
+        </p>
+        <p class="metric-footnote"><%= card[:footnote] %></p>
+      </article>
+    <% end %>
+  </section>
+
+  <section class="two-column">
+    <article class="panel">
+      <header class="panel-header">
+        <h3>Lotes de dispatch</h3>
+        <p>Cada lote consome o saldo disponível até o limite de risco configurado.</p>
+      </header>
+
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Início</th>
+              <th>Status</th>
+              <th>Workspace fonte</th>
+              <th>Limite</th>
+              <th>Saldo foto</th>
+              <th>Despachado</th>
+              <th>Taxa</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% @batch_rows.each do |row| %>
+              <% batch = row[:batch] %>
+              <tr>
+                <td><%= l(batch.started_at, format: :short) %></td>
+                <td><span class="status-pill"><%= status_label(batch.status) %></span></td>
+                <td><%= batch.source_provider_account_id %></td>
+                <td><%= format_brl(batch.risk_limit_amount) %></td>
+                <td><%= format_brl(batch.balance_snapshot_amount) %></td>
+                <td><%= format_brl(batch.dispatched_amount) %></td>
+                <td><%= format_brl(batch.fee_amount) %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="panel">
+      <header class="panel-header">
+        <h3>Falhas recentes</h3>
+        <p>Pagamentos que exigem atenção por rejeição do provedor, conta inválida ou funding indisponível.</p>
+      </header>
+
+      <% if @failure_rows.any? %>
+        <ul class="activity-list">
+          <% @failure_rows.each do |row| %>
+            <% payout = row[:payout] %>
+            <li class="activity-item">
+              <p class="activity-title">
+                <strong><%= party_display_name(row[:party]) %></strong>
+                <span class="status-pill"><%= status_label(payout.status) %></span>
+              </p>
+              <p class="activity-body">
+                <%= format_brl(payout.amount) %> · <%= payout.last_error_code.presence || payout.provider_status.presence || "sem código" %>
+              </p>
+              <p class="activity-meta"><%= payout.last_error_message.presence || "Falha registrada para análise operacional." %></p>
+            </li>
+          <% end %>
+        </ul>
+      <% else %>
+        <p class="empty-state">Nenhuma falha recente registrada.</p>
+      <% end %>
+    </article>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header">
+      <h3>Fila de pagamentos</h3>
+      <p>Visão consolidada dos repasses de liquidação e pagamentos operacionais passando pelo pipeline Stark Bank.</p>
+    </header>
+
+    <div class="table-filter-bar">
+      <p class="table-filter-label">Filtro de status</p>
+      <div class="table-filter-actions">
+        <%= link_to "Todos", admin_payments_path, class: (@active_status.blank? ? "button button-soft" : "button button-outline") %>
+        <%= link_to "Pendentes", admin_payments_path(status: :pending), class: (@active_status == "pending" ? "button button-soft" : "button button-outline") %>
+        <%= link_to "Processando", admin_payments_path(status: :processing), class: (@active_status == "processing" ? "button button-soft" : "button button-outline") %>
+        <%= link_to "Confirmados", admin_payments_path(status: :sent), class: (@active_status == "sent" ? "button button-soft" : "button button-outline") %>
+        <%= link_to "Falhos", admin_payments_path(status: :failed), class: (@active_status == "failed" ? "button button-soft" : "button button-outline") %>
+      </div>
+    </div>
+
+    <div class="table-wrapper">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Solicitado em</th>
+            <th>Contraparte</th>
+            <th>Recebível</th>
+            <th>Valor</th>
+            <th>Status interno</th>
+            <th>Status provedor</th>
+            <th>Taxa</th>
+            <th>Batch</th>
+            <th>Confirmado em</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @payout_rows.each do |row| %>
+            <% payout = row[:payout] %>
+            <tr>
+              <td><%= l(payout.requested_at, format: :short) %></td>
+              <td><%= party_display_name(row[:party]) %></td>
+              <td><%= row[:receivable_reference] || "-" %></td>
+              <td><%= format_brl(payout.amount) %></td>
+              <td><span class="status-pill"><%= status_label(payout.status) %></span></td>
+              <td><%= row[:provider_status] %></td>
+              <td><%= format_brl(payout.provider_fee_amount) %></td>
+              <td><%= row[:batch]&.id&.first(8) || "-" %></td>
+              <td><%= payout.confirmed_at.present? ? l(payout.confirmed_at, format: :short) : "-" %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="table-pagination">
+      <p class="table-pagination-summary">
+        Exibindo <strong><%= @payout_pagination[:from] %></strong> até <strong><%= @payout_pagination[:to] %></strong> de
+        <strong><%= @payout_pagination[:total_count] %></strong> pagamentos.
+      </p>
+      <div class="table-pagination-actions">
+        <% if @payout_pagination[:prev_page] %>
+          <%= link_to "Anterior", admin_payments_path(page: @payout_pagination[:prev_page], status: @active_status), class: "button button-outline" %>
+        <% else %>
+          <span class="button button-outline button-disabled">Anterior</span>
+        <% end %>
+        <span class="table-pagination-page">Página <%= @payout_pagination[:page] %> de <%= @payout_pagination[:total_pages] %></span>
+        <% if @payout_pagination[:next_page] %>
+          <%= link_to "Próxima", admin_payments_path(page: @payout_pagination[:next_page], status: @active_status), class: "button button-outline" %>
+        <% else %>
+          <span class="button button-outline button-disabled">Próxima</span>
+        <% end %>
+      </div>
+    </div>
+  </section>
+</main>

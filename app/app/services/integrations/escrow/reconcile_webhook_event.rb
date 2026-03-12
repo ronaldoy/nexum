@@ -5,6 +5,7 @@ module Integrations
       Target = Struct.new(:kind, :record, keyword_init: true)
 
       SUCCESSFUL_PAYOUT_STATUSES = %w[SENT SUCCESS SUCCESSFUL COMPLETED PROCESSING_PAYMENT].freeze
+      PROCESSING_PAYOUT_STATUSES = %w[PROCESSING CREATED].freeze
       FAILED_PAYOUT_STATUSES = %w[FAILED ERROR REJECTED CANCELED CANCELLED].freeze
 
       ACTIVE_ACCOUNT_STATUSES = %w[APPROVED ACTIVE OPEN OPENED].freeze
@@ -12,7 +13,7 @@ module Integrations
 
       def initialize(tenant_id:, provider:, payload:, provider_event_id:, request_id:, request_ip:, user_agent:, endpoint_path:, http_method:)
         @tenant_id = tenant_id
-        @provider = ProviderConfig.normalize_provider(provider)
+        @provider = ProviderConfig.normalize_provider(provider, tenant_id: tenant_id)
         @payload = normalize_metadata(payload)
         @provider_event_id = provider_event_id.to_s
         @request_id = request_id
@@ -175,20 +176,32 @@ module Integrations
       def payout_reconciliation_attributes(payout:, status:, mapped_status:)
         now = Time.current
         attrs = {
+          provider_status: status.to_s.downcase.presence,
+          provider_fee_amount: payout_fee_amount || payout.provider_fee_amount,
+          provider_fee_currency: "BRL",
           metadata: merge_metadata(payout.metadata, webhook_reconciliation_metadata(status: status, received_at: now))
         }
         transfer_id = payout_transfer_id_candidates.first
         attrs[:provider_transfer_id] = transfer_id if transfer_id.present? && payout.provider_transfer_id.blank?
+        end_to_end_id = payout_end_to_end_id_candidates.first
+        attrs[:provider_end_to_end_id] = end_to_end_id if end_to_end_id.present? && payout.provider_end_to_end_id.blank?
         attrs.merge!(payout_status_attributes(payout:, mapped_status:, now: now))
         attrs
       end
 
       def payout_status_attributes(payout:, mapped_status:, now:)
         case mapped_status
+        when "PROCESSING"
+          {
+            status: "PROCESSING",
+            last_error_code: nil,
+            last_error_message: nil
+          }
         when "SENT"
           {
             status: "SENT",
             processed_at: now,
+            confirmed_at: now,
             last_error_code: nil,
             last_error_message: nil
           }
@@ -278,11 +291,21 @@ module Integrations
 
       def payout_transfer_id_candidates
         normalized_candidates(
+          @payload["provider_transfer_id"],
           @payload["end_to_end_id"],
           @payload["transaction_id"],
           @payload["pix_transfer_id"],
+          @payload.dig("pix_transfer", "id"),
           @payload.dig("pix_transfer", "end_to_end_id"),
           @payload.dig("pix_transfer", "transaction_id")
+        )
+      end
+
+      def payout_end_to_end_id_candidates
+        normalized_candidates(
+          @payload["provider_end_to_end_id"],
+          @payload["end_to_end_id"],
+          @payload.dig("pix_transfer", "end_to_end_id")
         )
       end
 
@@ -291,7 +314,9 @@ module Integrations
           @payload["request_control_key"],
           @payload["external_reference"],
           @payload["idempotency_key"],
-          @payload.dig("pix_transfer", "request_control_key")
+          @payload["provider_request_control_key"],
+          @payload.dig("pix_transfer", "request_control_key"),
+          normalized_request_control_key(@payload.dig("pix_transfer", "external_id"))
         )
       end
 
@@ -326,6 +351,7 @@ module Integrations
 
       def map_payout_status(status)
         return "SENT" if SUCCESSFUL_PAYOUT_STATUSES.include?(status)
+        return "PROCESSING" if PROCESSING_PAYOUT_STATUSES.include?(status)
         return "FAILED" if FAILED_PAYOUT_STATUSES.include?(status)
 
         nil
@@ -346,6 +372,22 @@ module Integrations
       def payout_error_message
         message = @payload["error_message"].presence || @payload.dig("error", "message").presence
         message.to_s.strip.truncate(500).presence
+      end
+
+      def payout_fee_amount
+        raw = @payload["fee"].presence || @payload.dig("pix_transfer", "fee").presence
+        return nil if raw.blank?
+
+        BigDecimal(raw.to_s).round(2)
+      rescue ArgumentError
+        nil
+      end
+
+      def normalized_request_control_key(external_id)
+        value = normalize_identifier(external_id)
+        return nil if value.blank?
+
+        value.delete_suffix(":pix")
       end
 
       def normalize_identifier(value)
