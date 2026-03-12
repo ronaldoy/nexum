@@ -49,6 +49,12 @@ module ApplicationHelper
     "revoked" => "Revogado"
   }.freeze
 
+  PAYOUT_MODEL_LABELS = {
+    "LEGAL_ENTITY_RETENTION_SPLIT" => "PJ com retenção",
+    "ENTITY_DIRECT" => "Entidade direta",
+    "PHYSICIAN_DIRECT" => "Médico direto"
+  }.freeze
+
   def platform_name
     PLATFORM_NAME
   end
@@ -100,6 +106,16 @@ module ApplicationHelper
     "ISPB #{account.bank_code} · ag. #{account.branch_code} · conta #{account.masked_account_number}"
   end
 
+  def escrow_account_label(account)
+    return "Conta operacional ainda não provisionada" if account.blank?
+
+    workspace_name = account.metadata&.dig("workspace", "name").to_s.presence
+    workspace_username = account.metadata&.dig("workspace", "username").to_s.presence
+    pieces = [ workspace_name, workspace_username, account.provider_account_id ].compact
+
+    "Workspace #{pieces.join(' · ')}"
+  end
+
   def loan_structure_label(anticipation_request, allocation: anticipation_request&.receivable_allocation)
     requester_kind = anticipation_request&.requester_party&.kind
     return "Médico via PJ" if requester_kind == "LEGAL_ENTITY_PJ" && allocation&.physician_party.present?
@@ -119,6 +135,10 @@ module ApplicationHelper
     else
       "Solicitacao feita por #{party_kind_label(requester&.kind)}"
     end
+  end
+
+  def payout_model_label(value)
+    PAYOUT_MODEL_LABELS.fetch(value.to_s, value.to_s.humanize)
   end
 
   def seed_privileged_mfa_code

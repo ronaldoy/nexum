@@ -10,7 +10,6 @@ module Integrations
       class StarkBank < Base
         PROVIDER_CODE = "STARKBANK".freeze
         PAYOUT_QUERY_LOOKBACK_DAYS = 7
-        INTERNAL_TRANSFER_DESCRIPTION = "Nexum workspace funding".freeze
 
         def provider_code
           PROVIDER_CODE
@@ -59,10 +58,8 @@ module Integrations
           tenant_slug = tenant_slug_for(tenant_id)
           payout = load_payout_record(tenant_id:, idempotency_key:, metadata:)
           receiving_account = load_receiving_account!(tenant_id:, recipient_party:)
-          source_workspace_id = StarkBankConfiguration.source_workspace_id_for(tenant_id:, tenant_slug:)
+          source_workspace_id = escrow_account.provider_account_id.to_s
           source_user = StarkBankConfiguration.workspace_user(workspace_id: source_workspace_id, tenant_id:, tenant_slug:)
-          destination_workspace_id = escrow_account.provider_account_id.to_s
-          destination_user = StarkBankConfiguration.workspace_user(workspace_id: destination_workspace_id, tenant_id:, tenant_slug:)
           batch = current_batch_for(payout)
           batch_allocated_now = false
           unless batch
@@ -76,16 +73,9 @@ module Integrations
             batch = assign_batch_to_payout!(payout:, batch:) || batch
           end
 
-          internal_transaction = nil
-          internal_transaction = ensure_internal_transaction!(
-            source_user:,
-            receiver_workspace_id: destination_workspace_id,
-            amount: amount,
-            idempotency_key: idempotency_key,
-            metadata: metadata
-          )
+          transfer = nil
           transfer = ensure_pix_transfer!(
-            destination_user:,
+            source_user:,
             recipient_party: recipient_party,
             receiving_account: receiving_account,
             amount: amount,
@@ -93,7 +83,7 @@ module Integrations
             metadata: metadata
           )
 
-          fee_amount = cents_to_decimal(internal_transaction["fee"]) + cents_to_decimal(transfer.fee)
+          fee_amount = cents_to_decimal(transfer.fee)
           provider_status = transfer.status.to_s.downcase
           now = Time.current
 
@@ -110,12 +100,12 @@ module Integrations
             provider_fee_amount: fee_amount,
             provider_fee_currency: "BRL",
             provider_source_account_id: source_workspace_id,
-            provider_destination_account_id: destination_workspace_id,
+            provider_destination_account_id: receiving_account.account_fingerprint,
             provider_end_to_end_id: Array(transfer.transaction_ids).presence&.last,
             confirmed_at: transfer_success?(provider_status) ? now : nil,
             batch_id: batch.id,
             metadata: {
-              "internal_transaction" => internal_transaction,
+              "source_workspace" => normalized_hash(escrow_account.metadata&.dig("workspace")),
               "transfer" => transfer_payload(transfer),
               "receiving_account" => {
                 "bank_code" => receiving_account.bank_code,
@@ -125,16 +115,16 @@ module Integrations
             }
           )
         rescue ValidationError
-          release_batch_reservation!(batch: batch, payout: payout, amount: amount) if batch_allocated_now && internal_transaction.blank?
+          release_batch_reservation!(batch: batch, payout: payout, amount: amount) if batch_allocated_now && transfer.blank?
           raise
         rescue RemoteError
-          release_batch_reservation!(batch: batch, payout: payout, amount: amount) if batch_allocated_now && internal_transaction.blank?
+          release_batch_reservation!(batch: batch, payout: payout, amount: amount) if batch_allocated_now && transfer.blank?
           raise
         rescue ::StarkCore::Error::InputErrors => error
-          release_batch_reservation!(batch: batch, payout: payout, amount: amount) if batch_allocated_now && internal_transaction.blank?
+          release_batch_reservation!(batch: batch, payout: payout, amount: amount) if batch_allocated_now && transfer.blank?
           raise_input_error!(error)
         rescue ::StarkCore::Error::StarkCoreError => error
-          release_batch_reservation!(batch: batch, payout: payout, amount: amount) if batch_allocated_now && internal_transaction.blank?
+          release_batch_reservation!(batch: batch, payout: payout, amount: amount) if batch_allocated_now && transfer.blank?
           raise RemoteError.new(
             code: "starkbank_request_failed",
             message: error.message,
@@ -158,7 +148,7 @@ module Integrations
             provider_fee_amount: fee_amount,
             provider_fee_currency: "BRL",
             provider_source_account_id: payout.provider_source_account_id,
-            provider_destination_account_id: workspace_id,
+            provider_destination_account_id: payout.provider_destination_account_id,
             provider_end_to_end_id: Array(transfer.transaction_ids).presence&.last,
             confirmed_at: transfer_success?(provider_status) ? Time.current : nil,
             batch_id: payout.escrow_payout_batch_id,
@@ -280,40 +270,8 @@ module Integrations
           clear_batch_from_payout!(payout:) if payout.present?
         end
 
-        def ensure_internal_transaction!(source_user:, receiver_workspace_id:, amount:, idempotency_key:, metadata:)
-          external_id = "#{idempotency_key}:workspace"
-          existing = ::StarkBank::Transaction.query(limit: 1, external_ids: [ external_id ], user: source_user).to_a.first
-          return transaction_payload(existing) if existing
-
-          response = ::StarkBank::Request.post(
-            path: "transaction",
-            payload: {
-              "transactions" => [
-                {
-                  "amount" => decimal_to_cents(amount),
-                  "description" => internal_transfer_description(metadata),
-                  "externalId" => external_id,
-                  "receiverId" => receiver_workspace_id,
-                  "tags" => transaction_tags(idempotency_key)
-                }
-              ]
-            },
-            user: source_user
-          )
-          return response.json.fetch("transactions").first if response.status == 200
-
-          recovered = ::StarkBank::Transaction.query(limit: 1, external_ids: [ external_id ], user: source_user).to_a.first
-          return transaction_payload(recovered) if recovered
-
-          raise_remote_request_error!(
-            code: "starkbank_workspace_funding_failed",
-            message: "Unable to move funds to the recipient Stark Bank workspace.",
-            response: response
-          )
-        end
-
-        def ensure_pix_transfer!(destination_user:, recipient_party:, receiving_account:, amount:, idempotency_key:, metadata:)
-          existing = existing_transfer_for(destination_user:, idempotency_key:)
+        def ensure_pix_transfer!(source_user:, recipient_party:, receiving_account:, amount:, idempotency_key:, metadata:)
+          existing = existing_transfer_for(source_user:, idempotency_key:)
           return existing if existing
 
           transfer = ::StarkBank::Transfer.new(
@@ -330,19 +288,19 @@ module Integrations
             tags: transfer_tags(idempotency_key, recipient_party)
           )
 
-          ::StarkBank::Transfer.create([ transfer ], user: destination_user).first
+          ::StarkBank::Transfer.create([ transfer ], user: source_user).first
         rescue ::StarkCore::Error::InputErrors
-          recovered = existing_transfer_for(destination_user:, idempotency_key:)
+          recovered = existing_transfer_for(source_user:, idempotency_key:)
           return recovered if recovered
 
           raise
         end
 
-        def existing_transfer_for(destination_user:, idempotency_key:)
+        def existing_transfer_for(source_user:, idempotency_key:)
           tag = transfer_identity_tag(idempotency_key)
           after_date = Date.current - PAYOUT_QUERY_LOOKBACK_DAYS
           ::StarkBank::Transfer
-            .query(limit: 20, after: after_date, tags: [ tag ], user: destination_user)
+            .query(limit: 20, after: after_date, tags: [ tag ], user: source_user)
             .to_a
             .find { |transfer| transfer.external_id.to_s == "#{idempotency_key}:pix" || Array(transfer.tags).include?(tag) }
         end
@@ -413,15 +371,6 @@ module Integrations
           "Repasse operacional Nexum"
         end
 
-        def internal_transfer_description(metadata)
-          reference = metadata["payment_reference"].to_s.presence || metadata["settlement_id"].to_s.presence || INTERNAL_TRANSFER_DESCRIPTION
-          "#{INTERNAL_TRANSFER_DESCRIPTION} #{reference}".truncate(64)
-        end
-
-        def transaction_tags(idempotency_key)
-          [ "nexum", "workspace-funding", transfer_identity_tag(idempotency_key) ]
-        end
-
         def transfer_tags(idempotency_key, recipient_party)
           [ "nexum", "escrow-payout", transfer_identity_tag(idempotency_key), recipient_party.id.to_s.first(8) ]
         end
@@ -436,19 +385,6 @@ module Integrations
 
         def cents_to_decimal(value)
           (BigDecimal(value.to_i.to_s) / 100).round(2)
-        end
-
-        def transaction_payload(transaction)
-          return {} if transaction.blank?
-
-          {
-            "id" => transaction.id,
-            "external_id" => transaction.external_id,
-            "receiver_id" => transaction.receiver_id,
-            "sender_id" => transaction.sender_id,
-            "fee" => transaction.fee,
-            "created" => transaction.created&.iso8601
-          }.compact
         end
 
         def transfer_payload(transfer)

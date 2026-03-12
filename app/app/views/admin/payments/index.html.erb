@@ -6,7 +6,7 @@
       <p class="hero-kicker">Operação Stark Bank</p>
       <h2>Painel de pagamentos</h2>
       <p class="hero-subtitle">
-        Monitore fila pendente, confirmações PIX, custos do provedor e lotes de dispatch limitados por funding.
+        Monitore fila pendente, confirmações PIX, custos do provedor e lotes de dispatch limitados pelo saldo operacional recebido.
       </p>
     </div>
     <div class="hero-meta">
@@ -35,7 +35,7 @@
     <article class="panel">
       <header class="panel-header">
         <h3>Lotes de dispatch</h3>
-        <p>Cada lote consome o saldo disponível até o limite de risco configurado.</p>
+        <p>Cada lote consome o saldo disponível na conta operacional da entidade até o limite de risco configurado.</p>
       </header>
 
       <div class="table-wrapper">
@@ -98,10 +98,10 @@
   </section>
 
   <section class="panel">
-    <header class="panel-header">
-      <h3>Fila de pagamentos</h3>
-      <p>Visão consolidada dos repasses de liquidação e pagamentos operacionais passando pelo pipeline Stark Bank.</p>
-    </header>
+      <header class="panel-header">
+        <h3>Fila de pagamentos</h3>
+        <p>Visão consolidada dos repasses de liquidação e pagamentos operacionais passando pelo pipeline Stark Bank com conta fonte por entidade.</p>
+      </header>
 
     <div class="table-filter-bar">
       <p class="table-filter-label">Filtro de status</p>
@@ -119,9 +119,11 @@
         <thead>
           <tr>
             <th>Solicitado em</th>
+            <th>Conta fonte</th>
             <th>Contraparte</th>
             <th>Recebível</th>
             <th>Valor</th>
+            <th>Retenção PJ</th>
             <th>Status interno</th>
             <th>Status provedor</th>
             <th>Taxa</th>
@@ -134,9 +136,16 @@
             <% payout = row[:payout] %>
             <tr>
               <td><%= l(payout.requested_at, format: :short) %></td>
+              <td>
+                <%= party_display_name(row[:source_party]) %>
+                <% if row[:payout_model].present? %>
+                  <div class="detail-meta"><%= payout_model_label(row[:payout_model]) %></div>
+                <% end %>
+              </td>
               <td><%= party_display_name(row[:party]) %></td>
               <td><%= row[:receivable_reference] || "-" %></td>
               <td><%= format_brl(payout.amount) %></td>
+              <td><%= format_brl(row[:retained_amount]) %></td>
               <td><span class="status-pill"><%= status_label(payout.status) %></span></td>
               <td><%= row[:provider_status] %></td>
               <td><%= format_brl(payout.provider_fee_amount) %></td>

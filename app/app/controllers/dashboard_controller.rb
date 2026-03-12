@@ -37,6 +37,7 @@ class DashboardController < ApplicationController
 
   def load_dashboard_collections
     @receiving_account = current_receiving_account
+    @operational_account = current_operational_account
     @receivables = scoped_receivables
       .includes(:receivable_kind, :debtor_party, :creditor_party, :beneficiary_party)
       .order(performed_at: :desc)
@@ -138,6 +139,28 @@ class DashboardController < ApplicationController
       .active
       .primary_account
       .find_by(tenant_id: current_tenant_id, party_id: current_party_id)
+  end
+
+  def current_operational_account
+    source_party_id = operational_account_party_id
+    return nil if source_party_id.blank?
+
+    provider = Integrations::Escrow::ProviderConfig.default_provider(tenant_id: current_tenant_id)
+    EscrowAccount
+      .active
+      .find_by(tenant_id: current_tenant_id, party_id: source_party_id, provider: provider)
+  rescue Integrations::Escrow::UnsupportedProviderError
+    nil
+  end
+
+  def operational_account_party_id
+    return nil if current_party_id.blank?
+    return current_party_id unless Current.user&.role.in?(%w[physician_pj_admin physician_pj_member])
+
+    PhysicianLegalEntityMembership
+      .where(tenant_id: current_tenant_id, physician_party_id: current_party_id, status: "ACTIVE")
+      .order(created_at: :asc)
+      .pick(:legal_entity_party_id) || current_party_id
   end
 
   def scoped_receivables

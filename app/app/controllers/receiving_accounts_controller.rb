@@ -1,7 +1,7 @@
 class ReceivingAccountsController < ApplicationController
   def create
     account = upsert_receiving_account!
-    redirect_to root_path, notice: "Conta recebedora PIX atualizada para #{account.party.legal_name}."
+    redirect_to root_path, notice: "Conta destino PIX atualizada para #{account.party.legal_name}."
   rescue ActiveRecord::RecordInvalid => error
     redirect_to root_path, alert: error.record.errors.full_messages.to_sentence
   end

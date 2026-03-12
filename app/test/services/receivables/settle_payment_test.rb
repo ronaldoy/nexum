@@ -41,11 +41,28 @@ module Receivables
         assert_equal BigDecimal("66.00"), settlement.fidc_balance_before.to_d
         assert_equal BigDecimal("0.00"), settlement.fidc_balance_after.to_d
         assert_equal "hospital-payment-shared-001", settlement.payment_reference
+        assert_equal bundle[:legal_entity].id, settlement.operational_source_party.id
+        assert_equal bundle[:physician_one].id, settlement.payout_recipient_party.id
+        assert_equal BigDecimal("30.00"), settlement.retained_amount
+        assert_equal "LEGAL_ENTITY_RETENTION_SPLIT", settlement.payout_model
 
         assert_equal 1, result.settlement_entries.size
         entry = result.settlement_entries.first
         assert_equal anticipation_request.id, entry.anticipation_request_id
         assert_equal BigDecimal("66.00"), entry.settled_amount.to_d
+
+        escrow_outbox = OutboxEvent.find_by!(
+          tenant_id: @tenant.id,
+          aggregate_type: "ReceivablePaymentSettlement",
+          aggregate_id: settlement.id,
+          event_type: "RECEIVABLE_ESCROW_EXCESS_PAYOUT_REQUESTED",
+          idempotency_key: "#{settlement.id}:escrow_excess_payout"
+        )
+        assert_equal bundle[:legal_entity].id, escrow_outbox.payload["source_party_id"]
+        assert_equal bundle[:physician_one].id, escrow_outbox.payload["recipient_party_id"]
+        assert_equal "#{bundle[:legal_entity].id}:escrow_account", escrow_outbox.payload["account_idempotency_key"]
+        assert_equal "LEGAL_ENTITY_RETENTION_SPLIT", escrow_outbox.payload.dig("distribution_model", "payout_model")
+        assert_equal "0.30000000", escrow_outbox.payload.dig("distribution_model", "retention_rate")
 
         anticipation_request.reload
         assert_equal "SETTLED", anticipation_request.status
@@ -84,6 +101,9 @@ module Receivables
         assert_equal BigDecimal("30.00"), settlement.cnpj_amount.to_d
         assert_equal BigDecimal("0.00"), settlement.fidc_amount.to_d
         assert_equal BigDecimal("70.00"), settlement.beneficiary_amount.to_d
+        assert_equal bundle[:legal_entity].id, settlement.operational_source_party.id
+        assert_equal bundle[:physician_one].id, settlement.payout_recipient_party.id
+        assert_equal "LEGAL_ENTITY_RETENTION_SPLIT", settlement.payout_model
         assert_equal 0, result.settlement_entries.size
       end
     end
@@ -123,6 +143,7 @@ module Receivables
           idempotency_key: "#{settlement.id}:escrow_excess_payout"
         )
         assert_equal settlement.id, escrow_outbox.payload["settlement_id"]
+        assert_equal bundle[:supplier].id, escrow_outbox.payload["source_party_id"]
         assert_equal bundle[:supplier].id, escrow_outbox.payload["recipient_party_id"]
         assert_equal BigDecimal("45.00"), BigDecimal(escrow_outbox.payload["amount"])
         assert_equal "EXCESS", escrow_outbox.payload["payout_kind"]

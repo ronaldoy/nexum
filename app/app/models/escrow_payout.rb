@@ -26,6 +26,10 @@ class EscrowPayout < ApplicationRecord
     confirmed_at.present?
   end
 
+  def source_party
+    escrow_account&.party
+  end
+
   private
 
   def source_reference_must_exist

@@ -175,7 +175,7 @@ module Outbox
     def with_stubbed_provider(provider)
       singleton = Integrations::Escrow::ProviderRegistry.singleton_class
       original_fetch = Integrations::Escrow::ProviderRegistry.method(:fetch)
-      singleton.send(:define_method, :fetch) { |provider_code:| provider }
+      singleton.send(:define_method, :fetch) { |provider_code:, tenant_id: nil, tenant_slug: nil| provider }
       yield
     ensure
       singleton.send(:define_method, :fetch, original_fetch)

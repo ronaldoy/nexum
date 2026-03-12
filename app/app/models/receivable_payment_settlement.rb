@@ -24,6 +24,28 @@ class ReceivablePaymentSettlement < ApplicationRecord
     beneficiary_amount
   end
 
+  def operational_source_party
+    receivable_allocation&.allocated_party || receivable&.beneficiary_party
+  end
+
+  def payout_recipient_party
+    receivable_allocation&.physician_party || receivable&.beneficiary_party
+  end
+
+  def retained_amount
+    cnpj_amount.to_d
+  end
+
+  def retention_rate
+    return BigDecimal("0") if paid_amount.to_d <= 0
+
+    FinancialRounding.rate(retained_amount / paid_amount.to_d)
+  end
+
+  def payout_model
+    metadata&.dig("distribution_model", "payout_model").to_s.presence || "ENTITY_DIRECT"
+  end
+
   private
 
   def split_must_match_paid_amount

@@ -91,7 +91,7 @@ module Admin
         {
           label: "Fila pendente",
           value: pending_scope.sum(:amount),
-          footnote: "#{pending_scope.count} pagamentos aguardando funding ou envio",
+          footnote: "#{pending_scope.count} pagamentos aguardando saldo na conta operacional ou envio",
           kind: :money
         },
         {
@@ -126,7 +126,7 @@ module Admin
     def filtered_payout_scope(status)
       scope = EscrowPayout
         .where(tenant_id: tenant.id)
-        .includes(:party, :escrow_account, :escrow_payout_batch, receivable_payment_settlement: :receivable)
+        .includes(:party, { escrow_account: :party }, :escrow_payout_batch, receivable_payment_settlement: :receivable)
         .order(requested_at: :desc, created_at: :desc)
 
       mapped_status = STATUS_FILTERS[status.to_s]
@@ -140,10 +140,13 @@ module Admin
       {
         payout: payout,
         party: payout.party,
+        source_party: payout.escrow_account&.party,
         batch: payout.escrow_payout_batch,
         receivable_reference: receivable&.external_reference || settlement&.id&.first(8),
         confirmed: payout.confirmed?,
-        provider_status: payout.provider_status.to_s.presence || payout.status.downcase
+        provider_status: payout.provider_status.to_s.presence || payout.status.downcase,
+        payout_model: settlement&.payout_model,
+        retained_amount: settlement&.retained_amount.to_d || 0.to_d
       }
     end
   end

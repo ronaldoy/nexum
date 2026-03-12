@@ -8,7 +8,9 @@ module Integrations
       DispatchInputs = Struct.new(
         :payload,
         :source,
+        :source_party,
         :recipient_party,
+        :payout_model,
         :amount,
         :provider_code,
         :provider,
@@ -61,7 +63,7 @@ module Integrations
       def dispatch_payout!(outbox_event:, payout:, inputs:)
         escrow_account = ensure_escrow_account!(
           tenant_id: outbox_event.tenant_id,
-          party: inputs.recipient_party,
+          party: inputs.source_party,
           provider: inputs.provider,
           idempotency_key: inputs.account_idempotency_key,
           metadata: inputs.payload
@@ -107,23 +109,28 @@ module Integrations
       def build_dispatch_inputs(outbox_event)
         payload = normalize_metadata(outbox_event.payload || {})
         source = resolve_source_records(tenant_id: outbox_event.tenant_id, payload: payload)
-        recipient_party = resolve_recipient_party!(
+        routing = resolve_payout_routing(
           tenant_id: outbox_event.tenant_id,
           payload: payload,
           anticipation_request: source[:anticipation_request],
           settlement: source[:settlement]
         )
+        recipient_party = routing.recipient_party
+        ensure_recipient_party_present!(recipient_party)
+        ensure_party_payable!(recipient_party)
         amount = resolve_amount!(payload)
         ensure_excess_amount_matches_settlement!(payload:, settlement: source[:settlement], amount:)
 
         provider_context = resolve_provider_context(tenant_id: outbox_event.tenant_id, payload: payload)
         payout_idempotency_key = resolve_payout_idempotency_key(outbox_event:, payload:)
-        account_idempotency_key = resolve_account_idempotency_key(payload:, recipient_party:)
+        account_idempotency_key = resolve_account_idempotency_key(payload:, source_party: routing.source_party)
 
         DispatchInputs.new(
-          payload: payload,
+          payload: payload.merge("distribution_model" => routing.distribution_metadata),
           source: source,
+          source_party: routing.source_party,
           recipient_party: recipient_party,
+          payout_model: routing.payout_model,
           amount: amount,
           provider_code: provider_context.fetch(:provider_code),
           provider: provider_context.fetch(:provider),
@@ -147,15 +154,14 @@ module Integrations
         }
       end
 
-      def resolve_recipient_party!(tenant_id:, payload:, anticipation_request:, settlement:)
-        recipient_party_id = payload["recipient_party_id"].to_s.presence
-        recipient_party_id ||= anticipation_request&.requester_party_id
-        recipient_party_id ||= settlement&.receivable&.beneficiary_party_id
-        raise ValidationError.new(code: "recipient_party_missing", message: "recipient_party_id is required.") if recipient_party_id.blank?
-
-        recipient_party = Party.where(tenant_id: tenant_id).lock.find(recipient_party_id)
-        ensure_party_payable!(recipient_party)
-        recipient_party
+      def resolve_payout_routing(tenant_id:, payload:, anticipation_request:, settlement:)
+        routing = PayoutRouting.new(tenant_id: tenant_id).call(
+          payload: payload,
+          anticipation_request: anticipation_request,
+          settlement: settlement
+        )
+        ensure_source_party_present!(routing.source_party)
+        routing
       end
 
       def resolve_amount!(payload)
@@ -180,8 +186,8 @@ module Integrations
         payload["payout_idempotency_key"].to_s.presence || outbox_event.idempotency_key.to_s.presence || "#{outbox_event.id}:escrow_payout"
       end
 
-      def resolve_account_idempotency_key(payload:, recipient_party:)
-        payload["account_idempotency_key"].to_s.presence || "#{recipient_party.id}:escrow_account"
+      def resolve_account_idempotency_key(payload:, source_party:)
+        payload["account_idempotency_key"].to_s.presence || "#{source_party.id}:escrow_account"
       end
 
       def find_or_initialize_payout(tenant_id:, payout_idempotency_key:)
@@ -242,7 +248,9 @@ module Integrations
           metadata: {
             "anticipation_request_id" => inputs.source[:anticipation_request]&.id,
             "settlement_id" => inputs.source[:settlement]&.id,
+            "source_party_id" => inputs.source_party.id,
             "recipient_party_id" => inputs.recipient_party.id,
+            "payout_model" => inputs.payout_model,
             "provider" => inputs.provider_code,
             "amount" => inputs.amount.to_s("F"),
             "currency" => "BRL",
@@ -396,6 +404,7 @@ module Integrations
 
         source = inputs&.source || {}
         recipient_party = inputs&.recipient_party
+        source_party = inputs&.source_party
         provider_code = inputs&.provider_code
         amount = inputs&.amount || BigDecimal("0")
         payload = inputs&.payload || {}
@@ -408,6 +417,7 @@ module Integrations
           ).merge(
             tenant_id: outbox_event.tenant_id,
             party_id: recipient_party&.id,
+            escrow_account_id: payout.escrow_account_id || active_escrow_account_id_for(tenant_id: outbox_event.tenant_id, source_party: source_party, provider_code: provider_code),
             provider: provider_code.to_s.presence || payout.provider || ProviderConfig::DEFAULT_PROVIDER,
             amount: amount.to_d.positive? ? amount : payout.amount,
             currency: "BRL",
@@ -484,6 +494,28 @@ module Integrations
         Integrations::Escrow::SyncPayoutStatusJob
           .set(wait: 20.seconds)
           .perform_later(tenant_id: payout.tenant_id, payout_id: payout.id)
+      end
+
+      def active_escrow_account_id_for(tenant_id:, source_party:, provider_code:)
+        return nil if source_party.blank? || provider_code.blank?
+
+        EscrowAccount.find_by(
+          tenant_id: tenant_id,
+          party_id: source_party.id,
+          provider: provider_code
+        )&.id
+      end
+
+      def ensure_source_party_present!(source_party)
+        return if source_party.present?
+
+        raise ValidationError.new(code: "source_party_missing", message: "source_party_id is required.")
+      end
+
+      def ensure_recipient_party_present!(recipient_party)
+        return if recipient_party.present?
+
+        raise ValidationError.new(code: "recipient_party_missing", message: "recipient_party_id is required.")
       end
 
       def ensure_party_payable!(party)

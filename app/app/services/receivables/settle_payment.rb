@@ -267,6 +267,8 @@ module Receivables
     end
 
     def create_settlement_record!(receivable:, allocation:, inputs:, distribution:)
+      routing = settlement_payout_routing(receivable:, allocation:)
+
       ReceivablePaymentSettlement.create!(
         tenant_id: @tenant_id,
         receivable: receivable,
@@ -284,6 +286,8 @@ module Receivables
         metadata: inputs.metadata.merge(
           PAYLOAD_HASH_METADATA_KEY => inputs.payload_hash,
           "cnpj_share_rate" => decimal_as_string(distribution.cnpj_share_rate),
+          "operational_account" => settlement_operational_account_metadata(routing: routing),
+          "distribution_model" => settlement_distribution_metadata(routing: routing, distribution: distribution),
           "idempotency_key" => @idempotency_key,
           "replayed" => false
         )
@@ -650,28 +654,37 @@ module Receivables
       return if beneficiary_amount.to_d <= 0
 
       provider = Integrations::Escrow::ProviderConfig.default_provider(tenant_id: @tenant_id)
-      recipient_party = Party.where(tenant_id: @tenant_id).find(receivable.beneficiary_party_id)
+      routing = Integrations::Escrow::PayoutRouting.new(tenant_id: @tenant_id).call(
+        payload: {},
+        settlement: settlement
+      )
+      recipient_party = routing.recipient_party
+      source_party = routing.source_party
       amount = decimal_as_string(beneficiary_amount)
       payout_idempotency_key = "#{settlement.id}:#{ESCROW_EXCESS_OUTBOX_IDEMPOTENCY_SUFFIX}"
-      account_idempotency_key = "#{recipient_party.id}:escrow_account"
+      account_idempotency_key = "#{source_party.id}:escrow_account"
       receivable_origin = receivable_origin_payload(receivable)
 
       payload_hash = escrow_excess_payload_hash(
         settlement: settlement,
+        source_party_id: source_party.id,
         recipient_party_id: recipient_party.id,
         provider: provider,
         amount: amount,
-        receivable_origin: receivable_origin
+        receivable_origin: receivable_origin,
+        routing_metadata: routing.distribution_metadata
       )
       payload = build_escrow_excess_outbox_payload(
         settlement: settlement,
         receivable: receivable,
+        source_party: source_party,
         recipient_party: recipient_party,
         amount: amount,
         provider: provider,
         receivable_origin: receivable_origin,
         payout_idempotency_key: payout_idempotency_key,
         account_idempotency_key: account_idempotency_key,
+        routing_metadata: routing.distribution_metadata,
         payload_hash: payload_hash
       )
 
@@ -773,18 +786,21 @@ module Receivables
     def build_escrow_excess_outbox_payload(
       settlement:,
       receivable:,
+      source_party:,
       recipient_party:,
       amount:,
       provider:,
       receivable_origin:,
       payout_idempotency_key:,
       account_idempotency_key:,
+      routing_metadata:,
       payload_hash:
     )
       {
         "payload_hash" => payload_hash,
         "settlement_id" => settlement.id,
         "receivable_id" => receivable.id,
+        "source_party_id" => source_party.id,
         "recipient_party_id" => recipient_party.id,
         "amount" => amount,
         "currency" => BRL_CURRENCY,
@@ -795,6 +811,7 @@ module Receivables
         "account_idempotency_key" => account_idempotency_key,
         "provider_request_control_key" => payout_idempotency_key,
         "request_id" => @request_id,
+        "distribution_model" => routing_metadata,
         "expected_taxpayer_id" => recipient_party.document_number,
         "receivable_origin" => receivable_origin
       }
@@ -897,15 +914,17 @@ module Receivables
       )
     end
 
-    def escrow_excess_payload_hash(settlement:, recipient_party_id:, provider:, amount:, receivable_origin:)
+    def escrow_excess_payload_hash(settlement:, source_party_id:, recipient_party_id:, provider:, amount:, receivable_origin:, routing_metadata:)
       payload_hash_for(
         settlement_id: settlement.id,
         receivable_id: settlement.receivable_id,
+        source_party_id: source_party_id,
         recipient_party_id: recipient_party_id,
         provider: provider,
         amount: amount,
         currency: BRL_CURRENCY,
         payout_kind: ESCROW_EXCESS_PAYOUT_KIND,
+        distribution_model: routing_metadata,
         receivable_origin: receivable_origin
       )
     end
@@ -957,6 +976,35 @@ module Receivables
 
     def decimal_as_string(value)
       value.to_d.to_s("F")
+    end
+
+    def settlement_payout_routing(receivable:, allocation:)
+      settlement_payload = {
+        "source_party_id" => allocation&.allocated_party_id || receivable.beneficiary_party_id,
+        "recipient_party_id" => allocation&.physician_party_id || receivable.beneficiary_party_id
+      }
+
+      Integrations::Escrow::PayoutRouting.new(tenant_id: @tenant_id).call(
+        payload: settlement_payload
+      )
+    end
+
+    def settlement_operational_account_metadata(routing:)
+      {
+        "provider_account_model" => "ENTITY_OPERATIONAL_WORKSPACE",
+        "source_party_id" => routing.source_party&.id,
+        "source_party_kind" => routing.source_party&.kind
+      }.compact
+    end
+
+    def settlement_distribution_metadata(routing:, distribution:)
+      routing.distribution_metadata.merge(
+        "retained_amount" => decimal_as_string(distribution.cnpj_amount),
+        "retention_rate" => decimal_as_string(distribution.cnpj_share_rate),
+        "retention_party_id" => distribution.cnpj_amount.to_d.positive? ? routing.source_party&.id : nil,
+        "beneficiary_amount" => decimal_as_string(distribution.beneficiary_amount),
+        "fidc_amount" => decimal_as_string(distribution.fidc_amount)
+      ).compact
     end
 
     def normalize_metadata(raw_metadata)

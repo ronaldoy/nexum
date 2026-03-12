@@ -274,10 +274,58 @@ module Integrations
         end
       end
 
+      test "uses the legal entity operational account as payout source for shared cnpj settlements" do
+        with_tenant_db_context(tenant_id: @tenant.id, actor_id: @user.id, role: "worker") do
+          bundle = create_shared_cnpj_bundle!("dispatch-payout-shared-cnpj")
+          settlement = ReceivablePaymentSettlement.create!(
+            tenant: @tenant,
+            receivable: bundle[:receivable],
+            receivable_allocation: bundle[:allocation],
+            paid_amount: "100.00",
+            cnpj_amount: "30.00",
+            fidc_amount: "0.00",
+            beneficiary_amount: "70.00",
+            fidc_balance_before: "0.00",
+            fidc_balance_after: "0.00",
+            paid_at: Time.current,
+            payment_reference: "hospital-payment-shared-cnpj",
+            idempotency_key: "idem-settlement-shared-cnpj",
+            request_id: SecureRandom.uuid,
+            metadata: {}
+          )
+          outbox_event = create_escrow_outbox_event!(
+            settlement: settlement,
+            recipient_party: bundle[:physician],
+            idempotency_key: "idem-dispatch-payout-shared-cnpj",
+            source_party: bundle[:legal_entity]
+          )
+
+          fake_provider = FakeProviderSuccess.new
+          payout = nil
+
+          with_stubbed_provider(fake_provider) do
+            payout = Integrations::Escrow::DispatchPayout.new.call(outbox_event: outbox_event)
+          end
+
+          source_account = EscrowAccount.find_by!(tenant_id: @tenant.id, party_id: bundle[:legal_entity].id, provider: "QITECH")
+          assert_equal source_account.id, payout.escrow_account_id
+          assert_equal bundle[:physician].id, payout.party_id
+          assert_equal bundle[:legal_entity].id, fake_provider.open_account_calls.last[:party_id]
+          assert_equal bundle[:physician].id, fake_provider.create_payout_calls.last[:recipient_party_id]
+          assert_equal source_account.id, fake_provider.create_payout_calls.last[:escrow_account_id]
+          assert_equal "LEGAL_ENTITY_RETENTION_SPLIT", payout.metadata.dig("payload", "distribution_model", "payout_model")
+        end
+      end
+
       private
 
-      def create_escrow_outbox_event!(settlement:, recipient_party:, idempotency_key:, amount: nil, provider: "QITECH")
+      def create_escrow_outbox_event!(settlement:, recipient_party:, idempotency_key:, amount: nil, provider: "QITECH", source_party: nil)
         payload_amount = amount || settlement.beneficiary_amount.to_d.to_s("F")
+        payout_model = if source_party.present? && source_party.id != recipient_party.id
+          "LEGAL_ENTITY_RETENTION_SPLIT"
+        else
+          "ENTITY_DIRECT"
+        end
 
         OutboxEvent.create!(
           tenant: @tenant,
@@ -289,14 +337,20 @@ module Integrations
           payload: {
             "settlement_id" => settlement.id,
             "receivable_id" => settlement.receivable_id,
+            "source_party_id" => source_party&.id || recipient_party.id,
             "recipient_party_id" => recipient_party.id,
             "amount" => payload_amount,
             "currency" => "BRL",
             "provider" => provider,
             "payout_kind" => "EXCESS",
             "payout_idempotency_key" => idempotency_key,
-            "account_idempotency_key" => "#{recipient_party.id}:escrow_account",
-            "provider_request_control_key" => idempotency_key
+            "account_idempotency_key" => "#{source_party&.id || recipient_party.id}:escrow_account",
+            "provider_request_control_key" => idempotency_key,
+            "distribution_model" => {
+              "payout_model" => payout_model,
+              "source_party_id" => source_party&.id || recipient_party.id,
+              "recipient_party_id" => recipient_party.id
+            }
           }
         )
       end
@@ -348,6 +402,72 @@ module Integrations
           receivable: receivable,
           allocation: allocation,
           supplier: supplier
+        }
+      end
+
+      def create_shared_cnpj_bundle!(suffix)
+        hospital = Party.create!(
+          tenant: @tenant,
+          kind: "HOSPITAL",
+          legal_name: "Hospital #{suffix}",
+          document_number: valid_cnpj_from_seed("#{suffix}-hospital")
+        )
+        legal_entity = Party.create!(
+          tenant: @tenant,
+          kind: "LEGAL_ENTITY_PJ",
+          legal_name: "Clinica #{suffix}",
+          document_number: valid_cnpj_from_seed("#{suffix}-legal-entity")
+        )
+        physician = Party.create!(
+          tenant: @tenant,
+          kind: "PHYSICIAN_PF",
+          legal_name: "Medico #{suffix}",
+          document_number: valid_cpf_from_seed("#{suffix}-physician")
+        )
+
+        PhysicianLegalEntityMembership.create!(
+          tenant: @tenant,
+          physician_party: physician,
+          legal_entity_party: legal_entity,
+          membership_role: "ADMIN",
+          status: "ACTIVE"
+        )
+
+        kind = ReceivableKind.create!(
+          tenant: @tenant,
+          code: "physician_shift_#{suffix}",
+          name: "Physician Shift #{suffix}",
+          source_family: "PHYSICIAN"
+        )
+        receivable = Receivable.create!(
+          tenant: @tenant,
+          receivable_kind: kind,
+          debtor_party: hospital,
+          creditor_party: legal_entity,
+          beneficiary_party: legal_entity,
+          external_reference: "external-#{suffix}",
+          gross_amount: "100.00",
+          currency: "BRL",
+          performed_at: Time.current,
+          due_at: 5.days.from_now,
+          cutoff_at: BusinessCalendar.cutoff_at(Time.current.in_time_zone.to_date)
+        )
+        allocation = ReceivableAllocation.create!(
+          tenant: @tenant,
+          receivable: receivable,
+          sequence: 1,
+          allocated_party: legal_entity,
+          physician_party: physician,
+          gross_amount: "100.00",
+          tax_reserve_amount: "30.00",
+          status: "OPEN"
+        )
+
+        {
+          receivable: receivable,
+          allocation: allocation,
+          legal_entity: legal_entity,
+          physician: physician
         }
       end
 

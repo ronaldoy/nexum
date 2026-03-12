@@ -42,8 +42,8 @@
     <section class="two-column">
       <article class="panel">
         <header class="panel-header">
-          <h3>Conta recebedora PIX</h3>
-          <p>Os repasses operacionais e de liquidação sairão somente por PIX para a conta cadastrada da sua entidade.</p>
+          <h3>Conta operacional e conta destino</h3>
+          <p>O hospital liquida por PIX na conta operacional Stark da entidade. Depois abatemos o empréstimo e enviamos o excedente líquido para a conta bancária destino cadastrada.</p>
         </header>
 
         <div class="detail-grid">
@@ -53,21 +53,26 @@
             <p class="detail-meta"><%= Current.user.party.document_number %></p>
           </article>
           <article class="detail-card">
-            <p class="detail-label">Conta atual</p>
+            <p class="detail-label">Conta operacional Stark</p>
+            <h4><%= escrow_account_label(@operational_account) %></h4>
+            <p class="detail-meta"><%= @operational_account.present? ? status_label(@operational_account.status) : "A conta operacional é provisionada automaticamente quando o fluxo de pagamento é iniciado." %></p>
+          </article>
+          <article class="detail-card">
+            <p class="detail-label">Conta destino atual</p>
             <h4><%= receiving_account_label(@receiving_account) %></h4>
-            <p class="detail-meta"><%= @receiving_account.present? ? status_label(@receiving_account.status) : "Atualize abaixo para habilitar os pagamentos." %></p>
+            <p class="detail-meta"><%= @receiving_account.present? ? status_label(@receiving_account.status) : "Atualize abaixo para habilitar a saída do excedente líquido." %></p>
           </article>
         </div>
 
         <%= form_with url: receiving_account_path, scope: :receiving_account, class: "compact-form" do |form| %>
           <div class="form-grid form-grid-2">
             <div class="field">
-              <%= form.label :bank_code, "ISPB do banco" %>
+              <%= form.label :bank_code, "ISPB do banco destino" %>
               <%= form.text_field :bank_code, value: @receiving_account&.bank_code, required: true, maxlength: 8, inputmode: "numeric", placeholder: "8 dígitos" %>
-              <p class="field-note">Use o ISPB de 8 dígitos para forçar o envio por PIX manual.</p>
+              <p class="field-note">Usamos o ISPB de 8 dígitos para forçar saída por PIX manual para outra instituição.</p>
             </div>
             <div class="field">
-              <%= form.label :account_type, "Tipo de conta" %>
+              <%= form.label :account_type, "Tipo da conta destino" %>
               <%= form.select :account_type, options_for_select([
                 ["Conta corrente", "checking"],
                 ["Conta poupança", "savings"],
@@ -92,21 +97,21 @@
       <article class="panel">
         <header class="panel-header">
           <h3>Regras do fluxo de pagamento</h3>
-          <p>Os pagamentos respeitam limite operacional por lote, funding disponível e confirmação final do PIX.</p>
+          <p>Os pagamentos respeitam limite operacional por lote, saldo recebido na conta operacional e confirmação final do PIX.</p>
         </header>
 
         <ul class="activity-list">
           <li class="activity-item">
-            <p class="activity-title"><strong>Rail único</strong></p>
-            <p class="activity-body">Todo repasse sai por PIX com idempotência de ponta a ponta.</p>
+            <p class="activity-title"><strong>Liquidação direta na entidade</strong></p>
+            <p class="activity-body">O hospital paga por PIX direto na conta operacional da entidade titular do recebível.</p>
           </li>
           <li class="activity-item">
-            <p class="activity-title"><strong>Conta por entidade</strong></p>
-            <p class="activity-body">Cada entidade opera com workspace dedicado na Stark e recebe o PIX final na conta bancária acima.</p>
+            <p class="activity-title"><strong>Abatimento e excedente</strong></p>
+            <p class="activity-body">Depois da liquidação, o sistema abate o saldo antecipado e transfere apenas o excedente líquido para a conta destino cadastrada.</p>
           </li>
           <li class="activity-item">
-            <p class="activity-title"><strong>Confirmação e custo</strong></p>
-            <p class="activity-body">O sistema acompanha status de processamento, confirmação do PIX e taxa cobrada pelo provedor.</p>
+            <p class="activity-title"><strong>Split PJ com retenção</strong></p>
+            <p class="activity-body">Em estruturas PJ compartilhadas, a retenção da PJ permanece na conta operacional e só a parcela do médico segue para o banco externo.</p>
           </li>
         </ul>
       </article>
